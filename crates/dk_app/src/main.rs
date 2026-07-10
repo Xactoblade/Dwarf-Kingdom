@@ -53,6 +53,7 @@ struct MoveRepeat(Timer);
 struct ShotState {
     frames: u32,
     taken: bool,
+    started_at: f64,
 }
 
 // ---------------------------------------------------------------- components
@@ -102,7 +103,13 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Dwarf Kingdom — Phase 0".into(),
-                    resolution: (1100.0, 860.0).into(),
+                    resolution: (1100.0_f32, 860.0_f32).into(),
+                    // Screenshot mode measures raw engine throughput, so skip vsync.
+                    present_mode: if std::env::var_os("DK_SCREENSHOT").is_some() {
+                        bevy::window::PresentMode::AutoNoVsync
+                    } else {
+                        bevy::window::PresentMode::AutoVsync
+                    },
                     ..default()
                 }),
                 ..default()
@@ -206,7 +213,7 @@ fn handle_input(
     // Cursor movement with hold-to-repeat.
     repeat.0.tick(time.delta());
     let step_ok = repeat.0.just_finished();
-    let mut mv = |dx: i64, dy: i64, key: KeyCode, keys: &ButtonInput<KeyCode>| -> (i64, i64) {
+    let mv = |dx: i64, dy: i64, key: KeyCode, keys: &ButtonInput<KeyCode>| -> (i64, i64) {
         if keys.just_pressed(key) || (keys.pressed(key) && step_ok) {
             (dx, dy)
         } else {
@@ -362,7 +369,7 @@ fn update_hud(
     let cal = &clock.0;
     for mut text in &mut q {
         text.0 = format!(
-            "Dwarf Kingdom — Phase 0\n\
+            "Dwarf Kingdom :: Phase 0\n\
              z-level {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   tick {}   {:.0} fps\n\
              arrows: cursor   [ ]: z   WASD: pan   -/=: zoom   F5/F9: save/load   Esc: quit",
@@ -385,19 +392,30 @@ fn screenshot_mode(
     mut state: ResMut<ShotState>,
     mut commands: Commands,
     mut exit: EventWriter<AppExit>,
+    time: Res<Time<Real>>,
 ) {
     if std::env::var_os("DK_SCREENSHOT").is_none() {
         return;
     }
     state.frames += 1;
-    if state.frames == 90 && !state.taken {
+    if state.frames == 1 {
+        state.started_at = time.elapsed_secs_f64();
+    }
+    if state.frames == 240 && !state.taken {
         state.taken = true;
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(Path::new("phase0.png").to_path_buf()));
         info!("screenshot requested");
     }
-    if state.frames >= 160 {
+    if state.frames >= 320 {
+        let elapsed = time.elapsed_secs_f64() - state.started_at;
+        info!(
+            "measured {:.1} fps over {} frames ({:.2}s)",
+            (state.frames - 1) as f64 / elapsed,
+            state.frames - 1,
+            elapsed
+        );
         exit.write(AppExit::Success);
     }
 }
