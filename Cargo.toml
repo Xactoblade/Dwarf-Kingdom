@@ -8,7 +8,7 @@ ron = "0.8"
 bincode = "1.3"
 anyhow = "1"
 rand = "0.8"
-rand_chacha = "0.3"
+rand_chacha = { version = "0.3", features = ["serde1"] }
 
 # Bevy is slow in unoptimized dev builds; keep our code fast to compile
 # but optimize all dependencies.

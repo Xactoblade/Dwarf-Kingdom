@@ -1863,11 +1863,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9c272297e804878a2a4b707cfcfc6d2328b5bb936944613b4fdf2b9269afdfd"
 
 [[package]]
+name = "dk_agents"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "dk_core",
+ "dk_raws",
+ "dk_world",
+ "rand",
+ "rand_chacha",
+ "serde",
+]
+
+[[package]]
 name = "dk_app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "dk_agents",
  "dk_core",
  "dk_raws",
  "dk_world",
@@ -3610,6 +3625,7 @@ checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
  "ppv-lite86",
  "rand_core",
+ "serde",
 ]
 
 [[package]]

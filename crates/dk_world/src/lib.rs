@@ -1,19 +1,47 @@
-//! Tile world: the 3D local map, its generation, and persistence.
+//! Tile world: the 3D local map, its generation, pathfinding, and material
+//! remapping for saves.
 
 use anyhow::{Context, Result};
 use dk_raws::{MaterialCategory, MaterialRegistry};
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+
+pub mod path;
+
+pub use path::Pos;
 
 /// Sentinel for "no material" (air).
 pub const NO_MATERIAL: u16 = u16::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TileShape {
+    /// Open space. Not walkable (nothing to stand on).
     Empty,
+    /// Solid rock/soil wall. Not passable.
     Solid,
+    /// Walkable surface (natural ground or a mined-out tile).
+    Floor,
+    /// Walkable; connects vertically to stairs directly above/below.
+    Stairs,
+    /// Walkable slope; connects to walkable tiles one level up alongside.
+    Ramp,
+}
+
+impl TileShape {
+    pub fn is_walkable(self) -> bool {
+        matches!(self, TileShape::Floor | TileShape::Stairs | TileShape::Ramp)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TileShape::Empty => "open air",
+            TileShape::Solid => "wall",
+            TileShape::Floor => "floor",
+            TileShape::Stairs => "stairs",
+            TileShape::Ramp => "ramp",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -29,10 +57,11 @@ impl Tile {
     };
 
     pub fn solid(material: u16) -> Self {
-        Tile {
-            material,
-            shape: TileShape::Solid,
-        }
+        Tile { material, shape: TileShape::Solid }
+    }
+
+    pub fn floor(material: u16) -> Self {
+        Tile { material, shape: TileShape::Floor }
     }
 
     pub fn is_solid(&self) -> bool {
@@ -40,8 +69,8 @@ impl Tile {
     }
 }
 
-/// Dense 3D tile map. Phase 0 keeps a flat vec; chunking arrives with
-/// dirty-region tracking in Phase 1.
+/// Dense 3D tile map. Phase 0/1 keeps a flat vec; chunking arrives with
+/// dirty-region tracking when maps grow.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Map {
     pub width: usize,
@@ -85,100 +114,81 @@ impl Map {
         self.tiles[i] = t;
     }
 
+    /// Bounds-checked accessor used by pathfinding and the sim.
+    pub fn tile_at(&self, p: Pos) -> Option<Tile> {
+        if self.in_bounds(p.x as i64, p.y as i64, p.z as i64) {
+            Some(self.get(p.x as usize, p.y as usize, p.z as usize))
+        } else {
+            None
+        }
+    }
+
+    pub fn set_at(&mut self, p: Pos, t: Tile) {
+        assert!(self.in_bounds(p.x as i64, p.y as i64, p.z as i64));
+        self.set(p.x as usize, p.y as usize, p.z as usize, t);
+    }
+
+    pub fn walkable(&self, p: Pos) -> bool {
+        self.tile_at(p).is_some_and(|t| t.shape.is_walkable())
+    }
+
     /// Highest solid z at a column, if any.
     pub fn surface_z(&self, x: usize, y: usize) -> Option<usize> {
         (0..self.depth).rev().find(|&z| self.get(x, y, z).is_solid())
     }
 
-    /// Save with a versioned header and a material-id manifest so the save
-    /// survives raws edits (see BLUEPRINT.md §4.7 / hard-part #7).
-    pub fn save(&self, path: &Path, reg: &MaterialRegistry) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let save = SaveFile {
-            magic: SAVE_MAGIC,
-            version: SAVE_VERSION,
-            material_ids: reg.id_manifest(),
-            map: self,
-        };
-        let file = std::fs::File::create(path)
-            .with_context(|| format!("creating {}", path.display()))?;
-        bincode::serialize_into(std::io::BufWriter::new(file), &save)?;
+    /// Highest walkable z at a column, if any.
+    pub fn walk_surface_z(&self, x: usize, y: usize) -> Option<usize> {
+        (0..self.depth)
+            .rev()
+            .find(|&z| self.get(x, y, z).shape.is_walkable())
+    }
+
+    /// Structural sanity checks for freshly deserialized maps.
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.width > 0 && self.height > 0 && self.depth > 0,
+            "corrupt map: zero dimension"
+        );
+        anyhow::ensure!(
+            self.tiles.len() == self.width * self.height * self.depth,
+            "corrupt map: tile count {} does not match {}x{}x{}",
+            self.tiles.len(),
+            self.width,
+            self.height,
+            self.depth
+        );
         Ok(())
     }
 
-    /// Load, validate invariants, and remap material indices from the save's
-    /// manifest to the currently loaded registry.
-    pub fn load(path: &Path, reg: &MaterialRegistry) -> Result<Self> {
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("opening {}", path.display()))?;
-        let save: SaveFileOwned =
-            bincode::deserialize_from(std::io::BufReader::new(file))
-                .with_context(|| format!("deserializing {}", path.display()))?;
-        anyhow::ensure!(save.magic == SAVE_MAGIC, "not a Dwarf Kingdom save file");
-        anyhow::ensure!(
-            save.version == SAVE_VERSION,
-            "save version {} unsupported (expected {})",
-            save.version,
-            SAVE_VERSION
-        );
-        let mut map = save.map;
-        anyhow::ensure!(
-            map.width > 0 && map.height > 0 && map.depth > 0,
-            "corrupt save: zero dimension"
-        );
-        anyhow::ensure!(
-            map.tiles.len() == map.width * map.height * map.depth,
-            "corrupt save: tile count {} does not match {}x{}x{}",
-            map.tiles.len(),
-            map.width,
-            map.height,
-            map.depth
-        );
-
-        // Old index -> current registry index, by material id.
-        let remap: Vec<u16> = save
-            .material_ids
-            .iter()
-            .map(|id| {
-                reg.index_of(id)
-                    .with_context(|| format!("save uses material '{id}' missing from current raws"))
-            })
-            .collect::<Result<_>>()?;
-        for tile in &mut map.tiles {
+    /// Remap material indices recorded under `old_ids` (a save's manifest)
+    /// to the currently loaded registry. Errors if a material vanished.
+    pub fn remap_materials(&mut self, old_ids: &[String], reg: &MaterialRegistry) -> Result<()> {
+        let remap = build_remap(old_ids, reg)?;
+        for tile in &mut self.tiles {
             if tile.material != NO_MATERIAL {
                 let old = tile.material as usize;
-                anyhow::ensure!(old < remap.len(), "corrupt save: material index {old} out of range");
+                anyhow::ensure!(old < remap.len(), "corrupt map: material index {old} out of range");
                 tile.material = remap[old];
             }
         }
-        Ok(map)
+        Ok(())
     }
 }
 
-const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 1;
-
-/// Borrowing writer-side view of the save payload.
-#[derive(Serialize)]
-struct SaveFile<'a> {
-    magic: u32,
-    version: u32,
-    material_ids: Vec<String>,
-    map: &'a Map,
+/// Old index -> current registry index, by material id.
+pub fn build_remap(old_ids: &[String], reg: &MaterialRegistry) -> Result<Vec<u16>> {
+    old_ids
+        .iter()
+        .map(|id| {
+            reg.index_of(id)
+                .with_context(|| format!("save uses material '{id}' missing from current raws"))
+        })
+        .collect()
 }
 
-#[derive(Deserialize)]
-struct SaveFileOwned {
-    magic: u32,
-    version: u32,
-    material_ids: Vec<String>,
-    map: Map,
-}
-
-/// Generate a Phase 0 local map: rolling surface, soil cover, sedimentary
-/// over igneous strata, ore veins scattered through the stone.
+/// Generate a Phase 1 local map: rolling surface with walkable ground,
+/// soil cover, sedimentary over igneous strata, ore veins in the stone.
 pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(
@@ -197,26 +207,55 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
         "raws must define soil, sedimentary and igneous materials"
     );
 
-    // --- Surface heightfield: coarse random grid, bilinearly interpolated.
+    // --- Surface heightfield: coarse random grid, bilinearly interpolated,
+    // then relaxed so adjacent columns differ by at most one z-level. Ramps
+    // placed on every slope keep the whole surface one walkable region.
     let base = (depth * 2) / 3;
     let coarse = 8usize;
     let gw = width / coarse + 2;
     let gh = height / coarse + 2;
     let grid: Vec<f32> = (0..gw * gh).map(|_| rng.gen_range(-3.5f32..3.5)).collect();
-    let height_at = |x: usize, y: usize| -> usize {
-        let fx = x as f32 / coarse as f32;
-        let fy = y as f32 / coarse as f32;
-        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-        let (tx, ty) = (fx.fract(), fy.fract());
-        let g = |gx: usize, gy: usize| grid[gy * gw + gx];
-        let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
-        let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
-        let off = top * (1.0 - ty) + bot * ty;
-        ((base as f32 + off).round() as i64).clamp(4, depth as i64 - 2) as usize
-    };
+    let mut heights = vec![0usize; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let fx = x as f32 / coarse as f32;
+            let fy = y as f32 / coarse as f32;
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (tx, ty) = (fx.fract(), fy.fract());
+            let g = |gx: usize, gy: usize| grid[gy * gw + gx];
+            let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
+            let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
+            let off = top * (1.0 - ty) + bot * ty;
+            heights[y * width + x] =
+                ((base as f32 + off).round() as i64).clamp(4, depth as i64 - 2) as usize;
+        }
+    }
+    // Relax: no column more than one level above any neighbor.
+    loop {
+        let mut changed = false;
+        for y in 0..height {
+            for x in 0..width {
+                let h = heights[y * width + x];
+                let mut min_n = usize::MAX;
+                if x > 0 { min_n = min_n.min(heights[y * width + x - 1]); }
+                if x + 1 < width { min_n = min_n.min(heights[y * width + x + 1]); }
+                if y > 0 { min_n = min_n.min(heights[(y - 1) * width + x]); }
+                if y + 1 < height { min_n = min_n.min(heights[(y + 1) * width + x]); }
+                if min_n != usize::MAX && h > min_n + 1 {
+                    heights[y * width + x] = min_n + 1;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let height_at = |x: usize, y: usize| heights[y * width + x];
 
     // --- Column fill: soil on top, then sedimentary, then igneous with
-    // occasional metamorphic bands.
+    // occasional metamorphic bands. Above the top solid tile sits a walkable
+    // Floor tile (natural ground surface).
     const SOIL_DEPTH: usize = 3;
     const SEDIMENTARY_DEPTH: usize = 8;
     for y in 0..height {
@@ -236,6 +275,30 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
                     igneous[(z / 5) % igneous.len()]
                 };
                 map.set(x, y, z, Tile::solid(mat));
+            }
+            map.set(x, y, surface + 1, Tile::floor(soil_mat));
+        }
+    }
+
+    // --- Ramps: any surface tile with a one-level-higher neighbor becomes a
+    // ramp so walkers can traverse slopes.
+    for y in 0..height {
+        for x in 0..width {
+            let h = height_at(x, y);
+            let higher_neighbor = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)]
+                .iter()
+                .any(|&(dx, dy)| {
+                    let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                    nx >= 0
+                        && ny >= 0
+                        && (nx as usize) < width
+                        && (ny as usize) < height
+                        && height_at(nx as usize, ny as usize) == h + 1
+                });
+            if higher_neighbor {
+                let floor_z = h + 1;
+                let mat = map.get(x, y, floor_z).material;
+                map.set(x, y, floor_z, Tile { material: mat, shape: TileShape::Ramp });
             }
         }
     }
@@ -288,54 +351,68 @@ mod tests {
         .unwrap()
     }
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join("dk_world_test").join(name)
-    }
-
     #[test]
-    fn roundtrip_save_load() {
-        let reg = registry(&["dirt", "rock"]);
+    fn remap_shifts_indices_by_id() {
         let mut m = Map::new_air(4, 4, 4, 7);
-        m.set(1, 2, 3, Tile::solid(1));
-        let path = temp_path("roundtrip.bin");
-        m.save(&path, &reg).unwrap();
-        let loaded = Map::load(&path, &reg).unwrap();
-        assert_eq!(loaded.get(1, 2, 3).material, 1);
-        assert!(loaded.get(0, 0, 0).shape == TileShape::Empty);
-    }
-
-    #[test]
-    fn load_remaps_material_indices_when_raws_change() {
-        let old_reg = registry(&["dirt", "rock"]);
-        let mut m = Map::new_air(4, 4, 4, 7);
-        m.set(1, 2, 3, Tile::solid(1)); // "rock" under the old registry
-        let path = temp_path("remap.bin");
-        m.save(&path, &old_reg).unwrap();
-
-        // A new material sorted first shifts every index.
+        m.set(1, 2, 3, Tile::solid(1)); // "rock" under the old manifest
+        let old_ids = vec!["dirt".to_string(), "rock".to_string()];
         let new_reg = registry(&["clay", "dirt", "rock"]);
-        let loaded = Map::load(&path, &new_reg).unwrap();
-        assert_eq!(loaded.get(1, 2, 3).material, new_reg.index_of("rock").unwrap());
+        m.remap_materials(&old_ids, &new_reg).unwrap();
+        assert_eq!(m.get(1, 2, 3).material, new_reg.index_of("rock").unwrap());
     }
 
     #[test]
-    fn load_fails_when_material_removed() {
-        let old_reg = registry(&["dirt", "rock"]);
-        let m = Map::new_air(4, 4, 4, 7);
-        let path = temp_path("missing.bin");
-        m.save(&path, &old_reg).unwrap();
-
-        let new_reg = registry(&["dirt"]);
-        let err = Map::load(&path, &new_reg).unwrap_err().to_string();
+    fn remap_fails_when_material_removed() {
+        let mut m = Map::new_air(4, 4, 4, 7);
+        let old_ids = vec!["dirt".to_string(), "rock".to_string()];
+        let err = m
+            .remap_materials(&old_ids, &registry(&["dirt"]))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("rock"), "unexpected error: {err}");
     }
 
     #[test]
-    fn load_rejects_garbage_file() {
-        let path = temp_path("garbage.bin");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"not a save").unwrap();
-        assert!(Map::load(&path, &registry(&["dirt"])).is_err());
+    fn validate_rejects_bad_tile_count() {
+        let mut m = Map::new_air(4, 4, 4, 7);
+        m.tiles.pop();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn generated_surface_is_walkable() {
+        // registry() marks everything Soil; mapgen needs the stone categories.
+        let reg = MaterialRegistry::from_defs(vec![
+            MaterialDef { id: "dirt".into(), name: "dirt".into(), category: MaterialCategory::Soil, color: [0; 3], value: 1 },
+            MaterialDef { id: "sed".into(), name: "sed".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1 },
+            MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1 },
+        ])
+        .unwrap();
+        use rand::SeedableRng;
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let map = generate(&reg, &mut rng, 32, 32, 16, 1);
+        for y in 0..32 {
+            for x in 0..32 {
+                let wz = map.walk_surface_z(x, y).expect("every column has ground");
+                let shape = map.get(x, y, wz).shape;
+                assert!(
+                    matches!(shape, TileShape::Floor | TileShape::Ramp),
+                    "surface at ({x},{y},{wz}) is {shape:?}"
+                );
+                assert!(map.get(x, y, wz - 1).is_solid());
+            }
+        }
+        // The whole surface must be one connected walkable region (ramps).
+        let regions = path::Regions::new(&map);
+        let origin = Pos::new(0, 0, map.walk_surface_z(0, 0).unwrap() as i32);
+        for y in 0..32 {
+            for x in 0..32 {
+                let wz = map.walk_surface_z(x, y).unwrap();
+                assert!(
+                    regions.same_region(origin, Pos::new(x as i32, y as i32, wz as i32)),
+                    "surface tile ({x},{y}) is cut off from the rest of the map"
+                );
+            }
+        }
     }
 }
-
