@@ -170,6 +170,13 @@ impl Regions {
     }
 }
 
+/// Admissible A* heuristic: a ramp step changes x/y and z together at cost 1,
+/// so plain manhattan (which sums them) can overestimate. Each move reduces
+/// horizontal distance by at most 1 AND vertical distance by at most 1.
+fn heuristic(a: Pos, b: Pos) -> u32 {
+    (a.x.abs_diff(b.x) + a.y.abs_diff(b.y)).max(a.z.abs_diff(b.z))
+}
+
 /// A* shortest path. Returns the tile sequence from `start` (exclusive) to
 /// `goal` (inclusive), or None. Callers should gate on `Regions::same_region`
 /// first; `max_nodes` is a safety valve, not the primary guard.
@@ -179,7 +186,7 @@ pub fn astar(map: &Map, start: Pos, goal: Pos, max_nodes: usize) -> Option<Vec<P
     }
     let mut open: BinaryHeap<Reverse<(u32, u32, Pos)>> = BinaryHeap::new();
     let mut best: HashMap<Pos, (u32, Pos)> = HashMap::new(); // pos -> (g, parent)
-    open.push(Reverse((start.manhattan(goal), 0, start)));
+    open.push(Reverse((heuristic(start, goal), 0, start)));
     best.insert(start, (0, start));
 
     let mut scratch = Vec::with_capacity(6);
@@ -213,7 +220,7 @@ pub fn astar(map: &Map, start: Pos, goal: Pos, max_nodes: usize) -> Option<Vec<P
             let ng = g + 1;
             if best.get(&n).is_none_or(|&(bg, _)| ng < bg) {
                 best.insert(n, (ng, cur));
-                open.push(Reverse((ng + n.manhattan(goal), ng, n)));
+                open.push(Reverse((ng + heuristic(n, goal), ng, n)));
             }
         }
     }

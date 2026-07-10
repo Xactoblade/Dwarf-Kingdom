@@ -121,6 +121,8 @@ pub struct Sim {
     pub designations: BTreeMap<Pos, Designation>,
     pub clock: Calendar,
     rng: ChaCha8Rng,
+    /// Per-item back-off after a failed haul pathfind (item index -> tick).
+    haul_retry: BTreeMap<usize, u64>,
     /// Set whenever terrain changes; the renderer reads and clears it.
     #[serde(skip)]
     pub map_changed: bool,
@@ -175,6 +177,7 @@ impl Sim {
             designations: BTreeMap::new(),
             clock: Calendar::default(),
             rng,
+            haul_retry: BTreeMap::new(),
             map_changed: true,
             regions,
         }
@@ -387,6 +390,9 @@ impl Sim {
                 if item.state != ItemState::OnGround || item.reserved_by.is_some() {
                     continue;
                 }
+                if self.haul_retry.get(&idx).is_some_and(|&t| t > tick) {
+                    continue;
+                }
                 if self.regions.id(item.pos) != my_region {
                     continue;
                 }
@@ -427,7 +433,11 @@ impl Sim {
                     self.dwarves[i].task =
                         Task::Haul { item: item_idx, dest, path: p, carrying: false };
                 }
-                None => {}
+                None => {
+                    // Back off instead of re-running a doomed search every
+                    // assignment cycle.
+                    self.haul_retry.insert(item_idx, tick + RETRY_DELAY);
+                }
             }
         }
     }
@@ -559,14 +569,17 @@ impl Sim {
     }
 
     /// Move one step along `path` (respecting walk cooldown). Returns false
-    /// if the next tile stopped being walkable (terrain changed).
+    /// if the next step stopped being a legal move (terrain changed — e.g. a
+    /// ramp the path relied on was carved into stairs).
     fn step_along(&mut self, i: usize, path: &mut Vec<Pos>) -> bool {
         if self.dwarves[i].move_cd > 0 {
             self.dwarves[i].move_cd -= 1;
             return true;
         }
         let next = path[0];
-        if !self.map.walkable(next) {
+        let mut legal = Vec::with_capacity(8);
+        path::neighbors(&self.map, self.dwarves[i].pos, &mut legal);
+        if !legal.contains(&next) {
             return false;
         }
         path.remove(0);
@@ -637,7 +650,7 @@ impl Sim {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 2;
+const SAVE_VERSION: u32 = 3;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

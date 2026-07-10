@@ -1,7 +1,7 @@
 //! Dwarf Kingdom — Phase 1: Dig & Haul.
 //!
 //! Controls:
-//!   Arrow keys ... move cursor        W/A/S/D ...... pan camera
+//!   Arrow keys ... move cursor        W/A/S/E ...... pan camera (D designates)
 //!   [ / ] ........ z-level down/up    - / = ........ zoom out/in
 //!   d / x / p .... designate mine / stairs / stockpile (press once to
 //!                  anchor a corner at the cursor, again to apply)
@@ -357,23 +357,23 @@ fn handle_input(
         }
         let here = cursor.pos(view_z.0);
         match mode.0 {
-            Some((active, anchor)) if active == kind => {
-                if anchor.z == here.z {
-                    match kind {
-                        UiKind::Mine => {
-                            sim.0.designate_rect(DesignationKind::Mine, anchor, here);
-                        }
-                        UiKind::Stairs => {
-                            sim.0.designate_rect(DesignationKind::Stairs, anchor, here);
-                        }
-                        UiKind::Stockpile => sim.0.add_stockpile(anchor, here),
-                        UiKind::Cancel => {
-                            sim.0.cancel_rect(anchor, here);
-                        }
+            Some((active, anchor)) if active == kind && anchor.z == here.z => {
+                match kind {
+                    UiKind::Mine => {
+                        sim.0.designate_rect(DesignationKind::Mine, anchor, here);
+                    }
+                    UiKind::Stairs => {
+                        sim.0.designate_rect(DesignationKind::Stairs, anchor, here);
+                    }
+                    UiKind::Stockpile => sim.0.add_stockpile(anchor, here),
+                    UiKind::Cancel => {
+                        sim.0.cancel_rect(anchor, here);
                     }
                 }
                 mode.0 = None;
             }
+            // Changed z since anchoring (rects are per z-level): re-anchor
+            // here instead of silently dropping the designation.
             _ => mode.0 = Some((kind, here)),
         }
         dirty.0 = true;
