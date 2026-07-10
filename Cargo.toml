@@ -17,3 +17,10 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The simulation crates are hot loops; optimize them even in dev builds.
+[profile.dev.package.dk_world]
+opt-level = 3
+
+[profile.dev.package.dk_agents]
+opt-level = 3

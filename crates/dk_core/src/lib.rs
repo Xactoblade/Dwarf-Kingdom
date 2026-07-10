@@ -47,6 +47,11 @@ impl Calendar {
         (self.tick / TICKS_PER_DAY) % DAYS_PER_SEASON + 1
     }
 
+    /// 0 spring, 1 summer, 2 autumn, 3 winter — matches plant raw indices.
+    pub fn season_index(&self) -> u8 {
+        ((self.tick / (TICKS_PER_DAY * DAYS_PER_SEASON)) % SEASONS_PER_YEAR) as u8
+    }
+
     pub fn season(&self) -> Season {
         match (self.tick / (TICKS_PER_DAY * DAYS_PER_SEASON)) % SEASONS_PER_YEAR {
             0 => Season::Spring,

@@ -1,0 +1,8 @@
+// Dwarf Kingdom crop raws — Phase 2 set.
+// grow_days is in-game days from planting to harvest; seasons are indices
+// (0 spring, 1 summer, 2 autumn, 3 winter).
+[
+    PlantDef(id: "barley",   name: "Barley",       color: (196, 168, 98),  grow_days: 18, seasons: [0, 1, 2], brewable: true),
+    PlantDef(id: "potato",   name: "Potato",       color: (168, 140, 92),  grow_days: 14, seasons: [0, 1, 2], brewable: false),
+    PlantDef(id: "gourd",    name: "Ridge Gourd",  color: (120, 150, 70),  grow_days: 22, seasons: [1, 2],    brewable: true),
+]

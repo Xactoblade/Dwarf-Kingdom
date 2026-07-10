@@ -2,34 +2,19 @@
 //! "designate a 3-level staircase and a stockpile; dwarves dig it out and
 //! haul the stone with zero babysitting."
 
-use dk_agents::{DesignationKind, ItemState, Sim};
-use dk_raws::{MaterialCategory, MaterialDef, MaterialRegistry};
+mod common;
+
+use dk_agents::{DesignationKind, ItemKind, Sim};
+use dk_raws::Raws;
 use dk_world::path::Pos;
 use dk_world::TileShape;
 
-fn test_registry() -> MaterialRegistry {
-    let m = |id: &str, cat: MaterialCategory| MaterialDef {
-        id: id.into(),
-        name: id.into(),
-        category: cat,
-        color: [100, 100, 100],
-        value: 1,
-    };
-    MaterialRegistry::from_defs(vec![
-        m("loam", MaterialCategory::Soil),
-        m("limestone", MaterialCategory::Sedimentary),
-        m("granite", MaterialCategory::Igneous),
-        m("hematite", MaterialCategory::Ore),
-    ])
-    .unwrap()
-}
-
-fn build_sim(seed: u64) -> (Sim, MaterialRegistry) {
-    let reg = test_registry();
+fn build_sim(seed: u64) -> (Sim, Raws) {
+    let raws = common::test_raws();
     let mut rng = dk_core::rng_from_seed(seed);
-    let map = dk_world::generate(&reg, &mut rng, 32, 32, 16, seed);
-    let sim = Sim::new(map, &reg, rng, 5);
-    (sim, reg)
+    let map = dk_world::generate(&raws.materials, &mut rng, 32, 32, 16, seed);
+    let sim = Sim::new(map, &raws, rng, 5);
+    (sim, raws)
 }
 
 /// Apply the canonical Phase 1 scenario near the map center: a staircase down
@@ -73,14 +58,13 @@ fn designate_scenario(sim: &mut Sim) -> (Pos, Pos) {
 
 #[test]
 fn dwarves_dig_staircase_and_haul_to_stockpile() {
-    let (mut sim, reg) = build_sim(99);
+    let (mut sim, raws) = build_sim(99);
     let (_, stair_bottom) = designate_scenario(&mut sim);
-    let total_designations = sim.pending_designations();
-    assert!(total_designations >= 13);
+    assert!(sim.pending_designations() >= 13);
 
     let mut ticks = 0u64;
     while sim.pending_designations() > 0 && ticks < 60_000 {
-        sim.step(&reg);
+        sim.step(&raws);
         ticks += 1;
     }
     assert_eq!(
@@ -96,63 +80,64 @@ fn dwarves_dig_staircase_and_haul_to_stockpile() {
     );
 
     // Stones dropped from the stone layers below the soil.
-    assert!(
-        !sim.items.is_empty(),
-        "mining stone tiles must drop boulders"
-    );
+    let boulders = sim.count_kind(ItemKind::Boulder);
+    assert!(boulders > 0, "mining stone tiles must drop boulders");
 
     // Give the haulers time to finish (carried boulders count as unfinished).
     let mut extra = 0u64;
     while extra < 60_000 {
-        sim.step(&reg);
+        sim.step(&raws);
         extra += 1;
-        if sim.stored_items() == sim.items.len() {
+        if sim.stored_items() >= boulders {
             break;
         }
     }
     let stored = sim.stored_items();
     assert!(
-        stored > 0 && stored == sim.items.len(),
-        "all {} boulders should be stored in the stockpile, got {stored} (after {extra} extra ticks)",
-        sim.items.len()
+        stored >= boulders,
+        "all {boulders} boulders should be stored, got {stored} (after {extra} extra ticks)"
     );
 }
 
 #[test]
 fn simulation_is_deterministic() {
-    let (mut a, reg) = build_sim(1234);
+    let (mut a, raws) = build_sim(1234);
     let (mut b, _) = build_sim(1234);
     designate_scenario(&mut a);
     designate_scenario(&mut b);
     for _ in 0..10_000 {
-        a.step(&reg);
-        b.step(&reg);
+        a.step(&raws);
+        b.step(&raws);
     }
-    let sa = bincode::serialize(&a.dwarves).unwrap();
-    let sb = bincode::serialize(&b.dwarves).unwrap();
-    assert_eq!(sa, sb, "same seed must produce identical simulations");
-    let ia = bincode::serialize(&a.items).unwrap();
-    let ib = bincode::serialize(&b.items).unwrap();
-    assert_eq!(ia, ib);
+    assert_eq!(
+        bincode::serialize(&a.dwarves).unwrap(),
+        bincode::serialize(&b.dwarves).unwrap(),
+        "same seed must produce identical simulations"
+    );
+    assert_eq!(
+        bincode::serialize(&a.items).unwrap(),
+        bincode::serialize(&b.items).unwrap()
+    );
 }
 
 #[test]
 fn save_roundtrip_preserves_sim() {
-    let (mut sim, reg) = build_sim(7);
+    let (mut sim, raws) = build_sim(7);
     designate_scenario(&mut sim);
+    sim.add_embark_supplies(&raws);
     for _ in 0..2_000 {
-        sim.step(&reg);
+        sim.step(&raws);
     }
     let path = std::env::temp_dir().join("dk_agents_test").join("sim.bin");
-    dk_agents::save_sim(&sim, &path, &reg).unwrap();
-    let mut loaded = dk_agents::load_sim(&path, &reg).unwrap();
+    dk_agents::save_sim(&sim, &path, &raws).unwrap();
+    let mut loaded = dk_agents::load_sim(&path, &raws).unwrap();
     assert_eq!(loaded.dwarves.len(), sim.dwarves.len());
     assert_eq!(loaded.items.len(), sim.items.len());
     assert_eq!(loaded.pending_designations(), sim.pending_designations());
     // And it keeps running deterministically from the restored state.
     for _ in 0..1_000 {
-        sim.step(&reg);
-        loaded.step(&reg);
+        sim.step(&raws);
+        loaded.step(&raws);
     }
     assert_eq!(
         bincode::serialize(&sim.dwarves).unwrap(),

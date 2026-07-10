@@ -1,39 +1,46 @@
-//! Dwarf Kingdom — Phase 1: Dig & Haul.
+//! Dwarf Kingdom — Phase 2: Survive a Year.
 //!
 //! Controls:
+//!   Mouse ........ left-click: move cursor   wheel: zoom
+//!                  right/middle-drag: pan the map
 //!   Arrow keys ... move cursor        W/A/S/E ...... pan camera (D designates)
 //!   [ / ] ........ z-level down/up    - / = ........ zoom out/in
-//!   d / x / p .... designate mine / stairs / stockpile (press once to
-//!                  anchor a corner at the cursor, again to apply)
+//!   d / x ........ designate mine / stairs (press to anchor, again to apply)
+//!   p / f ........ place stockpile / farm plot (same two-press flow)
 //!   c ............ cancel designations in a rectangle
+//!   v / k ........ build still / kitchen at the cursor
 //!   Esc .......... cancel current designation mode
 //!   Space ........ pause    . ........ single-step while paused
 //!   1 / 2 / 3 .... sim speed (normal / fast / blazing)
 //!   F5 / F9 ...... save / load       Q ............ quit
 //!
-//! Set DK_SCREENSHOT=1 to run a scripted dig-and-haul demo, capture
-//! `phase0.png`, and exit (used for automated verification).
+//! Set DK_SCREENSHOT=1 to run a scripted demo in a fixed-size window,
+//! capture `phase0.png`, and exit (used for automated verification).
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
-use dk_agents::{save_sim, load_sim, DesignationKind, ItemState, Sim};
-use dk_raws::MaterialRegistry;
+use bevy::window::{MonitorSelection, PresentMode, WindowMode};
+use dk_agents::{
+    load_sim, save_sim, BuildingKind, DesignationKind, FarmState, ItemKind, ItemState, Sim,
+};
+use dk_raws::Raws;
 use dk_world::path::Pos;
 use dk_world::TileShape;
 use std::path::{Path, PathBuf};
 
 const TILE: f32 = 12.0;
-const MAP_W: usize = 64;
-const MAP_H: usize = 64;
-const MAP_D: usize = 24;
+const MAP_W: usize = 96;
+const MAP_H: usize = 96;
+const MAP_D: usize = 32;
 const WORLD_SEED: u64 = 20260710;
 const DWARF_COUNT: usize = 7;
 
 // ---------------------------------------------------------------- resources
 
 #[derive(Resource)]
-struct Registry(MaterialRegistry);
+struct Registry(Raws);
 
 #[derive(Resource)]
 struct SimRes(Sim);
@@ -53,14 +60,13 @@ impl Cursor {
     }
 }
 
-/// Set when the map/overlays change so the tile layer re-colors itself.
 #[derive(Resource)]
 struct MapDirty(bool);
 
 #[derive(Resource, Default)]
 struct SimControl {
     paused: bool,
-    speed: u8, // 1..=3
+    speed: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +74,7 @@ enum UiKind {
     Mine,
     Stairs,
     Stockpile,
+    Farm,
     Cancel,
 }
 
@@ -77,17 +84,20 @@ impl UiKind {
             UiKind::Mine => "MINE",
             UiKind::Stairs => "STAIRS",
             UiKind::Stockpile => "STOCKPILE",
+            UiKind::Farm => "FARM",
             UiKind::Cancel => "CANCEL",
         }
     }
 }
 
-/// Active designation mode: kind + first corner (anchored at key press).
 #[derive(Resource, Default)]
 struct UiMode(Option<(UiKind, Pos)>);
 
 #[derive(Resource)]
 struct MoveRepeat(Timer);
+
+#[derive(Resource)]
+struct OverlayRefresh(Timer);
 
 #[derive(Resource, Default)]
 struct ShotState {
@@ -140,13 +150,13 @@ fn screenshot_mode_on() -> bool {
 }
 
 fn main() {
-    let registry = MaterialRegistry::load_dir(&data_dir().join("materials"))
-        .expect("failed to load material raws");
+    let raws = Raws::load(&data_dir()).expect("failed to load raws");
     let mut rng = dk_core::rng_from_seed(WORLD_SEED);
-    let map = dk_world::generate(&registry, &mut rng, MAP_W, MAP_H, MAP_D, WORLD_SEED);
-    let mut sim = Sim::new(map, &registry, rng, DWARF_COUNT);
+    let map = dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, WORLD_SEED);
+    let mut sim = Sim::new(map, &raws, rng, DWARF_COUNT);
+    sim.add_embark_supplies(&raws);
     if screenshot_mode_on() {
-        demo_scenario(&mut sim);
+        demo_scenario(&mut sim, &raws);
     }
     let start_z = sim
         .map
@@ -154,27 +164,33 @@ fn main() {
         .unwrap_or(MAP_D / 2) as i32;
     let sim_hz = if screenshot_mode_on() { 180.0 } else { dk_core::SIM_HZ };
 
+    let window = if screenshot_mode_on() {
+        Window {
+            title: "Dwarf Kingdom".into(),
+            resolution: (1100.0_f32, 860.0_f32).into(),
+            present_mode: PresentMode::AutoNoVsync,
+            ..default()
+        }
+    } else {
+        Window {
+            title: "Dwarf Kingdom".into(),
+            mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+            present_mode: PresentMode::AutoVsync,
+            ..default()
+        }
+    };
+
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Dwarf Kingdom — Phase 1".into(),
-                    resolution: (1100.0_f32, 860.0_f32).into(),
-                    // Screenshot mode measures raw engine throughput, so skip vsync.
-                    present_mode: if screenshot_mode_on() {
-                        bevy::window::PresentMode::AutoNoVsync
-                    } else {
-                        bevy::window::PresentMode::AutoVsync
-                    },
-                    ..default()
-                }),
+                primary_window: Some(window),
                 ..default()
             }),
             FrameTimeDiagnosticsPlugin::default(),
         ))
         .insert_resource(ClearColor(Color::srgb(0.04, 0.04, 0.06)))
         .insert_resource(Time::<Fixed>::from_hz(sim_hz))
-        .insert_resource(Registry(registry))
+        .insert_resource(Registry(raws))
         .insert_resource(SimRes(sim))
         .insert_resource(ViewZ(start_z))
         .insert_resource(Cursor { x: MAP_W as i32 / 2, y: MAP_H as i32 / 2 })
@@ -182,6 +198,7 @@ fn main() {
         .insert_resource(SimControl { paused: false, speed: 1 })
         .insert_resource(UiMode::default())
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
+        .insert_resource(OverlayRefresh(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(ShotState::default())
         .insert_resource(SpritePools::default())
         .add_systems(Startup, setup)
@@ -189,7 +206,9 @@ fn main() {
         .add_systems(
             Update,
             (
+                handle_mouse,
                 handle_input,
+                overlay_refresh,
                 redraw_tiles,
                 sync_agent_sprites,
                 position_cursor_sprite,
@@ -201,15 +220,13 @@ fn main() {
         .run();
 }
 
-/// Scripted demo for automated verification: stairs 3 levels down, a room at
-/// the bottom, and a stockpile on flat ground nearby.
-fn demo_scenario(sim: &mut Sim) {
+/// Scripted demo for automated verification: dig scenario + food industry.
+fn demo_scenario(sim: &mut Sim, raws: &Raws) {
     let cx = sim.map.width as i32 / 2;
     let cy = sim.map.height as i32 / 2;
     let Some(wz) = sim.map.walk_surface_z(cx as usize, cy as usize) else { return };
     let wz = wz as i32;
-    // Put the room 3+ tiles below the lowest surface it spans, so the dig
-    // reaches stone and drops boulders to haul.
+    // Staircase into stone + a room.
     let (rx0, rx1, ry0, ry1) = (cx + 1, cx + 5, cy - 2, cy + 2);
     let room_z = (ry0..=ry1)
         .flat_map(|y| (rx0..=rx1).map(move |x| (x, y)))
@@ -220,14 +237,26 @@ fn demo_scenario(sim: &mut Sim) {
         .map(|s| (s - 3).max(2))
         .unwrap_or(wz - 3);
     for z in room_z..=wz {
-        let p = Pos::new(cx, cy, z);
-        sim.designate_rect(DesignationKind::Stairs, p, p);
+        sim.designate_rect(DesignationKind::Stairs, Pos::new(cx, cy, z), Pos::new(cx, cy, z));
     }
     sim.designate_rect(
         DesignationKind::Mine,
         Pos::new(rx0, ry0, room_z),
         Pos::new(rx1, ry1, room_z),
     );
+    // Food industry.
+    if let Some((fa, fb)) = sim.find_flat_patch(cx, cy) {
+        sim.add_farm(fa, fb, 0);
+    }
+    if raws.plants.len() > 1 {
+        if let Some((fa, fb)) = sim.find_flat_patch(cx, cy) {
+            sim.add_farm(fa, fb, 1);
+        }
+    }
+    if let Some((wa, _)) = sim.find_flat_patch(cx, cy) {
+        sim.add_building(BuildingKind::Still, wa);
+        sim.add_building(BuildingKind::Kitchen, Pos::new(wa.x + 1, wa.y, wa.z));
+    }
     sim.place_flat_stockpiles(cx, cy, 36);
 }
 
@@ -295,6 +324,71 @@ fn run_sim(
     }
 }
 
+/// Farm growth and stockpile contents change tile tints slowly; refresh the
+/// overlay layer once a second instead of every frame.
+fn overlay_refresh(
+    time: Res<Time>,
+    mut timer: ResMut<OverlayRefresh>,
+    mut dirty: ResMut<MapDirty>,
+) {
+    if timer.0.tick(time.delta()).just_finished() {
+        dirty.0 = true;
+    }
+}
+
+fn handle_mouse(
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut wheel: EventReader<MouseWheel>,
+    mut motion: EventReader<MouseMotion>,
+    windows: Query<&Window>,
+    mut camera: Query<(&Camera, &GlobalTransform, &mut Transform), With<Camera2d>>,
+    mut cursor: ResMut<Cursor>,
+    mode: Res<UiMode>,
+    mut dirty: ResMut<MapDirty>,
+) {
+    let Ok((cam, cam_global, mut cam_tf)) = camera.single_mut() else { return };
+
+    // Wheel: zoom toward the current view center.
+    let mut zoom = 0.0f32;
+    for ev in wheel.read() {
+        zoom += ev.y;
+    }
+    if zoom.abs() > 0.01 {
+        let factor = if zoom > 0.0 { 0.9 } else { 1.1 };
+        cam_tf.scale = (cam_tf.scale * factor).clamp(
+            Vec3::splat(0.2),
+            Vec3::splat(4.0),
+        );
+    }
+
+    // Right/middle drag: pan.
+    let dragging = buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle);
+    let mut delta = Vec2::ZERO;
+    for ev in motion.read() {
+        delta += ev.delta;
+    }
+    if dragging && delta != Vec2::ZERO {
+        cam_tf.translation.x -= delta.x * cam_tf.scale.x;
+        cam_tf.translation.y += delta.y * cam_tf.scale.y;
+    }
+
+    // Left click: move the tile cursor to the clicked tile.
+    if buttons.just_pressed(MouseButton::Left) {
+        let Ok(window) = windows.single() else { return };
+        let Some(screen) = window.cursor_position() else { return };
+        let Ok(world) = cam.viewport_to_world_2d(cam_global, screen) else { return };
+        let tx = (world.x / TILE).round() as i32;
+        let ty = (world.y / TILE).round() as i32;
+        if (0..MAP_W as i32).contains(&tx) && (0..MAP_H as i32).contains(&ty) {
+            cursor.x = tx;
+            cursor.y = ty;
+            if mode.0.is_some() {
+                dirty.0 = true;
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -331,7 +425,7 @@ fn handle_input(
         cursor.x = (cursor.x + dx).clamp(0, MAP_W as i32 - 1);
         cursor.y = (cursor.y + dy).clamp(0, MAP_H as i32 - 1);
         if mode.0.is_some() {
-            dirty.0 = true; // live selection rectangle
+            dirty.0 = true;
         }
     }
 
@@ -345,11 +439,12 @@ fn handle_input(
         dirty.0 = true;
     }
 
-    // Designation modes. First press anchors, second press applies.
+    // Rectangle modes. First press anchors, second press applies.
     for (key, kind) in [
         (KeyCode::KeyD, UiKind::Mine),
         (KeyCode::KeyX, UiKind::Stairs),
         (KeyCode::KeyP, UiKind::Stockpile),
+        (KeyCode::KeyF, UiKind::Farm),
         (KeyCode::KeyC, UiKind::Cancel),
     ] {
         if !keys.just_pressed(key) {
@@ -366,6 +461,9 @@ fn handle_input(
                         sim.0.designate_rect(DesignationKind::Stairs, anchor, here);
                     }
                     UiKind::Stockpile => sim.0.add_stockpile(anchor, here),
+                    UiKind::Farm => {
+                        sim.0.add_farm(anchor, here, 0);
+                    }
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -381,6 +479,22 @@ fn handle_input(
     if keys.just_pressed(KeyCode::Escape) && mode.0.is_some() {
         mode.0 = None;
         dirty.0 = true;
+    }
+
+    // Buildings: instant placement at the cursor.
+    for (key, kind) in [
+        (KeyCode::KeyV, BuildingKind::Still),
+        (KeyCode::KeyK, BuildingKind::Kitchen),
+    ] {
+        if keys.just_pressed(key) {
+            let here = cursor.pos(view_z.0);
+            if sim.0.add_building(kind, here) {
+                info!("built a {} at {:?}", kind.name(), here);
+            } else {
+                warn!("can't build a {} there", kind.name());
+            }
+            dirty.0 = true;
+        }
     }
 
     // Time controls.
@@ -405,20 +519,18 @@ fn handle_input(
         }
     }
 
-    // Camera pan / zoom.
+    // Camera pan / zoom (keyboard; mouse also pans/zooms).
     if let Ok(mut tf) = camera.single_mut() {
         let pan = 300.0 * time.delta_secs() * tf.scale.x;
         if keys.pressed(KeyCode::KeyA) {
             tf.translation.x -= pan;
         }
-        if keys.pressed(KeyCode::KeyS) && !keys.pressed(KeyCode::SuperLeft) {
+        if keys.pressed(KeyCode::KeyS) {
             tf.translation.y -= pan;
         }
         if keys.pressed(KeyCode::KeyW) {
             tf.translation.y += pan;
         }
-        // (KeyD pans east only when not used for designation? No—D designates.
-        //  Pan east with E instead to avoid the clash.)
         if keys.pressed(KeyCode::KeyE) {
             tf.translation.x += pan;
         }
@@ -476,14 +588,12 @@ fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
 /// Color for a map position as seen from `view_z`, including overlays.
 fn tile_color(
     sim: &Sim,
-    reg: &MaterialRegistry,
+    raws: &Raws,
     x: i32,
     y: i32,
     view_z: i32,
     selection: Option<(Pos, Pos)>,
 ) -> Color {
-    // Base terrain: the tile itself if it has substance, else the first
-    // shape below, dimmed by distance ("depth fog").
     const DIM: [f32; 4] = [1.0, 0.55, 0.34, 0.20];
     let mut rgb = [0.02, 0.02, 0.03];
     for (levels_down, factor) in DIM.iter().enumerate() {
@@ -496,7 +606,7 @@ fn tile_color(
         if tile.shape == TileShape::Empty {
             continue;
         }
-        let [r, g, b] = reg.get(tile.material).color;
+        let [r, g, b] = raws.materials.get(tile.material).color;
         let shade = match tile.shape {
             TileShape::Solid => 1.0,
             TileShape::Ramp => 0.8,
@@ -513,6 +623,21 @@ fn tile_color(
     }
 
     let here = Pos::new(x, y, view_z);
+    if let Some(farm) = sim.farms.get(&here) {
+        let (tint, k) = match farm.state {
+            FarmState::Fallow => ([0.3, 0.4, 0.18], 0.4),
+            FarmState::Growing { .. } => ([0.25, 0.6, 0.2], 0.45),
+            FarmState::Grown => ([0.45, 0.9, 0.3], 0.55),
+        };
+        rgb = mix(rgb, tint, k);
+    }
+    if let Some(b) = sim.building_at(here) {
+        let tint = match b.kind {
+            BuildingKind::Still => [0.85, 0.5, 0.22],
+            BuildingKind::Kitchen => [0.8, 0.25, 0.2],
+        };
+        rgb = mix(rgb, tint, 0.6);
+    }
     if sim.designations.contains_key(&here) {
         rgb = mix(rgb, [1.0, 0.62, 0.12], 0.45);
     }
@@ -551,16 +676,30 @@ fn redraw_tiles(
     }
 }
 
-/// Keep pooled sprites in sync with dwarves and items on the visible z-level.
+fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
+    let lighten = |c: [u8; 3]| {
+        let l = |v: u8| (v as f32 / 255.0 * 1.3).min(1.0);
+        Color::srgb(l(c[0]), l(c[1]), l(c[2]))
+    };
+    match kind {
+        ItemKind::Boulder => lighten(raws.materials.get(stuff).color),
+        ItemKind::Seed | ItemKind::Crop => lighten(raws.plants.get(stuff).color),
+        ItemKind::Meal => Color::srgb(0.9, 0.62, 0.3),
+        ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
+    }
+}
+
 fn sync_agent_sprites(
     mut commands: Commands,
     sim: Res<SimRes>,
     reg: Res<Registry>,
     view_z: Res<ViewZ>,
     mut pools: ResMut<SpritePools>,
-    mut sprites: Query<(&mut Transform, &mut Sprite, &mut Visibility), Without<TileSprite>>,
+    mut sprites: Query<
+        (&mut Transform, &mut Sprite, &mut Visibility),
+        (Without<TileSprite>, Without<CursorSprite>),
+    >,
 ) {
-    // Grow pools as needed.
     while pools.dwarves.len() < sim.0.dwarves.len() {
         pools.dwarves.push(
             commands
@@ -595,7 +734,7 @@ fn sync_agent_sprites(
     for (i, &e) in pools.dwarves.iter().enumerate() {
         let Ok((mut tf, _, mut vis)) = sprites.get_mut(e) else { continue };
         match sim.0.dwarves.get(i) {
-            Some(d) if d.pos.z == view_z.0 => {
+            Some(d) if d.alive && d.pos.z == view_z.0 => {
                 tf.translation.x = d.pos.x as f32 * TILE;
                 tf.translation.y = d.pos.y as f32 * TILE;
                 *vis = Visibility::Visible;
@@ -606,13 +745,14 @@ fn sync_agent_sprites(
     for (i, &e) in pools.items.iter().enumerate() {
         let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
         match sim.0.items.get(i) {
-            // Carried items ride hidden inside their dwarf's sprite.
-            Some(it) if it.pos.z == view_z.0 && !matches!(it.state, ItemState::Carried { .. }) => {
+            Some(it)
+                if it.active()
+                    && it.pos.z == view_z.0
+                    && !matches!(it.state, ItemState::Carried { .. }) =>
+            {
                 tf.translation.x = it.pos.x as f32 * TILE;
                 tf.translation.y = it.pos.y as f32 * TILE;
-                let [r, g, b] = reg.0.get(it.material).color;
-                let l = |v: u8| (v as f32 / 255.0 * 1.3).min(1.0);
-                sprite.color = Color::srgb(l(r), l(g), l(b));
+                sprite.color = item_color(&reg.0, it.kind, it.stuff);
                 *vis = Visibility::Visible;
             }
             _ => *vis = Visibility::Hidden,
@@ -641,28 +781,70 @@ fn update_hud(
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let here = cursor.pos(view_z.0);
-    let under = match sim.0.map.tile_at(here) {
+    let mut under = match sim.0.map.tile_at(here) {
         Some(t) if t.shape != TileShape::Empty => {
-            format!("{} {}", reg.0.get(t.material).name, t.shape.name())
+            format!("{} {}", reg.0.materials.get(t.material).name, t.shape.name())
         }
         _ => "open air".to_string(),
     };
-    let dwarf_here = sim
-        .0
-        .dwarves
-        .iter()
-        .find(|d| d.pos == here)
-        .map(|d| format!("   {} ({})", d.name, d.task_name()))
-        .unwrap_or_default();
-    let item_here = sim
+    if let Some(farm) = sim.0.farms.get(&here) {
+        let plant = reg.0.plants.get(farm.crop);
+        under = format!(
+            "{under} · {} farm ({})",
+            plant.name,
+            match farm.state {
+                FarmState::Fallow => "fallow".to_string(),
+                FarmState::Growing { progress } => format!(
+                    "growing {}%",
+                    progress * 100 / (plant.grow_days * dk_core::TICKS_PER_DAY as u32).max(1)
+                ),
+                FarmState::Grown => "ready to harvest".to_string(),
+            }
+        );
+    }
+    if let Some(b) = sim.0.building_at(here) {
+        under = format!("{under} · {}", b.kind.name());
+    }
+    if let Some(it) = sim
         .0
         .items
         .iter()
-        .find(|i| i.pos == here && !matches!(i.state, ItemState::Carried { .. }))
-        .map(|i| format!("   {} boulder", reg.0.get(i.material).name))
+        .find(|i| i.active() && i.pos == here && !matches!(i.state, ItemState::Carried { .. }))
+    {
+        let what = match it.kind {
+            ItemKind::Boulder => format!("{} boulder", reg.0.materials.get(it.stuff).name),
+            ItemKind::Seed => format!("{} seeds", reg.0.plants.get(it.stuff).name),
+            ItemKind::Crop => reg.0.plants.get(it.stuff).name.clone(),
+            ItemKind::Meal => "prepared meal".to_string(),
+            ItemKind::Drink => "mug of drink".to_string(),
+        };
+        under = format!("{under} · {what}");
+    }
+
+    // Dwarf inspection panel.
+    let dwarf_panel = sim
+        .0
+        .dwarves
+        .iter()
+        .find(|d| d.alive && d.pos == here)
+        .map(|d| {
+            let mut s = format!(
+                "\n{} — {} · happiness {:.0} · hunger {:.0} thirst {:.0}",
+                d.name,
+                d.task_name(),
+                d.happiness,
+                d.hunger,
+                d.thirst
+            );
+            for (_, t) in d.thoughts.iter().rev().take(3) {
+                s.push_str(&format!("\n  · {} ({:+.0})", t.text(), t.delta()));
+            }
+            s
+        })
         .unwrap_or_default();
 
-    let idle = sim.0.dwarves.iter().filter(|d| d.is_idle()).count();
+    let alive = sim.0.alive_dwarves();
+    let idle = sim.0.dwarves.iter().filter(|d| d.alive && d.is_idle()).count();
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|d| d.smoothed())
@@ -680,29 +862,35 @@ fn update_hud(
 
     for mut text in &mut q {
         text.0 = format!(
-            "Dwarf Kingdom :: Phase 1 :: Dig & Haul\n\
-             z {} / {}   cursor ({}, {})   {}{}{}\n\
+            "Dwarf Kingdom :: Phase 2 :: Survive a Year\n\
+             z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   {}   {:.0} fps\n\
-             dwarves {} ({} idle)   jobs {}   boulders {} ({} stored)\n\
-             d:mine x:stairs p:stockpile c:cancel   space:pause 1/2/3:speed   [ ]:z   F5/F9:save/load   Q:quit{}",
+             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   jobs {}\n\
+             harvested {}   cooked {}   brewed {}   migrants {}\n\
+             d:mine x:stairs f:farm p:stockpile v:still k:kitchen c:cancel   space:pause 1/2/3:speed   [ ]:z   F5/F9:save/load   Q:quit{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
             cursor.y,
             under,
-            dwarf_here,
-            item_here,
             cal.year(),
             cal.season().name(),
             cal.day_of_season(),
             status,
             fps,
-            sim.0.dwarves.len(),
+            alive,
             idle,
+            sim.0.stats.deaths,
+            sim.0.count_kind(ItemKind::Meal),
+            sim.0.count_kind(ItemKind::Drink),
+            sim.0.count_kind(ItemKind::Crop),
             sim.0.pending_designations(),
-            sim.0.items.len(),
-            sim.0.stored_items(),
+            sim.0.stats.crops_harvested,
+            sim.0.stats.meals_cooked,
+            sim.0.stats.drinks_brewed,
+            sim.0.stats.migrants_arrived,
             mode_txt,
+            dwarf_panel,
         );
     }
 }
