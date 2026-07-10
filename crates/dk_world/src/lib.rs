@@ -42,7 +42,7 @@ impl Tile {
 
 /// Dense 3D tile map. Phase 0 keeps a flat vec; chunking arrives with
 /// dirty-region tracking in Phase 1.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Map {
     pub width: usize,
     pub height: usize,
@@ -90,27 +90,101 @@ impl Map {
         (0..self.depth).rev().find(|&z| self.get(x, y, z).is_solid())
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
+    /// Save with a versioned header and a material-id manifest so the save
+    /// survives raws edits (see BLUEPRINT.md §4.7 / hard-part #7).
+    pub fn save(&self, path: &Path, reg: &MaterialRegistry) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        let save = SaveFile {
+            magic: SAVE_MAGIC,
+            version: SAVE_VERSION,
+            material_ids: reg.id_manifest(),
+            map: self,
+        };
         let file = std::fs::File::create(path)
             .with_context(|| format!("creating {}", path.display()))?;
-        bincode::serialize_into(std::io::BufWriter::new(file), self)?;
+        bincode::serialize_into(std::io::BufWriter::new(file), &save)?;
         Ok(())
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
+    /// Load, validate invariants, and remap material indices from the save's
+    /// manifest to the currently loaded registry.
+    pub fn load(path: &Path, reg: &MaterialRegistry) -> Result<Self> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("opening {}", path.display()))?;
-        let map = bincode::deserialize_from(std::io::BufReader::new(file))?;
+        let save: SaveFileOwned =
+            bincode::deserialize_from(std::io::BufReader::new(file))
+                .with_context(|| format!("deserializing {}", path.display()))?;
+        anyhow::ensure!(save.magic == SAVE_MAGIC, "not a Dwarf Kingdom save file");
+        anyhow::ensure!(
+            save.version == SAVE_VERSION,
+            "save version {} unsupported (expected {})",
+            save.version,
+            SAVE_VERSION
+        );
+        let mut map = save.map;
+        anyhow::ensure!(
+            map.width > 0 && map.height > 0 && map.depth > 0,
+            "corrupt save: zero dimension"
+        );
+        anyhow::ensure!(
+            map.tiles.len() == map.width * map.height * map.depth,
+            "corrupt save: tile count {} does not match {}x{}x{}",
+            map.tiles.len(),
+            map.width,
+            map.height,
+            map.depth
+        );
+
+        // Old index -> current registry index, by material id.
+        let remap: Vec<u16> = save
+            .material_ids
+            .iter()
+            .map(|id| {
+                reg.index_of(id)
+                    .with_context(|| format!("save uses material '{id}' missing from current raws"))
+            })
+            .collect::<Result<_>>()?;
+        for tile in &mut map.tiles {
+            if tile.material != NO_MATERIAL {
+                let old = tile.material as usize;
+                anyhow::ensure!(old < remap.len(), "corrupt save: material index {old} out of range");
+                tile.material = remap[old];
+            }
+        }
         Ok(map)
     }
+}
+
+const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
+const SAVE_VERSION: u32 = 1;
+
+/// Borrowing writer-side view of the save payload.
+#[derive(Serialize)]
+struct SaveFile<'a> {
+    magic: u32,
+    version: u32,
+    material_ids: Vec<String>,
+    map: &'a Map,
+}
+
+#[derive(Deserialize)]
+struct SaveFileOwned {
+    magic: u32,
+    version: u32,
+    material_ids: Vec<String>,
+    map: Map,
 }
 
 /// Generate a Phase 0 local map: rolling surface, soil cover, sedimentary
 /// over igneous strata, ore veins scattered through the stone.
 pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64) -> Map {
+    // The strata/heightfield math below assumes room for soil + stone layers.
+    assert!(
+        width >= 16 && height >= 16 && depth >= 12,
+        "generate() requires at least a 16x16x12 map (got {width}x{height}x{depth})"
+    );
     let mut map = Map::new_air(width, height, depth, seed);
 
     let soils = reg.indices_in_category(MaterialCategory::Soil);
@@ -197,16 +271,71 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dk_raws::MaterialDef;
+
+    fn registry(ids: &[&str]) -> MaterialRegistry {
+        MaterialRegistry::from_defs(
+            ids.iter()
+                .map(|id| MaterialDef {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    category: MaterialCategory::Soil,
+                    color: [1, 2, 3],
+                    value: 1,
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join("dk_world_test").join(name)
+    }
 
     #[test]
     fn roundtrip_save_load() {
+        let reg = registry(&["dirt", "rock"]);
         let mut m = Map::new_air(4, 4, 4, 7);
-        m.set(1, 2, 3, Tile::solid(5));
-        let dir = std::env::temp_dir().join("dk_world_test");
-        let path = dir.join("map.bin");
-        m.save(&path).unwrap();
-        let loaded = Map::load(&path).unwrap();
-        assert_eq!(loaded.get(1, 2, 3).material, 5);
+        m.set(1, 2, 3, Tile::solid(1));
+        let path = temp_path("roundtrip.bin");
+        m.save(&path, &reg).unwrap();
+        let loaded = Map::load(&path, &reg).unwrap();
+        assert_eq!(loaded.get(1, 2, 3).material, 1);
         assert!(loaded.get(0, 0, 0).shape == TileShape::Empty);
     }
+
+    #[test]
+    fn load_remaps_material_indices_when_raws_change() {
+        let old_reg = registry(&["dirt", "rock"]);
+        let mut m = Map::new_air(4, 4, 4, 7);
+        m.set(1, 2, 3, Tile::solid(1)); // "rock" under the old registry
+        let path = temp_path("remap.bin");
+        m.save(&path, &old_reg).unwrap();
+
+        // A new material sorted first shifts every index.
+        let new_reg = registry(&["clay", "dirt", "rock"]);
+        let loaded = Map::load(&path, &new_reg).unwrap();
+        assert_eq!(loaded.get(1, 2, 3).material, new_reg.index_of("rock").unwrap());
+    }
+
+    #[test]
+    fn load_fails_when_material_removed() {
+        let old_reg = registry(&["dirt", "rock"]);
+        let m = Map::new_air(4, 4, 4, 7);
+        let path = temp_path("missing.bin");
+        m.save(&path, &old_reg).unwrap();
+
+        let new_reg = registry(&["dirt"]);
+        let err = Map::load(&path, &new_reg).unwrap_err().to_string();
+        assert!(err.contains("rock"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn load_rejects_garbage_file() {
+        let path = temp_path("garbage.bin");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"not a save").unwrap();
+        assert!(Map::load(&path, &registry(&["dirt"])).is_err());
+    }
 }
+

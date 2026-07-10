@@ -33,7 +33,22 @@ pub struct MaterialRegistry {
 }
 
 impl MaterialRegistry {
+    /// Build a registry from an in-memory list (used by tests and tools).
+    pub fn from_defs(materials: Vec<MaterialDef>) -> Result<Self> {
+        anyhow::ensure!(!materials.is_empty(), "no materials defined");
+        anyhow::ensure!(materials.len() < u16::MAX as usize, "too many materials");
+        let mut by_id = HashMap::new();
+        for (i, m) in materials.iter().enumerate() {
+            if by_id.insert(m.id.clone(), i as u16).is_some() {
+                anyhow::bail!("duplicate material id: {}", m.id);
+            }
+        }
+        Ok(Self { materials, by_id })
+    }
+
     /// Load every `.ron` file in a directory. Each file holds a `Vec<MaterialDef>`.
+    /// NOTE: indices are only stable while the raws are unchanged — anything
+    /// persisted must store material *ids* (or a manifest) and remap on load.
     pub fn load_dir(dir: &Path) -> Result<Self> {
         let mut materials: Vec<MaterialDef> = Vec::new();
         let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -42,7 +57,7 @@ impl MaterialRegistry {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "ron"))
             .collect();
-        entries.sort(); // deterministic load order => stable indices
+        entries.sort(); // deterministic load order
 
         for path in entries {
             let text = std::fs::read_to_string(&path)
@@ -51,16 +66,13 @@ impl MaterialRegistry {
                 .with_context(|| format!("parsing {}", path.display()))?;
             materials.append(&mut defs);
         }
-        anyhow::ensure!(!materials.is_empty(), "no materials found in {}", dir.display());
-        anyhow::ensure!(materials.len() < u16::MAX as usize, "too many materials");
+        Self::from_defs(materials)
+            .with_context(|| format!("loading materials from {}", dir.display()))
+    }
 
-        let mut by_id = HashMap::new();
-        for (i, m) in materials.iter().enumerate() {
-            if by_id.insert(m.id.clone(), i as u16).is_some() {
-                anyhow::bail!("duplicate material id: {}", m.id);
-            }
-        }
-        Ok(Self { materials, by_id })
+    /// Ordered list of material ids — the manifest embedded in save files.
+    pub fn id_manifest(&self) -> Vec<String> {
+        self.materials.iter().map(|m| m.id.clone()).collect()
     }
 
     pub fn get(&self, index: u16) -> &MaterialDef {

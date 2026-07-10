@@ -202,6 +202,7 @@ fn advance_clock(mut clock: ResMut<SimClock>) {
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
+    reg: Res<Registry>,
     mut repeat: ResMut<MoveRepeat>,
     mut cursor: ResMut<Cursor>,
     mut view_z: ResMut<ViewZ>,
@@ -272,15 +273,26 @@ fn handle_input(
 
     // Save / load.
     if keys.just_pressed(KeyCode::F5) {
-        match map.0.save(&save_path()) {
+        match map.0.save(&save_path(), &reg.0) {
             Ok(()) => info!("world saved to {}", save_path().display()),
             Err(e) => error!("save failed: {e:#}"),
         }
     }
     if keys.just_pressed(KeyCode::F9) {
-        match Map::load(&save_path()) {
+        match Map::load(&save_path(), &reg.0) {
+            // The tile-sprite grid is sized at startup, so a Phase 0 save must
+            // match the current map dimensions.
+            Ok(loaded) if (loaded.width, loaded.height, loaded.depth) != (MAP_W, MAP_H, MAP_D) => {
+                error!(
+                    "load failed: save is {}x{}x{}, this build expects {}x{}x{}",
+                    loaded.width, loaded.height, loaded.depth, MAP_W, MAP_H, MAP_D
+                );
+            }
             Ok(loaded) => {
                 map.0 = loaded;
+                cursor.x = cursor.x.min(MAP_W - 1);
+                cursor.y = cursor.y.min(MAP_H - 1);
+                view_z.0 = view_z.0.min(MAP_D - 1);
                 dirty.0 = true;
                 info!("world loaded from {}", save_path().display());
             }
