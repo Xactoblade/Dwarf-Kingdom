@@ -1,0 +1,4 @@
+/target
+/saves
+*.png
+.DS_Store

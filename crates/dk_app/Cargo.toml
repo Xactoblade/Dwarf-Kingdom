@@ -1,0 +1,12 @@
+[package]
+name = "dk_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dk_core = { path = "../dk_core" }
+dk_raws = { path = "../dk_raws" }
+dk_world = { path = "../dk_world" }
+bevy = "0.16"
+anyhow = { workspace = true }
+rand = { workspace = true }

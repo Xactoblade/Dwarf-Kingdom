@@ -1,0 +1,30 @@
+// Dwarf Kingdom material raws — Phase 0 set.
+// Colors are sRGB display colors; value is a relative trade multiplier.
+[
+    // --- Soils ---
+    MaterialDef(id: "loam",      name: "Loam",      category: Soil,        color: (121, 85, 58),   value: 1),
+    MaterialDef(id: "clay",      name: "Clay",      category: Soil,        color: (158, 101, 74),  value: 1),
+    MaterialDef(id: "sand",      name: "Sand",      category: Soil,        color: (194, 172, 118), value: 1),
+
+    // --- Sedimentary stone ---
+    MaterialDef(id: "sandstone", name: "Sandstone", category: Sedimentary, color: (176, 145, 97),  value: 1),
+    MaterialDef(id: "limestone", name: "Limestone", category: Sedimentary, color: (184, 178, 160), value: 1),
+    MaterialDef(id: "shale",     name: "Shale",     category: Sedimentary, color: (106, 110, 118), value: 1),
+    MaterialDef(id: "mudstone",  name: "Mudstone",  category: Sedimentary, color: (128, 112, 96),  value: 1),
+
+    // --- Igneous stone ---
+    MaterialDef(id: "granite",   name: "Granite",   category: Igneous,     color: (140, 130, 128), value: 1),
+    MaterialDef(id: "basalt",    name: "Basalt",    category: Igneous,     color: (72, 70, 74),    value: 1),
+    MaterialDef(id: "gabbro",    name: "Gabbro",    category: Igneous,     color: (88, 92, 88),    value: 1),
+
+    // --- Metamorphic stone ---
+    MaterialDef(id: "marble",    name: "Marble",    category: Metamorphic, color: (214, 210, 200), value: 2),
+    MaterialDef(id: "gneiss",    name: "Gneiss",    category: Metamorphic, color: (120, 108, 100), value: 1),
+
+    // --- Ores ---
+    MaterialDef(id: "hematite",  name: "Hematite",   category: Ore,        color: (155, 66, 58),   value: 8),
+    MaterialDef(id: "magnetite", name: "Magnetite",  category: Ore,        color: (60, 56, 66),    value: 8),
+    MaterialDef(id: "galena",    name: "Galena",     category: Ore,        color: (130, 134, 150), value: 10),
+    MaterialDef(id: "cassiterite", name: "Cassiterite", category: Ore,     color: (110, 90, 60),   value: 12),
+    MaterialDef(id: "native_gold", name: "Native Gold", category: Ore,     color: (222, 178, 62),  value: 30),
+]
