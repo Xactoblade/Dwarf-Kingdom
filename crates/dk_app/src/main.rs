@@ -1725,7 +1725,20 @@ fn update_hud(
         format!("speed {}", control.speed)
     };
     if sim.0.caravan.is_some() {
-        status.push_str("   CARAVAN VISITING — press r to trade");
+        status.push_str("   CARAVAN VISITING :: press r to trade");
+    }
+    if let Some(b) = sim.0.baron {
+        if let Some(d) = sim.0.dwarves.get(b) {
+            status.push_str(&format!("   baron: {}", d.name));
+        }
+    }
+    if let Some(m) = &sim.0.mandate {
+        let days_left = m.deadline.saturating_sub(sim.0.clock.tick) / dk_core::TICKS_PER_DAY;
+        status.push_str(&format!(
+            "   MANDATE: {} ({} days left)",
+            m.kind.describe(m.amount),
+            days_left
+        ));
     }
     let mode_txt = mode
         .0

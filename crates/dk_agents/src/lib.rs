@@ -310,6 +310,10 @@ pub enum ThoughtKind {
     ScaredBySiege,
     MadeArtifact,
     SawArtifact,
+    BecameBaron,
+    MandateMet,
+    Punished,
+    SawPunishment,
 }
 
 impl ThoughtKind {
@@ -331,6 +335,10 @@ impl ThoughtKind {
             ThoughtKind::ScaredBySiege => -5.0,
             ThoughtKind::MadeArtifact => 30.0,
             ThoughtKind::SawArtifact => 5.0,
+            ThoughtKind::BecameBaron => 15.0,
+            ThoughtKind::MandateMet => 6.0,
+            ThoughtKind::Punished => -15.0,
+            ThoughtKind::SawPunishment => -6.0,
         }
     }
 
@@ -355,6 +363,10 @@ impl ThoughtKind {
             ThoughtKind::ScaredBySiege => "was frightened by the siege",
             ThoughtKind::MadeArtifact => "created a legendary artifact!",
             ThoughtKind::SawArtifact => "admired a legendary artifact",
+            ThoughtKind::BecameBaron => "was elevated to the barony",
+            ThoughtKind::MandateMet => "saw their mandate fulfilled",
+            ThoughtKind::Punished => "was beaten for a failed mandate",
+            ThoughtKind::SawPunishment => "watched a comrade being punished",
         }
     }
 }
@@ -485,6 +497,9 @@ pub struct SimStats {
     pub drownings: u32,
     pub caravans_arrived: u32,
     pub trades_completed: u32,
+    pub boulders_mined: u32,
+    pub mandates_met: u32,
+    pub mandates_failed: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -496,6 +511,40 @@ pub enum PlayerAction {
     /// +1 up / -1 down through stairs.
     Climb(i32),
     Wait,
+}
+
+// ---------------------------------------------------------------- nobility
+
+/// Population at which the fort attracts a baron.
+pub const BARONY_AT: usize = 8;
+/// Days a mandate runs before it is judged.
+pub const MANDATE_DAYS: u64 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MandateKind {
+    CookMeals,
+    BrewDrinks,
+    MineBoulders,
+}
+
+impl MandateKind {
+    pub fn describe(self, amount: u32) -> String {
+        match self {
+            MandateKind::CookMeals => format!("{amount} meals be cooked"),
+            MandateKind::BrewDrinks => format!("{amount} drinks be brewed"),
+            MandateKind::MineBoulders => format!("{amount} boulders be mined"),
+        }
+    }
+}
+
+/// A baron's demand: produce `amount` of something before `deadline`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Mandate {
+    pub kind: MandateKind,
+    pub amount: u32,
+    pub deadline: u64,
+    /// Stat value when the mandate was issued (progress = current - baseline).
+    pub baseline: u32,
 }
 
 // ----------------------------------------------------------------- trade
@@ -581,6 +630,10 @@ pub struct Sim {
     /// Set when a hostile (not the fort) kills a trader — the caravan
     /// scatters but the civ blames the raiders, not you.
     trader_lost_to_raiders: bool,
+    /// The fort's baron (dwarf index), once population earns one.
+    pub baron: Option<usize>,
+    /// The baron's current demand.
+    pub mandate: Option<Mandate>,
     /// Rolling event log shown in the UI (tick, message).
     pub log: Vec<(u64, String)>,
     /// World setting: do raiding parties attack this fort?
@@ -665,6 +718,8 @@ impl Sim {
             caravan: None,
             trade_ban_until: 0,
             trader_lost_to_raiders: false,
+            baron: None,
+            mandate: None,
             log: Vec::new(),
             invasions: true,
             rng,
@@ -1349,6 +1404,11 @@ impl Sim {
         }
         self.tick_caravan();
 
+        // The barony: appointments, demands, and judgments (daily check).
+        if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
+            self.tick_nobility();
+        }
+
         // Season boundary: migrants, moods, and (later years) raiders.
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
             self.maybe_migrants(raws);
@@ -1456,6 +1516,137 @@ impl Sim {
                     FarmState::Growing { progress: next as u32 }
                 };
             }
+        }
+    }
+
+    /// Barons arrive with population, demand things, and punish failure.
+    fn tick_nobility(&mut self) {
+        // Appointment: the fort's happiest citizen takes the title.
+        if self.baron.is_none() && self.alive_dwarves() >= BARONY_AT {
+            let chosen = self
+                .dwarves
+                .iter()
+                .enumerate()
+                .filter(|(i, d)| {
+                    d.alive && d.faction == Faction::Fort && self.player != Some(*i)
+                })
+                .max_by(|(_, a), (_, b)| {
+                    a.happiness.partial_cmp(&b.happiness).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i);
+            if let Some(i) = chosen {
+                self.baron = Some(i);
+                let name = self.dwarves[i].name.clone();
+                self.push_thought(i, ThoughtKind::BecameBaron);
+                self.log_event(format!(
+                    "{name} has been elevated to baron of the fortress!"
+                ));
+            }
+            return;
+        }
+
+        // A dead baron holds no court.
+        if let Some(b) = self.baron {
+            if !self.dwarves[b].alive {
+                self.baron = None;
+                self.mandate = None;
+                return;
+            }
+        }
+        let Some(baron) = self.baron else { return };
+
+        match self.mandate {
+            None => {
+                // A new demand, colored by the baron's tastes.
+                let kind = match self.rng.gen_range(0..3) {
+                    0 => MandateKind::CookMeals,
+                    1 => MandateKind::BrewDrinks,
+                    _ => MandateKind::MineBoulders,
+                };
+                let amount = self.rng.gen_range(3..8u32);
+                let baseline = match kind {
+                    MandateKind::CookMeals => self.stats.meals_cooked,
+                    MandateKind::BrewDrinks => self.stats.drinks_brewed,
+                    MandateKind::MineBoulders => self.stats.boulders_mined,
+                };
+                let deadline = self.clock.tick + MANDATE_DAYS * TICKS_PER_DAY;
+                self.mandate = Some(Mandate { kind, amount, deadline, baseline });
+                let name = self.dwarves[baron].name.clone();
+                self.log_event(format!(
+                    "Baron {name} demands that {} within {MANDATE_DAYS} days!",
+                    kind.describe(amount)
+                ));
+            }
+            Some(m) => {
+                let progress = match m.kind {
+                    MandateKind::CookMeals => self.stats.meals_cooked - m.baseline,
+                    MandateKind::BrewDrinks => self.stats.drinks_brewed - m.baseline,
+                    MandateKind::MineBoulders => self.stats.boulders_mined - m.baseline,
+                };
+                if progress >= m.amount {
+                    self.mandate = None;
+                    self.stats.mandates_met += 1;
+                    self.push_thought(baron, ThoughtKind::MandateMet);
+                    let name = self.dwarves[baron].name.clone();
+                    self.log_event(format!("Baron {name}'s mandate has been fulfilled."));
+                } else if self.clock.tick >= m.deadline {
+                    self.mandate = None;
+                    self.stats.mandates_failed += 1;
+                    self.punish_for_mandate(baron, m);
+                }
+            }
+        }
+    }
+
+    /// Justice, of a sort: some poor soul answers for the shortfall.
+    fn punish_for_mandate(&mut self, baron: usize, m: Mandate) {
+        let candidates: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(i, d)| {
+                *i != baron
+                    && d.alive
+                    && d.faction == Faction::Fort
+                    && self.player != Some(*i)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let baron_name = self.dwarves[baron].name.clone();
+        let Some(&culprit) = candidates
+            .get(self.rng.gen_range(0..candidates.len().max(1)))
+            .or(candidates.first())
+        else {
+            self.log_event(format!(
+                "Baron {baron_name}'s mandate ({}) went unmet, but there was no one to blame.",
+                m.kind.describe(m.amount)
+            ));
+            return;
+        };
+        // A beating: bruised, shamed, and stressed — but never maimed.
+        let name = self.dwarves[culprit].name.clone();
+        if let Some(part) = self.dwarves[culprit]
+            .body
+            .iter_mut()
+            .find(|p| !p.kind.vital() && p.hp > 6)
+        {
+            part.hp -= 5;
+        }
+        self.push_thought(culprit, ThoughtKind::Punished);
+        self.log_event(format!(
+            "The mandate went unmet: {name} is beaten on baron {baron_name}'s order."
+        ));
+        let witnesses: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(i, d)| {
+                *i != culprit && *i != baron && d.alive && d.faction == Faction::Fort
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for w in witnesses {
+            self.push_thought(w, ThoughtKind::SawPunishment);
         }
     }
 
@@ -3064,6 +3255,7 @@ impl Sim {
                 target
             };
             self.spawn_item(ItemKind::Boulder, boulder_from.material, drop_at);
+            self.stats.boulders_mined += 1;
         }
         self.add_xp(i, Skill::Mining, 20);
         self.dwarves[i].task = Task::Idle { wander_cd: 2 };
@@ -3161,7 +3353,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 11;
+const SAVE_VERSION: u32 = 12;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
