@@ -388,6 +388,22 @@ pub struct SimStats {
     pub drownings: u32,
 }
 
+// ---------------------------------------------------------------- sieges
+
+/// A named enemy supplied by world history: sieges are led by figures the
+/// player can look up in Legends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiegeLeader {
+    pub name: String,
+    pub grudge: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiegeRoster {
+    pub civ_name: String,
+    pub leaders: Vec<SiegeLeader>,
+}
+
 // --------------------------------------------------------------------- sim
 
 #[derive(Serialize, Deserialize)]
@@ -402,6 +418,8 @@ pub struct Sim {
     pub stats: SimStats,
     pub clock: Calendar,
     pub water: WaterSim,
+    /// Who attacks this fort and why — wired from world history at embark.
+    pub siege_roster: Option<SiegeRoster>,
     /// Rolling event log shown in the UI (tick, message).
     pub log: Vec<(u64, String)>,
     /// World setting: do raiding parties attack this fort?
@@ -474,6 +492,7 @@ impl Sim {
             stats: SimStats::default(),
             clock: Calendar::default(),
             water,
+            siege_roster: None,
             log: Vec::new(),
             invasions: true,
             rng,
@@ -942,7 +961,35 @@ impl Sim {
             }
         }
         if spawned > 0 {
-            self.log_event(format!("A raiding party of {spawned} has arrived!"));
+            // The party is led by a figure from world history when we have
+            // one — their grudge is the reason this is happening.
+            let led = self.siege_roster.as_mut().and_then(|r| {
+                if r.leaders.is_empty() {
+                    None
+                } else {
+                    Some((r.civ_name.clone(), r.leaders.remove(0)))
+                }
+            });
+            match led {
+                Some((civ, leader)) => {
+                    // The last-spawned raider bears the historical name.
+                    if let Some(d) = self
+                        .dwarves
+                        .iter_mut()
+                        .rev()
+                        .find(|d| d.alive && d.faction == Faction::Hostile)
+                    {
+                        d.name = leader.name.clone();
+                    }
+                    self.log_event(format!(
+                        "{} of {} leads a raiding party of {spawned} — they {}!",
+                        leader.name, civ, leader.grudge
+                    ));
+                }
+                None => {
+                    self.log_event(format!("A raiding party of {spawned} has arrived!"));
+                }
+            }
         }
     }
 
@@ -2069,7 +2116,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction) -> Dwarf {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 5;
+const SAVE_VERSION: u32 = 6;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

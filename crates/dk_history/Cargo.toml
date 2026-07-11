@@ -1,0 +1,10 @@
+[package]
+name = "dk_history"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dk_core = { path = "../dk_core" }
+serde = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }

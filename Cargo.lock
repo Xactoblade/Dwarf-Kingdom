@@ -1869,6 +1869,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "dk_core",
+ "dk_history",
  "dk_raws",
  "dk_sim",
  "dk_world",
@@ -1885,6 +1886,7 @@ dependencies = [
  "bevy",
  "dk_agents",
  "dk_core",
+ "dk_history",
  "dk_raws",
  "dk_world",
  "rand",
@@ -1894,6 +1896,16 @@ dependencies = [
 name = "dk_core"
 version = "0.1.0"
 dependencies = [
+ "rand",
+ "rand_chacha",
+ "serde",
+]
+
+[[package]]
+name = "dk_history"
+version = "0.1.0"
+dependencies = [
+ "dk_core",
  "rand",
  "rand_chacha",
  "serde",

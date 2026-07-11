@@ -24,8 +24,9 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
-    Sim,
+    SiegeLeader, SiegeRoster, Sim,
 };
+use dk_history::World;
 use dk_raws::Raws;
 use dk_world::path::Pos;
 use dk_world::TileShape;
@@ -37,14 +38,33 @@ const MAP_H: usize = 96;
 const MAP_D: usize = 32;
 const WORLD_SEED: u64 = 20260710;
 const DWARF_COUNT: usize = 7;
+/// Overworld regions (rendered 2x on the 96x96 tile grid).
+const OW: usize = 48;
+const HISTORY_YEARS: u32 = 80;
 
 // ---------------------------------------------------------------- resources
 
 #[derive(Resource)]
 struct Registry(Raws);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Embark,
+    Playing,
+    Legends,
+}
+
 #[derive(Resource)]
-struct SimRes(Sim);
+struct ScreenRes(Screen);
+
+#[derive(Resource)]
+struct WorldRes(World);
+
+#[derive(Resource, Default)]
+struct LegendsScroll(usize);
+
+#[derive(Resource)]
+struct SimRes(Option<Sim>);
 
 #[derive(Resource)]
 struct ViewZ(i32);
@@ -129,6 +149,11 @@ struct CursorSprite;
 #[derive(Component)]
 struct HudText;
 
+/// Borrow shims so system bodies written against `SimRes(Sim)` (field access
+/// via `.0`) keep working now that SimRes holds an Option.
+struct SimRef<'a>(&'a Sim);
+struct SimMut<'a>(&'a mut Sim);
+
 // ---------------------------------------------------------------- setup
 
 fn data_dir() -> PathBuf {
@@ -152,18 +177,65 @@ fn screenshot_mode_on() -> bool {
     std::env::var_os("DK_SCREENSHOT").is_some()
 }
 
+/// Build the fortress sim for a chosen overworld region.
+fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
+    // Each region is its own deterministic local map.
+    let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
+    let mut rng = dk_core::rng_from_seed(seed);
+    let map = dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed);
+    let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
+    sim.add_embark_supplies(raws);
+    // Wire the nearest hostile civ's grudge-bearers as siege leaders.
+    if let Some(civ) = world.nearest_hostile_civ(region.0, region.1) {
+        sim.siege_roster = Some(SiegeRoster {
+            civ_name: civ.name.clone(),
+            leaders: world
+                .siege_leaders(civ.id)
+                .into_iter()
+                .map(|f| SiegeLeader {
+                    name: f.name.clone(),
+                    grudge: f.grudges.last().map(|(_, g)| g.clone()).unwrap_or_default(),
+                })
+                .collect(),
+        });
+    }
+    sim
+}
+
+/// Nearest embarkable region to the world's center (screenshot auto-embark).
+fn default_region(world: &World) -> (usize, usize) {
+    let (cx, cy) = (OW / 2, OW / 2);
+    let mut best = (cx, cy);
+    let mut best_d = usize::MAX;
+    for y in 0..OW {
+        for x in 0..OW {
+            if world.overworld.get(x, y).biome.embarkable() {
+                let d = x.abs_diff(cx) + y.abs_diff(cy);
+                if d < best_d {
+                    best_d = d;
+                    best = (x, y);
+                }
+            }
+        }
+    }
+    best
+}
+
 fn main() {
     let raws = Raws::load(&data_dir()).expect("failed to load raws");
-    let mut rng = dk_core::rng_from_seed(WORLD_SEED);
-    let map = dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, WORLD_SEED);
-    let mut sim = Sim::new(map, &raws, rng, DWARF_COUNT);
-    sim.add_embark_supplies(&raws);
-    if screenshot_mode_on() {
+    let world = World::generate(WORLD_SEED, OW, OW, HISTORY_YEARS);
+    // DK_SHOT_SCREEN=embark verifies the embark map instead of the fort.
+    let shot_embark = std::env::var("DK_SHOT_SCREEN").is_ok_and(|v| v == "embark");
+    let (screen, sim) = if screenshot_mode_on() && !shot_embark {
+        let mut sim = embark(&world, &raws, default_region(&world));
         demo_scenario(&mut sim, &raws);
-    }
+        (Screen::Playing, Some(sim))
+    } else {
+        (Screen::Embark, None)
+    };
     let start_z = sim
-        .map
-        .walk_surface_z(MAP_W / 2, MAP_H / 2)
+        .as_ref()
+        .and_then(|s| s.map.walk_surface_z(MAP_W / 2, MAP_H / 2))
         .unwrap_or(MAP_D / 2) as i32;
     let sim_hz = if screenshot_mode_on() { 180.0 } else { dk_core::SIM_HZ };
 
@@ -194,6 +266,9 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.04, 0.04, 0.06)))
         .insert_resource(Time::<Fixed>::from_hz(sim_hz))
         .insert_resource(Registry(raws))
+        .insert_resource(WorldRes(world))
+        .insert_resource(ScreenRes(screen))
+        .insert_resource(LegendsScroll(0))
         .insert_resource(SimRes(sim))
         .insert_resource(ViewZ(start_z))
         .insert_resource(Cursor { x: MAP_W as i32 / 2, y: MAP_H as i32 / 2 })
@@ -315,14 +390,17 @@ fn run_sim(
     mut sim: ResMut<SimRes>,
     reg: Res<Registry>,
     control: Res<SimControl>,
+    screen: Res<ScreenRes>,
     mut dirty: ResMut<MapDirty>,
 ) {
-    if control.paused {
+    // The fortress keeps living while you read Legends; only Embark pauses it.
+    if control.paused || screen.0 == Screen::Embark {
         return;
     }
-    sim.0.step(&reg.0);
-    if sim.0.map_changed {
-        sim.0.map_changed = false;
+    let Some(sim) = sim.0.as_mut() else { return };
+    sim.step(&reg.0);
+    if sim.map_changed {
+        sim.map_changed = false;
         dirty.0 = true;
     }
 }
@@ -397,6 +475,9 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     reg: Res<Registry>,
+    world: Res<WorldRes>,
+    mut screen: ResMut<ScreenRes>,
+    mut scroll: ResMut<LegendsScroll>,
     mut repeat: ResMut<MoveRepeat>,
     mut cursor: ResMut<Cursor>,
     mut view_z: ResMut<ViewZ>,
@@ -408,6 +489,91 @@ fn handle_input(
     mut camera: Query<&mut Transform, With<Camera2d>>,
     mut exit: EventWriter<AppExit>,
 ) {
+    // ---- Legends screen: scroll and close.
+    if screen.0 == Screen::Legends {
+        if keys.just_pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::ArrowDown) && repeat.0.just_finished() {
+            scroll.0 = (scroll.0 + 1).min(world.0.legends_lines().len().saturating_sub(1));
+        }
+        if keys.just_pressed(KeyCode::ArrowUp) {
+            scroll.0 = scroll.0.saturating_sub(1);
+        }
+        if keys.just_pressed(KeyCode::PageDown) {
+            scroll.0 = (scroll.0 + 25).min(world.0.legends_lines().len().saturating_sub(1));
+        }
+        if keys.just_pressed(KeyCode::PageUp) {
+            scroll.0 = scroll.0.saturating_sub(25);
+        }
+        if keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::Escape) {
+            screen.0 = if sim.0.is_some() { Screen::Playing } else { Screen::Embark };
+            dirty.0 = true;
+        }
+        if keys.just_pressed(KeyCode::KeyQ) {
+            exit.write(AppExit::Success);
+        }
+        repeat.0.tick(time.delta());
+        return;
+    }
+
+    // ---- Embark screen: pick a region and found the fortress.
+    if screen.0 == Screen::Embark {
+        repeat.0.tick(time.delta());
+        let step_ok = repeat.0.just_finished();
+        let mut dx = 0i32;
+        let mut dy = 0i32;
+        for ((mx, my), key) in [
+            ((-2i32, 0i32), KeyCode::ArrowLeft),
+            ((2, 0), KeyCode::ArrowRight),
+            ((0, 2), KeyCode::ArrowUp),
+            ((0, -2), KeyCode::ArrowDown),
+        ] {
+            if keys.just_pressed(key) || (keys.pressed(key) && step_ok) {
+                dx += mx;
+                dy += my;
+            }
+        }
+        if dx != 0 || dy != 0 {
+            cursor.x = (cursor.x + dx).clamp(0, MAP_W as i32 - 1);
+            cursor.y = (cursor.y + dy).clamp(0, MAP_H as i32 - 1);
+        }
+        if keys.just_pressed(KeyCode::KeyY) {
+            screen.0 = Screen::Legends;
+            dirty.0 = true;
+            return;
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+            if world.0.overworld.get(region.0, region.1).biome.embarkable() {
+                let new_sim = embark(&world.0, &reg.0, region);
+                let start_z = new_sim
+                    .map
+                    .walk_surface_z(MAP_W / 2, MAP_H / 2)
+                    .unwrap_or(MAP_D / 2) as i32;
+                sim.0 = Some(new_sim);
+                view_z.0 = start_z;
+                cursor.x = MAP_W as i32 / 2;
+                cursor.y = MAP_H as i32 / 2;
+                screen.0 = Screen::Playing;
+                dirty.0 = true;
+            }
+        }
+        if keys.just_pressed(KeyCode::KeyQ) {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+
+    // ---- Playing.
+    if keys.just_pressed(KeyCode::KeyY) {
+        screen.0 = Screen::Legends;
+        scroll.0 = 0;
+        dirty.0 = true;
+        return;
+    }
+    let Some(sim_inner) = sim.0.as_mut() else { return };
+    // The rest of this system was written against `sim.0.<field>` when
+    // SimRes held a bare Sim; keep that shape via a local binding.
+    let mut sim = SimMut(sim_inner);
+
     // Cursor movement with hold-to-repeat.
     repeat.0.tick(time.delta());
     let step_ok = repeat.0.just_finished();
@@ -586,7 +752,7 @@ fn handle_input(
                 );
             }
             Ok(loaded) => {
-                sim.0 = loaded;
+                *sim.0 = loaded;
                 cursor.x = cursor.x.min(MAP_W as i32 - 1);
                 cursor.y = cursor.y.min(MAP_H as i32 - 1);
                 view_z.0 = view_z.0.min(MAP_D as i32 - 1);
@@ -693,6 +859,8 @@ fn redraw_tiles(
     mut dirty: ResMut<MapDirty>,
     sim: Res<SimRes>,
     reg: Res<Registry>,
+    world: Res<WorldRes>,
+    screen: Res<ScreenRes>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
     mode: Res<UiMode>,
@@ -702,9 +870,25 @@ fn redraw_tiles(
         return;
     }
     dirty.0 = false;
+    if screen.0 == Screen::Embark {
+        // The 48x48 overworld fills the 96x96 grid at 2x scale.
+        for (ts, mut sprite) in &mut tiles {
+            let (rx, ry) = (ts.x / 2, ts.y / 2);
+            let region = world.0.overworld.get(rx.min(OW - 1), ry.min(OW - 1));
+            let [r, g, b] = region.biome.color();
+            let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+            // Mark civilization sites as bright dots.
+            if world.0.sites.iter().any(|st| st.region == (rx, ry) && !st.ruined) {
+                rgb = [0.95, 0.9, 0.5];
+            }
+            sprite.color = Color::srgb(rgb[0], rgb[1], rgb[2]);
+        }
+        return;
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
     let selection = mode.0.map(|(_, anchor)| (anchor, cursor.pos(view_z.0)));
     for (ts, mut sprite) in &mut tiles {
-        sprite.color = tile_color(&sim.0, &reg.0, ts.x as i32, ts.y as i32, view_z.0, selection);
+        sprite.color = tile_color(sim, &reg.0, ts.x as i32, ts.y as i32, view_z.0, selection);
     }
 }
 
@@ -725,6 +909,7 @@ fn sync_agent_sprites(
     mut commands: Commands,
     sim: Res<SimRes>,
     reg: Res<Registry>,
+    screen: Res<ScreenRes>,
     view_z: Res<ViewZ>,
     mut pools: ResMut<SpritePools>,
     mut sprites: Query<
@@ -732,6 +917,17 @@ fn sync_agent_sprites(
         (Without<TileSprite>, Without<CursorSprite>),
     >,
 ) {
+    // On the embark map there are no creatures to draw.
+    if screen.0 == Screen::Embark {
+        for &e in pools.dwarves.iter().chain(pools.items.iter()) {
+            if let Ok((_, _, mut vis)) = sprites.get_mut(e) {
+                *vis = Visibility::Hidden;
+            }
+        }
+        return;
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
+    let sim = SimRef(sim);
     while pools.dwarves.len() < sim.0.dwarves.len() {
         pools.dwarves.push(
             commands
@@ -809,6 +1005,9 @@ fn position_cursor_sprite(
 fn update_hud(
     sim: Res<SimRes>,
     reg: Res<Registry>,
+    world: Res<WorldRes>,
+    screen: Res<ScreenRes>,
+    scroll: Res<LegendsScroll>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
     control: Res<SimControl>,
@@ -816,6 +1015,69 @@ fn update_hud(
     diagnostics: Res<DiagnosticsStore>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
+    match screen.0 {
+        Screen::Embark => {
+            let (rx, ry) = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+            let region = world.0.overworld.get(rx, ry);
+            let site = world
+                .0
+                .sites
+                .iter()
+                .find(|st| st.region == (rx, ry) && !st.ruined)
+                .map(|st| {
+                    format!("   here: {} ({})", st.name, world.0.civs[st.civ].name)
+                })
+                .unwrap_or_default();
+            let enemy = world
+                .0
+                .nearest_hostile_civ(rx, ry)
+                .map(|c| format!("nearest threat: {} of the {}", c.name, c.race.name()))
+                .unwrap_or_default();
+            let ok = if region.biome.embarkable() { "Enter: embark here" } else { "cannot embark on ocean" };
+            for mut text in &mut q {
+                text.0 = format!(
+                    "Dwarf Kingdom :: Choose your embark\n\
+                     {} years of history · {} civilizations · {} sites · {} named figures\n\
+                     region ({}, {}) — {}{}\n\
+                     {}\n\
+                     arrows/click: move   y: read the Legends   {}",
+                    world.0.years_simulated,
+                    world.0.civs.len(),
+                    world.0.sites.len(),
+                    world.0.figures.len(),
+                    rx,
+                    ry,
+                    region.biome.name(),
+                    site,
+                    enemy,
+                    ok,
+                );
+            }
+            return;
+        }
+        Screen::Legends => {
+            let lines = world.0.legends_lines();
+            let page = 30usize;
+            let top = scroll.0.min(lines.len().saturating_sub(1));
+            let body: String = lines
+                .iter()
+                .skip(top)
+                .take(page)
+                .map(|l| format!("\n{l}"))
+                .collect();
+            for mut text in &mut q {
+                text.0 = format!(
+                    "Dwarf Kingdom :: Legends — {} recorded events (up/down to scroll, y/Esc to close)\n{}",
+                    lines.len(),
+                    body
+                );
+            }
+            return;
+        }
+        Screen::Playing => {}
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
+    let sim = SimRef(sim);
     let here = cursor.pos(view_z.0);
     let mut under = match sim.0.map.tile_at(here) {
         Some(t) if t.shape != TileShape::Empty => {

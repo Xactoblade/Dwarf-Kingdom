@@ -8,6 +8,7 @@ dk_core = { path = "../dk_core" }
 dk_raws = { path = "../dk_raws" }
 dk_world = { path = "../dk_world" }
 dk_agents = { path = "../dk_agents" }
+dk_history = { path = "../dk_history" }
 bevy = "0.16"
 anyhow = { workspace = true }
 rand = { workspace = true }

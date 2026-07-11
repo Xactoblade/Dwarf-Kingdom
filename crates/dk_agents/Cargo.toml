@@ -13,3 +13,6 @@ bincode = { workspace = true }
 anyhow = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+
+[dev-dependencies]
+dk_history = { path = "../dk_history" }

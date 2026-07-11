@@ -6,7 +6,7 @@ and physics-driven stories of triumph and collapse.
 
 Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 
-## Status: Phase 3 — Blood & Water
+## Status: Phase 4 — A World Outside
 
 - [x] Phase 0: workspace, data-driven raws, world gen, z-level renderer, sim clock
 - [x] Phase 1: agents, mine/stairs designations, A* + region-gated jobs,
@@ -23,6 +23,16 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
       rest-healing for the wounded
 - [x] Headless exit tests: raiders lured into a kill chamber, sealed in by
       floodgate, drowned by lever; a 3v1 brawl won, wounds healed by rest
+- [x] Overworld: biomes from elevation/temperature/rainfall, rendered as an
+      embark map with civilization sites
+- [x] History: civilizations of four races simulate 80 years — sites founded,
+      raids fought, named figures earning kills and swearing grudges
+- [x] Embark screen: pick your region; each region is its own deterministic
+      local map, and the nearest goblin civ becomes your enemy
+- [x] Named sieges: raiding parties are led by historical figures whose
+      grudge against you is readable in the Legends viewer (press `y`)
+- [x] Headless exit tests: a siege leader's name and personal grudge are
+      findable in Legends; different seeds breed different worlds and enemies
 
 ## Run
 
@@ -33,6 +43,8 @@ cargo run -p dk_app
 | Key | Action |
 |---|---|
 | Mouse | Left-click: move cursor · wheel: zoom · right-drag: pan |
+| Enter | (Embark screen) found the fortress at the cursor's region |
+| `y` | Open/close the Legends viewer (world history) |
 | Arrow keys | Move cursor (tile/dwarf info in HUD) |
 | `[` / `]` | Z-level down / up |
 | `d` / `x` / `h` | Designate mine / stairs / channel (press to anchor, again to apply) |
