@@ -197,8 +197,16 @@ impl WaterSim {
             if base >= MAX_WATER {
                 continue; // saturated; nothing to level
             }
+            // Sub-1-average sheets are the spread pass's job: leveling them
+            // would teleport every unit to the head of the sort order each
+            // step, walking puddles across the map.
+            if base == 0 {
+                continue;
+            }
             let mut rem = (total as usize).saturating_sub(base as usize * body.len());
-            body.sort();
+            // Remainder goes to the currently wettest tiles (then position,
+            // for determinism) so water stays where it was poured.
+            body.sort_by_key(|&p| (std::cmp::Reverse(map.water_at(p)), p));
             for &p in &body {
                 let target = if rem > 0 && base < MAX_WATER {
                     rem -= 1;
@@ -346,6 +354,31 @@ mod tests {
 mod leveling_tests {
     use super::*;
     use dk_world::Tile;
+
+    /// Regression: a shallow puddle must settle in place, not crawl toward
+    /// the lexicographically smallest tiles of its body.
+    #[test]
+    fn puddles_do_not_wander() {
+        let mut m = Map::new_air(12, 12, 3, 0);
+        for y in 0..12 {
+            for x in 0..12 {
+                m.set(x, y, 0, Tile::solid(0));
+                m.set(x, y, 1, Tile::floor(0));
+            }
+        }
+        m.set_water(Pos::new(6, 6, 1), 1);
+        let mut sim = WaterSim::default();
+        sim.wake_all(&m);
+        for _ in 0..300 {
+            sim.step(&mut m);
+        }
+        assert_eq!(total_water(&m), 1);
+        assert_eq!(
+            m.water_at(Pos::new(6, 6, 1)),
+            1,
+            "a lone unit of water must stay where it was poured"
+        );
+    }
 
     /// A 1-wide channel: tank of full water at one end, long dry run.
     #[test]

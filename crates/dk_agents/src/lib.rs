@@ -521,6 +521,11 @@ impl Sim {
                         tile.shape.is_walkable() && below_solid
                     }
                 };
+                // Never dig away a tile that carries a building (an open
+                // floodgate is a plain Floor, but its Building persists).
+                if self.building_at(p).is_some() {
+                    continue;
+                }
                 if workable && !self.designations.contains_key(&p) {
                     self.designations
                         .insert(p, Designation { kind, assigned: false, retry_at: 0 });
@@ -590,13 +595,43 @@ impl Sim {
             // Floodgates start closed: the tile becomes a barrier.
             let tile = self.map.tile_at(pos).unwrap();
             self.map
-                .set_at(pos, Tile { material: tile.material, shape: TileShape::Gate, water: tile.water });
+                .set_at(pos, Tile { material: tile.material, shape: TileShape::Gate, water: 0 });
+            self.displace_water(pos, tile.water);
             self.regions.dirty = true;
             self.map_changed = true;
             self.water.wake(pos);
         }
         self.buildings.push(Building { kind, pos });
         true
+    }
+
+    /// Push water squeezed out of a closing gate into neighboring tiles
+    /// with capacity (any that can't fit is crushed out of existence).
+    fn displace_water(&mut self, from: Pos, mut units: u8) {
+        if units == 0 {
+            return;
+        }
+        let neighbors = [
+            Pos::new(from.x + 1, from.y, from.z),
+            Pos::new(from.x - 1, from.y, from.z),
+            Pos::new(from.x, from.y + 1, from.z),
+            Pos::new(from.x, from.y - 1, from.z),
+            Pos::new(from.x, from.y, from.z + 1),
+        ];
+        for q in neighbors {
+            if units == 0 {
+                break;
+            }
+            let Some(t) = self.map.tile_at(q) else { continue };
+            if !t.holds_water() || t.water >= dk_world::MAX_WATER {
+                continue;
+            }
+            let space = dk_world::MAX_WATER - t.water;
+            let moved = units.min(space);
+            self.map.set_water(q, t.water + moved);
+            units -= moved;
+            self.water.wake(q);
+        }
     }
 
     /// Place a lever linked to the nearest floodgate. Returns the linked
@@ -633,8 +668,14 @@ impl Sim {
             TileShape::Floor => TileShape::Gate,
             _ => return false,
         };
+        // Closing squeezes standing water out into the neighbors; a Gate
+        // tile is skipped by the water CA, so it must never hold any.
+        let kept_water = if new_shape == TileShape::Gate { 0 } else { tile.water };
         self.map
-            .set_at(pos, Tile { material: tile.material, shape: new_shape, water: tile.water });
+            .set_at(pos, Tile { material: tile.material, shape: new_shape, water: kept_water });
+        if new_shape == TileShape::Gate {
+            self.displace_water(pos, tile.water);
+        }
         self.regions.dirty = true;
         self.map_changed = true;
         self.water.wake(pos);
@@ -861,7 +902,9 @@ impl Sim {
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
             self.maybe_migrants(raws);
             let seasons_elapsed = self.clock.tick / season_ticks;
-            if self.invasions && seasons_elapsed >= 2 {
+            // Cap active hostiles so stuck raiders don't accumulate season
+            // over season into an unbounded horde.
+            if self.invasions && seasons_elapsed >= 2 && self.alive_hostiles() < 8 {
                 let wealth = self.items.iter().filter(|i| i.active()).count();
                 let n = (1 + wealth / 150).min(5);
                 self.spawn_raiders(n);
@@ -933,7 +976,12 @@ impl Sim {
         if food < alive || drink < alive {
             return; // word gets out that the fort is starving (or dry)
         }
-        let Some(anchor) = self.dwarves.iter().find(|d| d.alive).map(|d| d.pos) else {
+        let Some(anchor) = self
+            .dwarves
+            .iter()
+            .find(|d| d.alive && d.faction == Faction::Fort)
+            .map(|d| d.pos)
+        else {
             return;
         };
         let anchor_region = self.regions.id(anchor);
@@ -1622,15 +1670,22 @@ impl Sim {
                 path.clear();
             }
         } else if self.dwarves[i].move_cd == 0 {
-            // No path (walls, moats): press greedily toward the target.
+            // No path (walls, moats): press greedily toward the target, and
+            // when pinned against a wall face, prowl to a random neighbor so
+            // the raider keeps probing instead of freezing forever.
             let goal = self.dwarves[target].pos;
             let mut opts = Vec::with_capacity(8);
             path::neighbors(&self.map, my_pos, &mut opts);
-            if let Some(&next) = opts.iter().min_by_key(|q| q.manhattan(goal)) {
-                if next.manhattan(goal) < my_pos.manhattan(goal) {
-                    self.dwarves[i].pos = next;
-                    self.dwarves[i].move_cd = WALK_COOLDOWN;
+            let step = match opts.iter().min_by_key(|q| q.manhattan(goal)) {
+                Some(&next) if next.manhattan(goal) < my_pos.manhattan(goal) => Some(next),
+                _ if !opts.is_empty() && self.rng.gen_ratio(1, 8) => {
+                    Some(opts[self.rng.gen_range(0..opts.len())])
                 }
+                _ => None,
+            };
+            if let Some(next) = step {
+                self.dwarves[i].pos = next;
+                self.dwarves[i].move_cd = WALK_COOLDOWN;
             }
         } else {
             self.dwarves[i].move_cd -= 1;
@@ -1640,11 +1695,14 @@ impl Sim {
 
     fn adjacent_enemy(&self, i: usize) -> Option<usize> {
         let me = &self.dwarves[i];
+        // Same z-level only — a full-3D distance would let creatures brawl
+        // through solid floors (movement between z-levels is always an
+        // explicit stair/ramp edge).
         self.dwarves
             .iter()
             .enumerate()
-            .filter(|(_, d)| d.alive && d.faction != me.faction)
-            .find(|(_, d)| d.pos.manhattan(me.pos) <= 1)
+            .filter(|(_, d)| d.alive && d.faction != me.faction && d.pos.z == me.pos.z)
+            .find(|(_, d)| d.pos.x.abs_diff(me.pos.x) + d.pos.y.abs_diff(me.pos.y) <= 1)
             .map(|(j, _)| j)
     }
 
@@ -1729,10 +1787,17 @@ impl Sim {
         let bled_out = d.blood <= 0.0;
 
         if drowned {
-            self.stats.drownings += 1;
+            // HUD semantics: drownings counts raiders killed by floods.
+            if self.dwarves[i].faction == Faction::Hostile {
+                self.stats.drownings += 1;
+            }
             self.log_event(format!("{name} has drowned."));
             self.kill_dwarf(i);
         } else if bled_out {
+            // Bleed-out is still a kill for the scoreboard.
+            if self.dwarves[i].faction == Faction::Hostile {
+                self.stats.raiders_slain += 1;
+            }
             self.log_event(format!("{name} has bled out."));
             self.kill_dwarf(i);
         }
@@ -1794,7 +1859,11 @@ impl Sim {
             }
         }
         self.dwarves[i].alive = false;
-        self.stats.deaths += 1;
+        // `deaths` means fort citizens lost; raider kills have their own
+        // counters at the call sites.
+        if self.dwarves[i].faction == Faction::Fort {
+            self.stats.deaths += 1;
+        }
     }
 
     fn push_thought(&mut self, i: usize, kind: ThoughtKind) {
