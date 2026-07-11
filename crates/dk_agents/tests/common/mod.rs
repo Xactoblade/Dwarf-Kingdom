@@ -36,5 +36,5 @@ pub fn test_raws() -> Raws {
         },
     ])
     .unwrap();
-    Raws { materials, plants }
+    Raws { materials, plants, tileset: None }
 }

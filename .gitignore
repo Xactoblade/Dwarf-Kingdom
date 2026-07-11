@@ -1,4 +1,5 @@
 /target
 /saves
 *.png
+!assets/*.png
 .DS_Store

@@ -96,17 +96,45 @@ impl PlantRegistry {
     }
 }
 
+/// Sprite-sheet configuration (data/tileset.ron). Optional: when absent
+/// the renderer falls back to flat colored squares.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TilesetDef {
+    /// Image path relative to the assets/ directory.
+    pub image: String,
+    pub tile_px: u32,
+    pub columns: u32,
+    pub rows: u32,
+    /// Glyph name -> cell index (row-major from 0).
+    pub glyphs: HashMap<String, usize>,
+    /// Glyphs drawn in grayscale, to be tinted by material color at runtime.
+    pub tinted: Vec<String>,
+}
+
 /// Everything loaded from `data/`. Passed into the simulation.
 pub struct Raws {
     pub materials: MaterialRegistry,
     pub plants: PlantRegistry,
+    pub tileset: Option<TilesetDef>,
 }
 
 impl Raws {
     pub fn load(data_dir: &Path) -> Result<Self> {
+        let tileset_path = data_dir.join("tileset.ron");
+        let tileset = if tileset_path.is_file() {
+            let text = std::fs::read_to_string(&tileset_path)
+                .with_context(|| format!("reading {}", tileset_path.display()))?;
+            Some(
+                ron::from_str(&text)
+                    .with_context(|| format!("parsing {}", tileset_path.display()))?,
+            )
+        } else {
+            None
+        };
         Ok(Raws {
             materials: MaterialRegistry::load_dir(&data_dir.join("materials"))?,
             plants: PlantRegistry::load_dir(&data_dir.join("plants"))?,
+            tileset,
         })
     }
 }

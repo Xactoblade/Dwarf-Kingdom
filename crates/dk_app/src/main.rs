@@ -33,7 +33,7 @@ use dk_world::path::Pos;
 use dk_world::TileShape;
 use std::path::{Path, PathBuf};
 
-const TILE: f32 = 12.0;
+const TILE: f32 = 16.0;
 const MAP_W: usize = 96;
 const MAP_H: usize = 96;
 const MAP_D: usize = 32;
@@ -74,6 +74,38 @@ struct LegendsState {
 /// Whether a saved fortress existed at launch (embark-screen F9 hint).
 #[derive(Resource)]
 struct HasSave(bool);
+
+/// Loaded sprite-sheet, when data/tileset.ron is present. Absent = flat
+/// colored squares (the pre-graphics look).
+#[derive(Resource, Default)]
+struct Tileset(Option<TilesetHandles>);
+
+struct TilesetHandles {
+    image: Handle<Image>,
+    layout: Handle<TextureAtlasLayout>,
+    glyphs: std::collections::HashMap<String, usize>,
+    tinted: std::collections::HashSet<String>,
+}
+
+impl TilesetHandles {
+    fn index(&self, glyph: &str) -> usize {
+        self.glyphs.get(glyph).copied().unwrap_or(0)
+    }
+
+    fn is_tinted(&self, glyph: &str) -> bool {
+        self.tinted.contains(glyph)
+    }
+
+    /// A sprite showing `glyph`, sized to one map tile.
+    fn sprite(&self, glyph: &str) -> Sprite {
+        let mut sp = Sprite::from_atlas_image(
+            self.image.clone(),
+            TextureAtlas { layout: self.layout.clone(), index: self.index(glyph) },
+        );
+        sp.custom_size = Some(Vec2::splat(TILE));
+        sp
+    }
+}
 
 #[derive(Resource)]
 struct SimRes(Option<Sim>);
@@ -185,6 +217,24 @@ fn save_path() -> PathBuf {
     PathBuf::from("saves/world.bin")
 }
 
+/// The assets directory lives at the workspace root, not the app crate.
+fn assets_dir() -> String {
+    let candidates = [
+        PathBuf::from("assets"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"),
+    ];
+    for c in &candidates {
+        if c.is_dir() {
+            // Bevy joins relative paths onto the app crate's manifest dir,
+            // so hand it an absolute path.
+            if let Ok(abs) = std::fs::canonicalize(c) {
+                return abs.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "assets".to_string()
+}
+
 fn screenshot_mode_on() -> bool {
     std::env::var_os("DK_SCREENSHOT").is_some()
 }
@@ -265,10 +315,15 @@ fn main() {
 
     App::new()
         .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(window),
-                ..default()
-            }),
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(window),
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    file_path: assets_dir(),
+                    ..default()
+                }),
             FrameTimeDiagnosticsPlugin::default(),
         ))
         .insert_resource(ClearColor(Color::srgb(0.04, 0.04, 0.06)))
@@ -347,7 +402,30 @@ fn demo_scenario(sim: &mut Sim, raws: &Raws) {
     sim.place_flat_stockpiles(cx, cy, 36);
 }
 
-fn setup(mut commands: Commands) {
+fn setup(
+    mut commands: Commands,
+    reg: Res<Registry>,
+    asset_server: Res<AssetServer>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    // Load the sprite sheet if data/tileset.ron declared one.
+    let tileset = reg.0.tileset.as_ref().map(|def| {
+        let image: Handle<Image> = asset_server.load(def.image.clone());
+        let layout = layouts.add(TextureAtlasLayout::from_grid(
+            UVec2::splat(def.tile_px),
+            def.columns,
+            def.rows,
+            None,
+            None,
+        ));
+        TilesetHandles {
+            image,
+            layout,
+            glyphs: def.glyphs.clone(),
+            tinted: def.tinted.iter().cloned().collect(),
+        }
+    });
+
     let center = Vec3::new(
         MAP_W as f32 * TILE * 0.5,
         MAP_H as f32 * TILE * 0.5,
@@ -357,17 +435,26 @@ fn setup(mut commands: Commands) {
 
     for y in 0..MAP_H {
         for x in 0..MAP_W {
-            commands.spawn((
-                Sprite {
+            let sprite = match &tileset {
+                Some(ts) => {
+                    let mut sp = ts.sprite("block");
+                    sp.color = Color::BLACK;
+                    sp
+                }
+                None => Sprite {
                     color: Color::BLACK,
                     custom_size: Some(Vec2::splat(TILE - 1.0)),
                     ..default()
                 },
+            };
+            commands.spawn((
+                sprite,
                 Transform::from_xyz(x as f32 * TILE, y as f32 * TILE, 0.0),
                 TileSprite { x, y },
             ));
         }
     }
+    commands.insert_resource(Tileset(tileset));
 
     commands.spawn((
         Sprite {
@@ -895,17 +982,18 @@ fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
     ]
 }
 
-/// Color for a map position as seen from `view_z`, including overlays.
-fn tile_color(
+/// Color and glyph for a map position as seen from `view_z`.
+fn tile_visual(
     sim: &Sim,
     raws: &Raws,
     x: i32,
     y: i32,
     view_z: i32,
     selection: Option<(Pos, Pos)>,
-) -> Color {
+) -> (Color, &'static str) {
     const DIM: [f32; 4] = [1.0, 0.55, 0.34, 0.20];
     let mut rgb = [0.02, 0.02, 0.03];
+    let mut glyph = "block";
     for (levels_down, factor) in DIM.iter().enumerate() {
         let z = view_z - levels_down as i32;
         if z < 0 {
@@ -924,6 +1012,14 @@ fn tile_color(
             TileShape::Floor => 0.55,
             TileShape::Empty => unreachable!(),
         };
+        glyph = match tile.shape {
+            TileShape::Solid => "wall",
+            TileShape::Gate => "gate",
+            TileShape::Ramp => "ramp",
+            TileShape::Stairs => "stairs",
+            TileShape::Floor => "floor",
+            TileShape::Empty => unreachable!(),
+        };
         rgb = [
             r as f32 / 255.0 * factor * shade,
             g as f32 / 255.0 * factor * shade,
@@ -940,6 +1036,7 @@ fn tile_color(
             FarmState::Grown => ([0.45, 0.9, 0.3], 0.55),
         };
         rgb = mix(rgb, tint, k);
+        glyph = "farm";
     }
     if let Some(b) = sim.building_at(here) {
         let tint = match b.kind {
@@ -949,6 +1046,12 @@ fn tile_color(
             BuildingKind::Lever { .. } => [0.9, 0.85, 0.3],
         };
         rgb = mix(rgb, tint, 0.6);
+        glyph = match b.kind {
+            BuildingKind::Still => "still",
+            BuildingKind::Kitchen => "kitchen",
+            BuildingKind::Floodgate => "gate",
+            BuildingKind::Lever { .. } => "lever",
+        };
     }
     let water = sim.map.water_at(here);
     if water > 0 {
@@ -971,7 +1074,7 @@ fn tile_color(
             rgb = mix(rgb, [0.3, 1.0, 0.4], 0.35);
         }
     }
-    Color::srgb(rgb[0], rgb[1], rgb[2])
+    (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
 }
 
 fn redraw_tiles(
@@ -980,6 +1083,7 @@ fn redraw_tiles(
     reg: Res<Registry>,
     world: Res<WorldRes>,
     screen: Res<ScreenRes>,
+    tileset: Res<Tileset>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
     mode: Res<UiMode>,
@@ -991,23 +1095,47 @@ fn redraw_tiles(
     dirty.0 = false;
     if screen.0 == Screen::Embark {
         // The 48x48 overworld fills the 96x96 grid at 2x scale.
-        for (ts, mut sprite) in &mut tiles {
-            let (rx, ry) = (ts.x / 2, ts.y / 2);
+        for (t, mut sprite) in &mut tiles {
+            let (rx, ry) = (t.x / 2, t.y / 2);
             let region = world.0.overworld.get(rx.min(OW - 1), ry.min(OW - 1));
             let [r, g, b] = region.biome.color();
             let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
-            // Mark civilization sites as bright dots.
+            let mut glyph = "block";
+            // Mark civilization sites.
             if world.0.sites.iter().any(|st| st.region == (rx, ry) && !st.ruined) {
                 rgb = [0.95, 0.9, 0.5];
+                glyph = "artifact";
             }
-            sprite.color = Color::srgb(rgb[0], rgb[1], rgb[2]);
+            if let Some(handles) = &tileset.0 {
+                if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                    atlas.index = handles.index(glyph);
+                }
+                sprite.color = if glyph == "artifact" {
+                    Color::WHITE
+                } else {
+                    Color::srgb(rgb[0], rgb[1], rgb[2])
+                };
+            } else {
+                sprite.color = Color::srgb(rgb[0], rgb[1], rgb[2]);
+            }
         }
         return;
     }
     let Some(sim) = sim.0.as_ref() else { return };
     let selection = mode.0.map(|(_, anchor)| (anchor, cursor.pos(view_z.0)));
-    for (ts, mut sprite) in &mut tiles {
-        sprite.color = tile_color(sim, &reg.0, ts.x as i32, ts.y as i32, view_z.0, selection);
+    for (t, mut sprite) in &mut tiles {
+        let (color, glyph) =
+            tile_visual(sim, &reg.0, t.x as i32, t.y as i32, view_z.0, selection);
+        if let Some(handles) = &tileset.0 {
+            if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                atlas.index = handles.index(glyph);
+            }
+            // Grayscale glyphs take the material color; full-color art
+            // renders as painted.
+            sprite.color = if handles.is_tinted(glyph) { color } else { Color::WHITE };
+        } else {
+            sprite.color = color;
+        }
     }
 }
 
@@ -1030,6 +1158,7 @@ fn sync_agent_sprites(
     sim: Res<SimRes>,
     reg: Res<Registry>,
     screen: Res<ScreenRes>,
+    tileset: Res<Tileset>,
     view_z: Res<ViewZ>,
     mut pools: ResMut<SpritePools>,
     mut sprites: Query<
@@ -1049,32 +1178,36 @@ fn sync_agent_sprites(
     let Some(sim) = sim.0.as_ref() else { return };
     let sim = SimRef(sim);
     while pools.dwarves.len() < sim.0.dwarves.len() {
+        let sprite = match &tileset.0 {
+            Some(ts) => ts.sprite("dwarf"),
+            None => Sprite {
+                color: Color::srgb(0.93, 0.79, 0.55),
+                custom_size: Some(Vec2::splat(TILE * 0.72)),
+                ..default()
+            },
+        };
         pools.dwarves.push(
             commands
-                .spawn((
-                    Sprite {
-                        color: Color::srgb(0.93, 0.79, 0.55),
-                        custom_size: Some(Vec2::splat(TILE * 0.72)),
-                        ..default()
-                    },
-                    Transform::from_xyz(0.0, 0.0, 2.0),
-                    Visibility::Hidden,
-                ))
+                .spawn((sprite, Transform::from_xyz(0.0, 0.0, 2.0), Visibility::Hidden))
                 .id(),
         );
     }
     while pools.items.len() < sim.0.items.len() {
+        let sprite = match &tileset.0 {
+            Some(ts) => {
+                let mut sp = ts.sprite("boulder");
+                sp.custom_size = Some(Vec2::splat(TILE * 0.8));
+                sp
+            }
+            None => Sprite {
+                color: Color::WHITE,
+                custom_size: Some(Vec2::splat(TILE * 0.4)),
+                ..default()
+            },
+        };
         pools.items.push(
             commands
-                .spawn((
-                    Sprite {
-                        color: Color::WHITE,
-                        custom_size: Some(Vec2::splat(TILE * 0.4)),
-                        ..default()
-                    },
-                    Transform::from_xyz(0.0, 0.0, 1.5),
-                    Visibility::Hidden,
-                ))
+                .spawn((sprite, Transform::from_xyz(0.0, 0.0, 1.5), Visibility::Hidden))
                 .id(),
         );
     }
@@ -1085,10 +1218,24 @@ fn sync_agent_sprites(
             Some(d) if d.alive && d.pos.z == view_z.0 => {
                 tf.translation.x = d.pos.x as f32 * TILE;
                 tf.translation.y = d.pos.y as f32 * TILE;
-                sprite.color = match d.faction {
-                    Faction::Fort => Color::srgb(0.93, 0.79, 0.55),
-                    Faction::Hostile => Color::srgb(0.85, 0.25, 0.25),
-                };
+                match &tileset.0 {
+                    Some(ts) => {
+                        // Full-color figures; the glyph carries the faction.
+                        if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                            atlas.index = ts.index(match d.faction {
+                                Faction::Fort => "dwarf",
+                                Faction::Hostile => "raider",
+                            });
+                        }
+                        sprite.color = Color::WHITE;
+                    }
+                    None => {
+                        sprite.color = match d.faction {
+                            Faction::Fort => Color::srgb(0.93, 0.79, 0.55),
+                            Faction::Hostile => Color::srgb(0.85, 0.25, 0.25),
+                        };
+                    }
+                }
                 *vis = Visibility::Visible;
             }
             _ => *vis = Visibility::Hidden,
@@ -1104,7 +1251,29 @@ fn sync_agent_sprites(
             {
                 tf.translation.x = it.pos.x as f32 * TILE;
                 tf.translation.y = it.pos.y as f32 * TILE;
-                sprite.color = item_color(&reg.0, it.kind, it.stuff);
+                match &tileset.0 {
+                    Some(ts) => {
+                        let glyph = match it.kind {
+                            ItemKind::Boulder => "boulder",
+                            ItemKind::Seed => "seed",
+                            ItemKind::Crop => "crop",
+                            ItemKind::Meal => "meal",
+                            ItemKind::Drink => "drink",
+                            ItemKind::Artifact => "artifact",
+                        };
+                        if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                            atlas.index = ts.index(glyph);
+                        }
+                        sprite.color = if ts.is_tinted(glyph) {
+                            item_color(&reg.0, it.kind, it.stuff)
+                        } else {
+                            Color::WHITE
+                        };
+                    }
+                    None => {
+                        sprite.color = item_color(&reg.0, it.kind, it.stuff);
+                    }
+                }
                 *vis = Visibility::Visible;
             }
             _ => *vis = Visibility::Hidden,

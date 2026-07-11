@@ -218,7 +218,8 @@ pub struct Figure {
     pub name: String,
     pub civ: usize,
     pub role: Role,
-    pub born_year: u32,
+    /// May be negative: founding-era figures were born before year 0.
+    pub born_year: i64,
     pub died_year: Option<u32>,
     pub kills: u32,
     /// (year, text) — personal reasons for hatred, referenced by sieges.
@@ -240,6 +241,16 @@ pub struct World {
     pub figures: Vec<Figure>,
     pub events: Vec<HistoricalEvent>,
     pub years_simulated: u32,
+}
+
+/// Uppercase the first letter — civ names begin with "the", and events
+/// beginning with them need a capital.
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }
 
 impl World {
@@ -328,7 +339,7 @@ impl World {
         let name = names::site_name(rng, race);
         self.event(
             year,
-            format!("{} of the {} founded {}.", self.civs[civ].name, race.name(), name),
+            format!("{} of the {} founded {}.", cap(&self.civs[civ].name), race.name(), name),
         );
         self.sites.push(Site { id, name, civ, region: spot, founded_year: year, ruined: false });
         self.civs[civ].sites.push(id);
@@ -348,7 +359,7 @@ impl World {
             name,
             civ,
             role,
-            born_year: year.saturating_sub(rng.gen_range(18..40)),
+            born_year: year as i64 - rng.gen_range(18..40),
             died_year: None,
             kills: 0,
             grudges: Vec::new(),
@@ -357,6 +368,12 @@ impl World {
     }
 
     fn simulate(&mut self, rng: &mut ChaCha8Rng, years: u32) {
+        if self.civs.is_empty() {
+            // A barren world (no suitable biomes) has no history to tell.
+            self.event(0, "No peoples ever arose in this desolate world.".to_string());
+            self.years_simulated = years;
+            return;
+        }
         // Seed each civ with a leader and a few notables.
         for c in 0..self.civs.len() {
             self.spawn_figure(rng, c, Role::Leader, 0);
@@ -382,7 +399,7 @@ impl World {
             }
 
             // New figures appear now and then.
-            if rng.gen_ratio(1, 2) {
+            if !self.civs.is_empty() && rng.gen_ratio(1, 2) {
                 let c = rng.gen_range(0..self.civs.len());
                 let role = if self.civs[c].race == Race::Goblin && rng.gen_ratio(1, 3) {
                     Role::Warlord
@@ -417,7 +434,7 @@ impl World {
             // Mortality among the named.
             for f in 0..self.figures.len() {
                 if self.figures[f].died_year.is_none()
-                    && year - self.figures[f].born_year > 50
+                    && year as i64 - self.figures[f].born_year > 50
                     && rng.gen_ratio(1, 12)
                 {
                     self.figures[f].died_year = Some(year);
@@ -471,10 +488,19 @@ impl World {
         self.event(
             year,
             format!(
-                "The {} raided {}: {} attackers and {} defenders fell.",
-                a_name, site_name, a_deaths, d_deaths
+                "{} raided {}: {} attackers and {} defenders fell.",
+                cap(&a_name), site_name, a_deaths, d_deaths
             ),
         );
+
+        // A catastrophic defeat can raze the site outright.
+        if d_deaths > 60 && rng.gen_ratio(1, 3) {
+            self.sites[site_id].ruined = true;
+            self.event(
+                year,
+                format!("{} was razed and left in ruins by {}.", site_name, a_name),
+            );
+        }
 
         // A named attacker earns kills — or falls, and is avenged. War
         // always produces someone to remember it: mint a warlord if the

@@ -520,6 +520,8 @@ pub struct Sim {
     pub player: Option<usize>,
     /// Adventure quest: (target name, completed).
     pub quest: Option<(String, bool)>,
+    /// Index of the spawned nemesis, so completion checks the right body.
+    pub quest_target: Option<usize>,
     /// Notable feats accomplished by the player.
     pub deeds: Vec<String>,
     /// Who attacks this fort and why — wired from world history at embark.
@@ -597,6 +599,7 @@ impl Sim {
             water,
             player: None,
             quest: None,
+            quest_target: None,
             deeds: Vec::new(),
             siege_roster: None,
             log: Vec::new(),
@@ -1006,32 +1009,42 @@ impl Sim {
         let name = self.dwarves[hero].name.clone();
         self.log_event(format!("{name} sets out on an adventure."));
 
-        if let Some(leader) = self
-            .siege_roster
-            .as_mut()
-            .and_then(|r| if r.leaders.is_empty() { None } else { Some(r.leaders.remove(0)) })
-        {
-            // The quarry lurks at the far edge of the map, same region.
-            let hero_pos = self.dwarves[hero].pos;
-            let mut spot = None;
-            'search: for y in (1..self.map.height - 1).rev() {
-                for x in (1..self.map.width - 1).rev() {
-                    if let Some(z) = self.map.walk_surface_z(x, y) {
-                        let p = Pos::new(x as i32, y as i32, z as i32);
-                        if self.regions.same_region(hero_pos, p)
-                            && p.manhattan(hero_pos) > 20
-                        {
-                            spot = Some(p);
-                            break 'search;
-                        }
+        // Find a lair for the quarry BEFORE touching the roster, so an
+        // unsuitable map never costs the fort a historical enemy.
+        let hero_pos = self.dwarves[hero].pos;
+        let mut spot = None;
+        'search: for y in (1..self.map.height - 1).rev() {
+            for x in (1..self.map.width - 1).rev() {
+                if let Some(z) = self.map.walk_surface_z(x, y) {
+                    let p = Pos::new(x as i32, y as i32, z as i32);
+                    if self.regions.same_region(hero_pos, p) && p.manhattan(hero_pos) > 20 {
+                        spot = Some(p);
+                        break 'search;
                     }
                 }
             }
-            if let Some(p) = spot {
+        }
+        if let Some(p) = spot {
+            // The slain stay dead: only living leaders can be the nemesis.
+            let dead: Vec<String> = self
+                .dwarves
+                .iter()
+                .filter(|d| !d.alive && d.faction == Faction::Hostile)
+                .map(|d| d.name.clone())
+                .collect();
+            let leader = self.siege_roster.as_mut().and_then(|r| {
+                let idx = r.leaders.iter().position(|l| !dead.contains(&l.name))?;
+                // Rotate, like sieges do — the figure remains in history.
+                let leader = r.leaders.remove(idx);
+                r.leaders.push(leader.clone());
+                Some(leader)
+            });
+            if let Some(leader) = leader {
                 self.spawn_raider_at(p, raws);
                 let idx = self.dwarves.len() - 1;
                 self.dwarves[idx].name = leader.name.clone();
                 self.quest = Some((leader.name.clone(), false));
+                self.quest_target = Some(idx);
                 self.log_event(format!(
                     "Your quarry {} is near — they {}.",
                     leader.name, leader.grudge
@@ -1063,27 +1076,32 @@ impl Sim {
                     self.melee(hero, enemy);
                 } else {
                     // Sloped terrain: a step can land level, up a ramp, or
-                    // down one — resolve like any other walker would.
+                    // down one — resolve like any other walker would. Both
+                    // moving AND attacking are limited to tiles the hero
+                    // could legally step to (no swinging through floors).
                     let candidates = [
                         Pos::new(me.x + dx, me.y + dy, me.z),
                         Pos::new(me.x + dx, me.y + dy, me.z + 1),
                         Pos::new(me.x + dx, me.y + dy, me.z - 1),
                     ];
+                    let mut legal = Vec::with_capacity(8);
+                    path::neighbors(&self.map, me, &mut legal);
+                    let reachable: Vec<Pos> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|c| legal.contains(c))
+                        .collect();
                     let enemy = self.dwarves.iter().position(|d| {
                         d.alive
                             && d.faction == Faction::Hostile
-                            && candidates.contains(&d.pos)
+                            && reachable.contains(&d.pos)
                     });
                     if let Some(enemy) = enemy {
                         self.dwarves[hero].attack_cd = 0;
                         self.melee(hero, enemy);
-                    } else {
-                        let mut legal = Vec::with_capacity(8);
-                        path::neighbors(&self.map, me, &mut legal);
-                        if let Some(&t) = candidates.iter().find(|c| legal.contains(c)) {
-                            self.dwarves[hero].pos = t;
-                            self.carry_item_along(hero);
-                        }
+                    } else if let Some(&t) = reachable.first() {
+                        self.dwarves[hero].pos = t;
+                        self.carry_item_along(hero);
                     }
                 }
             }
@@ -1098,35 +1116,53 @@ impl Sim {
                 }
             }
         }
-        // Sustenance: standing on food or drink, the hungry help themselves.
+        // Sustenance: standing on provisions, help yourself — but only to
+        // what the active need actually calls for.
         let me = self.dwarves[hero].pos;
-        if self.dwarves[hero].hunger >= 50.0 || self.dwarves[hero].thirst >= 50.0 {
+        if self.dwarves[hero].hunger >= 50.0 {
             let snack = self.items.iter().position(|it| {
                 it.pos == me
                     && self.item_takeable(it)
-                    && matches!(it.kind, ItemKind::Meal | ItemKind::Crop | ItemKind::Drink)
+                    && matches!(it.kind, ItemKind::Meal | ItemKind::Crop)
             });
             if let Some(idx) = snack {
-                let kind = self.items[idx].kind;
                 self.items[idx].consumed = true;
-                if kind == ItemKind::Drink {
-                    self.dwarves[hero].thirst = 0.0;
-                } else {
-                    self.dwarves[hero].hunger = 0.0;
-                }
+                self.dwarves[hero].hunger = 0.0;
+            }
+        }
+        if self.dwarves[hero].thirst >= 50.0 {
+            let sip = self.items.iter().position(|it| {
+                it.pos == me && self.item_takeable(it) && it.kind == ItemKind::Drink
+            });
+            if let Some(idx) = sip {
+                self.items[idx].consumed = true;
+                self.dwarves[hero].thirst = 0.0;
             }
         }
         // The world takes its turn.
         for _ in 0..3 {
             self.step(raws);
         }
-        // Quest bookkeeping.
+        // Duels carry real risk: enemies engaged with the hero shake off
+        // their cooldown far faster than the ambient tick rate.
+        let hero_pos = self.dwarves[hero].pos;
+        for d in &mut self.dwarves {
+            if d.alive
+                && d.faction == Faction::Hostile
+                && d.pos.z == hero_pos.z
+                && d.pos.x.abs_diff(hero_pos.x) + d.pos.y.abs_diff(hero_pos.y) <= 1
+            {
+                d.attack_cd = d.attack_cd.saturating_sub(10);
+            }
+        }
+        // Quest bookkeeping: completion means THIS nemesis fell, not any
+        // same-named corpse from an earlier siege.
         if let Some((target, done)) = self.quest.clone() {
             if !done {
                 let slain = self
-                    .dwarves
-                    .iter()
-                    .any(|d| !d.alive && d.faction == Faction::Hostile && d.name == target);
+                    .quest_target
+                    .and_then(|t| self.dwarves.get(t))
+                    .is_some_and(|d| !d.alive);
                 if slain {
                     self.quest = Some((target.clone(), true));
                     let hero_name = self.dwarves[hero].name.clone();
@@ -1370,7 +1406,14 @@ impl Sim {
             .dwarves
             .iter()
             .enumerate()
-            .filter(|(_, d)| d.alive && d.faction == Faction::Fort && d.is_idle())
+            .filter(|(i, d)| {
+                // The player follows no muse: their task loop never runs,
+                // so a mood would freeze them (and its boulder) forever.
+                self.player != Some(*i)
+                    && d.alive
+                    && d.faction == Faction::Fort
+                    && d.is_idle()
+            })
             .map(|(i, _)| i)
             .collect();
         if candidates.is_empty() {
@@ -2736,7 +2779,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 8;
+const SAVE_VERSION: u32 = 9;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

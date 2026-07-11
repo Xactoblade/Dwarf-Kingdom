@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""Generate the default Dwarf Kingdom tileset (assets/tileset.png).
+
+Pure-python PNG writer — no dependencies. 32x32 detailed pixel-art tiles,
+procedurally drawn and deterministic.
+
+Two kinds of glyphs:
+- TERRAIN (wall/floor/stairs/ramp/gate/farm/block/boulder/seed/crop):
+  drawn in shaded grayscale and TINTED by material/plant color at runtime,
+  so depth fog, water tinting, and selection highlights keep working.
+- SPRITES (dwarf/raider/meal/drink/artifact/still/kitchen/lever):
+  full-color, rendered with a white tint.
+
+This art is original to Dwarf Kingdom and released as CC0 / public domain.
+To import other art (downloaded or AI-generated): replace assets/tileset.png
+and update data/tileset.ron (tile_px, columns, glyph indices, tinted list).
+"""
+import struct, zlib, os
+
+PX = 32
+COLS = 6
+
+def rng(seed):
+    s = seed & 0xFFFFFFFF
+    while True:
+        s = (1103515245 * s + 12345) & 0x7FFFFFFF
+        yield s / 0x7FFFFFFF
+
+class Tile:
+    def __init__(self, seed=1):
+        self.p = [[(0, 0, 0, 0)] * PX for _ in range(PX)]
+        self.r = rng(seed)
+
+    def rand(self):
+        return next(self.r)
+
+    def set(self, x, y, c):
+        if 0 <= x < PX and 0 <= y < PX:
+            self.p[y][x] = c
+
+    def fill(self, x0, y0, x1, y1, c):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                self.set(x, y, c)
+
+    def speckle(self, x0, y0, x1, y1, c, density):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                if self.rand() < density:
+                    self.set(x, y, c)
+
+    def disc(self, cx, cy, rad, c):
+        for y in range(PX):
+            for x in range(PX):
+                if (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad:
+                    self.set(x, y, c)
+
+def gray(v, a=255):
+    return (v, v, v, a)
+
+# ------------------------------------------------------------- terrain tiles
+
+def t_wall():
+    t = Tile(11)
+    t.fill(0, 0, PX, PX, gray(150))
+    # Bricks with mortar lines and per-brick value jitter.
+    bh, bw = 8, 16
+    for row in range(PX // bh):
+        off = (row % 2) * (bw // 2)
+        for col in range(-1, PX // bw + 1):
+            x0 = col * bw + off
+            shade = 130 + int(t.rand() * 55)
+            t.fill(x0 + 1, row * bh + 1, x0 + bw, row * bh + bh, gray(shade))
+            # top highlight / bottom shadow per brick
+            t.fill(x0 + 1, row * bh + 1, x0 + bw, row * bh + 2, gray(min(shade + 45, 235)))
+            t.fill(x0 + 1, row * bh + bh - 1, x0 + bw, row * bh + bh, gray(max(shade - 45, 40)))
+    # Mortar
+    for row in range(PX // bh):
+        t.fill(0, row * bh, PX, row * bh + 1, gray(85))
+    t.speckle(0, 0, PX, PX, gray(105), 0.05)
+    return t
+
+def t_floor():
+    t = Tile(22)
+    t.fill(0, 0, PX, PX, gray(190))
+    # Large irregular flagstones.
+    for y in range(PX):
+        for x in range(PX):
+            v = 175 + int(20 * (((x * 7 + y * 13) % 23) / 23))
+            t.set(x, y, gray(v))
+    t.speckle(0, 0, PX, PX, gray(160), 0.10)
+    t.speckle(0, 0, PX, PX, gray(210), 0.06)
+    # Cracks
+    x = 6
+    for y in range(4, 28):
+        x += -1 if t.rand() < 0.4 else (1 if t.rand() < 0.5 else 0)
+        t.set(max(0, min(PX - 1, x)), y, gray(150))
+    return t
+
+def t_stairs():
+    t = Tile(33)
+    t.fill(0, 0, PX, PX, gray(60, 255))
+    steps = 4
+    h = PX // steps
+    for s in range(steps):
+        top = s * h
+        inset = s * 3
+        t.fill(inset, top, PX - inset, top + h, gray(120 + s * 22))
+        t.fill(inset, top, PX - inset, top + 2, gray(min(150 + s * 25, 240)))
+        t.fill(inset, top + h - 1, PX - inset, top + h, gray(70 + s * 15))
+    return t
+
+def t_ramp():
+    t = Tile(44)
+    # Textured ground base so the slope reads as terrain, not a black wedge.
+    for y in range(PX):
+        for x in range(PX):
+            v = 95 + int(14 * (((x * 7 + y * 13) % 23) / 23))
+            t.set(x, y, gray(v))
+    for y in range(PX):
+        for x in range(PX):
+            if x + (PX - 1 - y) >= PX - 2:
+                base = 130 + int((x - y + PX) * 60 / (2 * PX))
+                t.set(x, y, gray(base))
+    t.speckle(0, 0, PX, PX, gray(105), 0.05)
+    for i in range(PX):
+        t.set(i, PX - 1 - max(0, i - 2), gray(235))
+    return t
+
+def t_gate():
+    t = Tile(55)
+    # Heavy portcullis: thick vertical bars, two crossbeams, dark backdrop.
+    t.fill(0, 0, PX, PX, gray(45))
+    for bx in range(2, PX, 6):
+        t.fill(bx, 0, bx + 3, PX, gray(170))
+        t.fill(bx, 0, bx + 1, PX, gray(215))
+    for by in (6, 22):
+        t.fill(0, by, PX, by + 4, gray(190))
+        t.fill(0, by, PX, by + 1, gray(230))
+        t.fill(0, by + 3, PX, by + 4, gray(120))
+        for bx in range(4, PX, 8):
+            t.fill(bx, by + 1, bx + 2, by + 3, gray(90))  # rivets
+    return t
+
+def t_farm():
+    t = Tile(66)
+    t.fill(0, 0, PX, PX, gray(120))
+    for row in range(0, PX, 8):
+        t.fill(0, row, PX, row + 3, gray(85))       # furrow shadow
+        t.fill(0, row + 3, PX, row + 5, gray(150))  # ridge light
+    t.speckle(0, 0, PX, PX, gray(100), 0.15)
+    t.speckle(0, 0, PX, PX, gray(165), 0.05)
+    return t
+
+def t_block():
+    t = Tile(77)
+    for y in range(PX):
+        for x in range(PX):
+            v = 195 + int(18 * (((x * 5 + y * 3) % 17) / 17))
+            t.set(x, y, gray(v))
+    t.speckle(0, 0, PX, PX, gray(175), 0.08)
+    return t
+
+def t_boulder():
+    t = Tile(88)
+    t.disc(16, 18, 11, gray(140))
+    t.disc(13, 15, 8, gray(170))
+    t.disc(11, 13, 4, gray(200))
+    t.disc(20, 22, 6, gray(110))
+    t.speckle(6, 8, 26, 28, gray(120), 0.10)
+    return t
+
+def t_seed():
+    t = Tile(99)
+    for cx, cy in ((10, 12), (20, 10), (14, 21), (23, 20)):
+        t.disc(cx, cy, 3, gray(150))
+        t.disc(cx - 1, cy - 1, 1, gray(210))
+    return t
+
+def t_crop():
+    t = Tile(111)
+    # A leafy plant: stalk + drooping leaves, grayscale for plant tinting.
+    for y in range(8, 28):
+        t.fill(15, y, 17, y + 1, gray(150))
+    for (sx, sy, d) in ((15, 12, -1), (16, 10, 1), (15, 16, -1), (16, 18, 1), (15, 21, -1)):
+        x, y = sx, sy
+        for i in range(8):
+            x += d
+            y += 1 if i % 3 == 2 else 0
+            t.fill(x, y, x + 2, y + 2, gray(180))
+            t.set(x, y, gray(215))
+    t.fill(13, 26, 20, 28, gray(110))
+    return t
+
+# -------------------------------------------------------------- full sprites
+
+SKIN = (232, 190, 148, 255)
+SKIN_D = (198, 152, 110, 255)
+BEARD = (168, 108, 48, 255)
+BEARD_D = (128, 78, 30, 255)
+TUNIC = (58, 96, 158, 255)
+TUNIC_D = (40, 70, 122, 255)
+BOOT = (86, 60, 38, 255)
+HELM = (150, 155, 165, 255)
+HELM_D = (110, 115, 128, 255)
+OUT = (28, 24, 22, 255)
+
+def outline(t):
+    # 1px dark outline around any opaque pixel cluster.
+    src = [row[:] for row in t.p]
+    for y in range(PX):
+        for x in range(PX):
+            if src[y][x][3] == 0:
+                near = False
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < PX and 0 <= ny < PX and src[ny][nx][3] > 0:
+                            near = True
+                if near:
+                    t.set(x, y, OUT)
+
+def t_dwarf():
+    t = Tile(123)
+    # Boots
+    t.fill(10, 27, 15, 30, BOOT); t.fill(17, 27, 22, 30, BOOT)
+    # Legs
+    t.fill(11, 23, 15, 27, TUNIC_D); t.fill(17, 23, 21, 27, TUNIC_D)
+    # Body (broad!)
+    t.fill(8, 15, 24, 23, TUNIC)
+    t.fill(8, 15, 24, 17, (78, 118, 182, 255))
+    # Belt
+    t.fill(8, 20, 24, 22, (120, 90, 40, 255))
+    t.fill(14, 20, 18, 22, (208, 176, 60, 255))
+    # Arms
+    t.fill(5, 15, 8, 22, TUNIC_D); t.fill(24, 15, 27, 22, TUNIC_D)
+    t.fill(5, 21, 8, 24, SKIN_D); t.fill(24, 21, 27, 24, SKIN_D)
+    # Head
+    t.fill(11, 6, 21, 13, SKIN)
+    t.fill(11, 6, 21, 8, SKIN_D)
+    # Eyes
+    t.set(13, 9, OUT); t.set(18, 9, OUT)
+    # Beard — the point of the whole exercise
+    t.fill(10, 11, 22, 15, BEARD)
+    t.fill(11, 15, 21, 18, BEARD)
+    t.fill(13, 18, 19, 20, BEARD_D)
+    t.fill(10, 11, 22, 12, BEARD_D)
+    # Nose over beard
+    t.fill(15, 10, 17, 12, SKIN_D)
+    # Helmet
+    t.fill(10, 3, 22, 7, HELM)
+    t.fill(10, 3, 22, 4, HELM_D)
+    t.fill(8, 6, 24, 7, HELM_D)
+    outline(t)
+    return t
+
+def t_raider():
+    t = Tile(134)
+    GSKIN = (128, 158, 96, 255)
+    GSKIN_D = (98, 124, 70, 255)
+    ARMOR = (78, 70, 66, 255)
+    ARMOR_D = (54, 48, 45, 255)
+    # Boots / legs
+    t.fill(10, 27, 14, 30, ARMOR_D); t.fill(18, 27, 22, 30, ARMOR_D)
+    t.fill(11, 22, 15, 27, ARMOR); t.fill(17, 22, 21, 27, ARMOR)
+    # Lean body
+    t.fill(9, 14, 23, 22, ARMOR)
+    t.fill(9, 14, 23, 16, ARMOR_D)
+    # Spiked pauldrons
+    t.fill(6, 13, 10, 17, ARMOR_D); t.fill(22, 13, 26, 17, ARMOR_D)
+    t.set(7, 12, ARMOR_D); t.set(24, 12, ARMOR_D)
+    # Arms
+    t.fill(6, 17, 9, 23, GSKIN_D); t.fill(23, 17, 26, 23, GSKIN_D)
+    # Head
+    t.fill(12, 5, 20, 13, GSKIN)
+    t.fill(12, 5, 20, 7, GSKIN_D)
+    # Ears
+    t.fill(9, 7, 12, 10, GSKIN_D); t.fill(20, 7, 23, 10, GSKIN_D)
+    # Red eyes, fangs
+    t.set(14, 8, (200, 40, 40, 255)); t.set(18, 8, (200, 40, 40, 255))
+    t.fill(14, 11, 15, 13, (240, 236, 220, 255))
+    t.fill(17, 11, 18, 13, (240, 236, 220, 255))
+    outline(t)
+    return t
+
+def t_meal():
+    t = Tile(145)
+    BOWL = (156, 96, 48, 255)
+    BOWL_D = (118, 70, 34, 255)
+    STEW = (198, 140, 60, 255)
+    t.fill(6, 16, 26, 24, BOWL)
+    t.fill(6, 22, 26, 24, BOWL_D)
+    t.fill(8, 14, 24, 17, STEW)
+    for cx, cy in ((11, 14), (17, 13), (21, 15)):
+        t.disc(cx, cy, 1, (230, 190, 120, 255))
+    # Steam
+    for x, y0 in ((12, 6), (19, 4)):
+        for i in range(6):
+            t.set(x + (1 if i % 2 else 0), y0 + i, (235, 235, 235, 160))
+    t.fill(10, 25, 22, 27, BOWL_D)
+    outline(t)
+    return t
+
+def t_drink():
+    t = Tile(156)
+    WOOD = (140, 96, 50, 255)
+    WOOD_D = (104, 70, 36, 255)
+    FOAM = (244, 238, 210, 255)
+    t.fill(8, 10, 22, 27, WOOD)
+    for bx in (10, 14, 18):
+        t.fill(bx, 10, bx + 1, 27, WOOD_D)
+    t.fill(8, 24, 22, 27, WOOD_D)
+    # Handle
+    t.fill(22, 13, 26, 15, WOOD_D); t.fill(22, 20, 26, 22, WOOD_D)
+    t.fill(24, 13, 26, 22, WOOD_D)
+    # Foam overflowing
+    t.fill(7, 7, 23, 11, FOAM)
+    for cx in (8, 12, 17, 21):
+        t.disc(cx, 7, 2, FOAM)
+    outline(t)
+    return t
+
+def t_artifact():
+    t = Tile(167)
+    GOLD = (232, 190, 60, 255)
+    GOLD_D = (176, 136, 30, 255)
+    GEM = (86, 200, 220, 255)
+    # A jeweled crown
+    t.fill(7, 14, 25, 24, GOLD)
+    t.fill(7, 22, 25, 24, GOLD_D)
+    for px, ph in ((7, 8), (13, 11), (19, 8)):
+        t.fill(px, 14 - ph, px + 6, 15, GOLD)
+        t.set(px + 2, 14 - ph - 1, GOLD)
+        t.set(px + 3, 14 - ph - 1, GOLD)
+    t.disc(16, 18, 2, GEM)
+    t.disc(10, 19, 1, (220, 80, 120, 255))
+    t.disc(22, 19, 1, (120, 220, 120, 255))
+    # Sparkles
+    for sx, sy in ((5, 8), (27, 10), (25, 4)):
+        t.set(sx, sy, (255, 255, 255, 255))
+        t.set(sx - 1, sy, (255, 255, 255, 140)); t.set(sx + 1, sy, (255, 255, 255, 140))
+        t.set(sx, sy - 1, (255, 255, 255, 140)); t.set(sx, sy + 1, (255, 255, 255, 140))
+    outline(t)
+    return t
+
+def t_still():
+    t = Tile(178)
+    COPPER = (188, 116, 66, 255)
+    COPPER_D = (142, 84, 46, 255)
+    COPPER_L = (222, 152, 96, 255)
+    # Pot belly
+    t.disc(14, 20, 9, COPPER)
+    t.disc(11, 17, 4, COPPER_L)
+    t.fill(5, 26, 24, 29, COPPER_D)
+    # Neck and coil
+    t.fill(12, 6, 17, 12, COPPER)
+    t.fill(17, 7, 26, 9, COPPER_D)
+    t.fill(24, 9, 26, 18, COPPER_D)
+    t.disc(25, 20, 2, (120, 170, 220, 255))  # drip
+    outline(t)
+    return t
+
+def t_kitchen():
+    t = Tile(189)
+    IRON = (88, 88, 96, 255)
+    IRON_D = (60, 60, 68, 255)
+    FIRE = (238, 140, 40, 255)
+    # Cauldron
+    t.fill(7, 12, 25, 24, IRON)
+    t.fill(7, 21, 25, 24, IRON_D)
+    t.fill(5, 12, 27, 15, IRON_D)
+    t.fill(9, 10, 23, 13, (120, 170, 90, 255))  # bubbling stew
+    # Fire below
+    for fx, fh in ((10, 4), (14, 6), (18, 5), (22, 3)):
+        t.fill(fx, 30 - fh, fx + 2, 30, FIRE)
+        t.set(fx, 30 - fh - 1, (250, 210, 80, 255))
+    t.fill(6, 29, 26, 31, (90, 60, 34, 255))  # logs
+    outline(t)
+    return t
+
+def t_lever():
+    t = Tile(199)
+    STONE = (130, 130, 138, 255)
+    WOOD = (140, 96, 50, 255)
+    KNOB = (200, 60, 50, 255)
+    t.fill(8, 22, 24, 29, STONE)
+    t.fill(8, 27, 24, 29, gray(95))
+    # Diagonal arm
+    x, y = 15, 22
+    for i in range(11):
+        t.fill(x, y, x + 3, y + 2, WOOD)
+        x += 1; y -= 2
+    t.disc(26, 3, 3, KNOB)
+    t.disc(25, 2, 1, (240, 140, 130, 255))
+    outline(t)
+    return t
+
+ORDER = [
+    ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
+    ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
+    ("seed", t_seed), ("crop", t_crop), ("dwarf", t_dwarf), ("raider", t_raider),
+    ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
+    ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
+]
+TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder", "seed", "crop"]
+
+def main():
+    rows = (len(ORDER) + COLS - 1) // COLS
+    W, H = COLS * PX, rows * PX
+    pix = [[(0, 0, 0, 0)] * W for _ in range(H)]
+    for n, (name, fn) in enumerate(ORDER):
+        tile = fn()
+        gx, gy = (n % COLS) * PX, (n // COLS) * PX
+        for y in range(PX):
+            for x in range(PX):
+                pix[gy + y][gx + x] = tile.p[y][x]
+
+    raw = b"".join(
+        b"\x00" + b"".join(struct.pack("4B", *p) for p in row) for row in pix
+    )
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c))
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+    os.makedirs("assets", exist_ok=True)
+    with open("assets/tileset.png", "wb") as f:
+        f.write(png)
+    print(f"assets/tileset.png written: {W}x{H}, {len(ORDER)} tiles, {PX}px")
+    for n, (name, _) in enumerate(ORDER):
+        tinted = " (tinted)" if name in TINTED else ""
+        print(f"  {name} = {n}{tinted}")
+
+if __name__ == "__main__":
+    main()
