@@ -6,7 +6,7 @@ and physics-driven stories of triumph and collapse.
 
 Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 
-## Status: Phase 4 — A World Outside
+## Status: Phase 5 — Hearts & Minds
 
 - [x] Phase 0: workspace, data-driven raws, world gen, z-level renderer, sim clock
 - [x] Phase 1: agents, mine/stairs designations, A* + region-gated jobs,
@@ -33,6 +33,18 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
       grudge against you is readable in the Legends viewer (press `y`)
 - [x] Headless exit tests: a siege leader's name and personal grudge are
       findable in Legends; different seeds breed different worlds and enemies
+- [x] Personalities: every dwarf rolls cheer/diligence/social/bravery facets
+      that change how they work, chat, grieve, and fight
+- [x] Friendships from idle chatter; grief (and stress) when a friend dies
+- [x] Stress pipeline: bad thoughts accumulate; boiling over means a public
+      tantrum or a dark gloom, depending on temperament
+- [x] Strange moods: a dwarf seizes a workshop and a boulder and creates a
+      named legendary artifact the whole fort admires
+- [x] Biographies: put the cursor on any dwarf and the HUD tells their story
+      — temperament, tastes, best friend, craft, masterworks, latest sorrow
+- [x] Headless exit tests: individuals differ, friendship→grief works,
+      stress episodes fire and resolve, moods yield named artifacts, and
+      every dwarf's story is unique
 
 ## Run
 

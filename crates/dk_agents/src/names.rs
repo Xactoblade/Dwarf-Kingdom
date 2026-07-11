@@ -17,3 +17,19 @@ pub fn dwarf_name(rng: &mut ChaCha8Rng) -> String {
     let coda = CODAS[rng.gen_range(0..CODAS.len())];
     format!("{onset}{coda}")
 }
+
+const ARTIFACT_A: [&str; 10] = [
+    "Thunder", "Ember", "Whisper", "Oath", "Winter", "Iron", "Dawn", "Shadow", "Anvil", "River",
+];
+const ARTIFACT_B: [&str; 10] = [
+    "gates", "song", "bind", "crown", "heart", "ward", "vow", "gleam", "root", "call",
+];
+
+/// Names for strange-mood masterworks.
+pub fn artifact_name(rng: &mut ChaCha8Rng) -> String {
+    format!(
+        "{}{}",
+        ARTIFACT_A[rng.gen_range(0..ARTIFACT_A.len())],
+        ARTIFACT_B[rng.gen_range(0..ARTIFACT_B.len())]
+    )
+}

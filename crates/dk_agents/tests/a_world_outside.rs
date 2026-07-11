@@ -36,7 +36,7 @@ fn siege_leader_is_findable_in_legends_with_a_reason() {
     let expected_leader = roster.leaders[0].clone();
     sim.siege_roster = Some(roster);
 
-    sim.spawn_raiders(3);
+    sim.spawn_raiders(3, &raws);
 
     // The named leader walks among the raiders...
     assert!(

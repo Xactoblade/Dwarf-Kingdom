@@ -46,6 +46,12 @@ pub const ATTACK_COOLDOWN: u8 = 40;
 pub const BREATH_TICKS: f32 = 240.0;
 /// Region rebuilds are throttled to once per this many ticks.
 pub const REGION_REBUILD_INTERVAL: u64 = 20;
+/// Ticks of work to complete a strange mood's artifact.
+pub const MOOD_WORK: u16 = 300;
+/// Ticks a tantrum or sulk episode lasts.
+pub const EPISODE_TICKS: u16 = 800;
+/// Relationship level at which two dwarves count as friends.
+pub const FRIEND_AT: i32 = 30;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -83,6 +89,8 @@ pub enum ItemKind {
     Meal,
     /// Brewed drink. `stuff` = plant index it was brewed from.
     Drink,
+    /// A strange mood's masterwork. `stuff` = material index.
+    Artifact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,8 +103,10 @@ pub enum ItemState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     pub kind: ItemKind,
-    /// Material index for boulders, plant index for everything else.
+    /// Material index for boulders/artifacts, plant index otherwise.
     pub stuff: u16,
+    /// Artifacts bear generated names.
+    pub name: Option<String>,
     pub pos: Pos,
     pub state: ItemState,
     /// Dwarf index that has claimed this item.
@@ -234,6 +244,39 @@ fn default_body() -> Vec<BodyPart> {
     ]
 }
 
+// ------------------------------------------------------------- personality
+
+/// A dwarf's disposition, rolled at creation. All facets are 0-100.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Personality {
+    /// High: shrugs off bad news. Low: every misfortune cuts deep.
+    pub cheer: f32,
+    /// High: seeks work quickly, works faster. Low: dawdles.
+    pub diligence: f32,
+    /// High: chats often, makes friends fast.
+    pub social: f32,
+    /// High: steady in a fight. Low: frightened by sieges.
+    pub bravery: f32,
+}
+
+impl Personality {
+    fn roll(rng: &mut ChaCha8Rng) -> Self {
+        let mut f = || rng.gen_range(5.0f32..95.0);
+        Personality { cheer: f(), diligence: f(), social: f(), bravery: f() }
+    }
+
+    /// Words a player would use for this dwarf.
+    pub fn descriptors(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.cheer > 70.0 { out.push("sunny") } else if self.cheer < 30.0 { out.push("gloomy") }
+        if self.diligence > 70.0 { out.push("industrious") } else if self.diligence < 30.0 { out.push("idle-handed") }
+        if self.social > 70.0 { out.push("gregarious") } else if self.social < 30.0 { out.push("solitary") }
+        if self.bravery > 70.0 { out.push("fearless") } else if self.bravery < 30.0 { out.push("skittish") }
+        if out.is_empty() { out.push("unremarkable") }
+        out
+    }
+}
+
 // ---------------------------------------------------------------- thoughts
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,6 +292,14 @@ pub enum ThoughtKind {
     BrewedDrink,
     CookedMeal,
     ArrivedAtFort,
+    PleasantChat,
+    FriendDied,
+    DisturbedByTantrum,
+    ThrewTantrum,
+    FellIntoGloom,
+    ScaredBySiege,
+    MadeArtifact,
+    SawArtifact,
 }
 
 impl ThoughtKind {
@@ -262,6 +313,14 @@ impl ThoughtKind {
             | ThoughtKind::BrewedDrink
             | ThoughtKind::CookedMeal => 2.0,
             ThoughtKind::ArrivedAtFort => 3.0,
+            ThoughtKind::PleasantChat => 3.0,
+            ThoughtKind::FriendDied => -18.0,
+            ThoughtKind::DisturbedByTantrum => -4.0,
+            ThoughtKind::ThrewTantrum => -6.0,
+            ThoughtKind::FellIntoGloom => -8.0,
+            ThoughtKind::ScaredBySiege => -5.0,
+            ThoughtKind::MadeArtifact => 30.0,
+            ThoughtKind::SawArtifact => 5.0,
         }
     }
 
@@ -278,6 +337,14 @@ impl ThoughtKind {
             ThoughtKind::BrewedDrink => "brewed a fine batch",
             ThoughtKind::CookedMeal => "cooked a hearty meal",
             ThoughtKind::ArrivedAtFort => "arrived at the fortress",
+            ThoughtKind::PleasantChat => "had a pleasant chat",
+            ThoughtKind::FriendDied => "lost a dear friend",
+            ThoughtKind::DisturbedByTantrum => "was disturbed by a tantrum",
+            ThoughtKind::ThrewTantrum => "threw a tantrum",
+            ThoughtKind::FellIntoGloom => "fell into a dark gloom",
+            ThoughtKind::ScaredBySiege => "was frightened by the siege",
+            ThoughtKind::MadeArtifact => "created a legendary artifact!",
+            ThoughtKind::SawArtifact => "admired a legendary artifact",
         }
     }
 }
@@ -319,6 +386,12 @@ pub enum Task {
     Craft { shop: Pos, input: usize, kind: CraftKind, path: Vec<Pos>, stage: FetchStage, progress: u16 },
     /// Hostiles chasing a fort creature (index into dwarves).
     Fight { target: usize, path: Vec<Pos>, repath_cd: u16 },
+    /// Stress broke loose: storming around, frightening witnesses.
+    Tantrum { remaining: u16 },
+    /// Stress turned inward: unresponsive, refusing work.
+    Sulk { remaining: u16 },
+    /// Possessed by inspiration: fetch a boulder, claim a workshop, create.
+    StrangeMood { shop: Pos, input: usize, path: Vec<Pos>, stage: FetchStage, progress: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,11 +409,22 @@ pub struct Dwarf {
     /// 0-100; drains while submerged in deep water.
     pub breath: f32,
     pub body: Vec<BodyPart>,
+    pub personality: Personality,
+    /// 0-100+; negative thoughts feed it, calm drains it. Boiling over
+    /// means a tantrum or a gloom.
+    pub stress: f32,
+    /// Affinity toward other dwarves by index; FRIEND_AT+ means friendship.
+    pub relationships: BTreeMap<usize, i32>,
+    /// Favorite material and crop (raws indices) — grist for biographies.
+    pub favorite_material: u16,
+    pub favorite_crop: u16,
+    pub artifacts_made: u32,
     pub thoughts: Vec<(u64, ThoughtKind)>,
     pub skills: BTreeMap<Skill, u32>,
     pub task: Task,
     move_cd: u8,
     attack_cd: u8,
+    chat_cd: u16,
     /// Tick a fully maxed need started, for death countdowns.
     starving_since: Option<u64>,
     dehydrated_since: Option<u64>,
@@ -368,6 +452,9 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Brew, .. } => "brewing",
             Task::Craft { kind: CraftKind::Cook, .. } => "cooking",
             Task::Fight { .. } => "attacking",
+            Task::Tantrum { .. } => "throwing a tantrum",
+            Task::Sulk { .. } => "sulking",
+            Task::StrangeMood { .. } => "in a strange mood!",
         }
     }
 
@@ -436,7 +523,6 @@ pub struct Sim {
 
 impl Sim {
     pub fn new(map: Map, raws: &Raws, mut rng: ChaCha8Rng, dwarf_count: usize) -> Self {
-        let _ = raws;
         let cx = map.width as i32 / 2;
         let cy = map.height as i32 / 2;
         let regions = Regions::new(&map);
@@ -457,7 +543,7 @@ impl Sim {
                         if dwarves.iter().any(|d: &Dwarf| d.pos == pos) {
                             continue;
                         }
-                        dwarves.push(new_dwarf(&mut rng, pos, Faction::Fort));
+                        dwarves.push(new_dwarf(&mut rng, pos, Faction::Fort, raws));
                     }
                 }
             }
@@ -744,6 +830,7 @@ impl Sim {
                         self.items.push(Item {
                             kind,
                             stuff,
+                            name: None,
                             pos: Pos::new(x, y, z as i32),
                             state: ItemState::OnGround,
                             reserved_by: None,
@@ -886,6 +973,64 @@ impl Sim {
             && matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
     }
 
+    /// Kill a creature outright (scenarios/tests — a rockfall, a cursed
+    /// verse, an act of the gods).
+    pub fn slay(&mut self, i: usize) {
+        if self.dwarves[i].alive {
+            let name = self.dwarves[i].name.clone();
+            self.log_event(format!("{name} has died."));
+            self.kill_dwarf(i);
+        }
+    }
+
+    /// Drop a boulder on the ground (scenarios/tests).
+    pub fn debug_spawn_boulder(&mut self, material: u16, pos: Pos) {
+        self.spawn_item(ItemKind::Boulder, material, pos);
+    }
+
+    /// A short life story assembled from everything the sim knows about a
+    /// dwarf — the "tell me about them" answer the blueprint asks for.
+    pub fn biography(&self, i: usize, raws: &Raws) -> String {
+        let d = &self.dwarves[i];
+        let mut out = format!("{} is a {} dwarf", d.name, d.personality.descriptors().join(", "));
+        out.push_str(&format!(
+            ", fond of {} and of {}",
+            raws.materials.get(d.favorite_material).name,
+            raws.plants.get(d.favorite_crop).name
+        ));
+        if let Some((&friend, level)) = d
+            .relationships
+            .iter()
+            .filter(|(_, &v)| v >= FRIEND_AT)
+            .max_by_key(|(_, &v)| v)
+        {
+            let _ = level;
+            if let Some(f) = self.dwarves.get(friend) {
+                out.push_str(&format!(", and a close friend of {}", f.name));
+            }
+        }
+        out.push('.');
+        if let Some(best) = d.skills.iter().max_by_key(|(_, &xp)| xp) {
+            let (skill, _) = best;
+            out.push_str(&format!(" Their craft is {:?} (level {}).", skill, d.skill_level(*skill)));
+        }
+        if d.artifacts_made > 0 {
+            out.push_str(&format!(" They created {} legendary work(s).", d.artifacts_made));
+        }
+        if let Some((_, worst)) = d
+            .thoughts
+            .iter()
+            .filter(|(_, t)| t.delta() < -5.0)
+            .last()
+        {
+            out.push_str(&format!(" Lately they {}.", worst.text()));
+        }
+        if !d.alive {
+            out.push_str(" They are gone now, and missed.");
+        }
+        out
+    }
+
     // ------------------------------------------------------------- stepping
 
     pub fn step(&mut self, raws: &Raws) {
@@ -916,31 +1061,39 @@ impl Sim {
                 }
             }
         }
-        // Season boundary: migrants and (later years) raiders.
+        // Season boundary: migrants, moods, and (later years) raiders.
         let season_ticks = TICKS_PER_DAY * DAYS_PER_SEASON;
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
             self.maybe_migrants(raws);
+            self.maybe_strange_mood();
             let seasons_elapsed = self.clock.tick / season_ticks;
             // Cap active hostiles so stuck raiders don't accumulate season
             // over season into an unbounded horde.
             if self.invasions && seasons_elapsed >= 2 && self.alive_hostiles() < 8 {
                 let wealth = self.items.iter().filter(|i| i.active()).count();
                 let n = (1 + wealth / 150).min(5);
-                self.spawn_raiders(n);
+                self.spawn_raiders(n, raws);
+                // Timid dwarves take the news badly.
+                for i in 0..self.dwarves.len() {
+                    let d = &self.dwarves[i];
+                    if d.alive && d.faction == Faction::Fort && d.personality.bravery < 40.0 {
+                        self.push_thought(i, ThoughtKind::ScaredBySiege);
+                    }
+                }
             }
         }
     }
 
     /// Spawn a single raider at an exact position (tests/scenarios).
-    pub fn spawn_raider_at(&mut self, pos: Pos) {
-        let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile);
+    pub fn spawn_raider_at(&mut self, pos: Pos, raws: &Raws) {
+        let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
         r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
         self.dwarves.push(r);
         self.stats.raiders_arrived += 1;
     }
 
     /// Spawn a raiding party at the map edge. Public for tests/scenarios.
-    pub fn spawn_raiders(&mut self, count: usize) {
+    pub fn spawn_raiders(&mut self, count: usize, raws: &Raws) {
         let mut spawned = 0;
         'outer: for y in 1..self.map.height - 1 {
             for x in [1usize, self.map.width - 2] {
@@ -952,7 +1105,7 @@ impl Sim {
                     if self.dwarves.iter().any(|d| d.alive && d.pos == pos) {
                         continue;
                     }
-                    let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile);
+                    let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
                     r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
                     self.dwarves.push(r);
                     self.stats.raiders_arrived += 1;
@@ -1019,6 +1172,72 @@ impl Sim {
         }
     }
 
+    /// Once in a while, inspiration seizes a dwarf: they claim a workshop
+    /// and a boulder and will not rest until a masterwork exists.
+    fn maybe_strange_mood(&mut self) {
+        if !self.rng.gen_ratio(1, 2) {
+            return;
+        }
+        // One mood at a time.
+        if self
+            .dwarves
+            .iter()
+            .any(|d| d.alive && matches!(d.task, Task::StrangeMood { .. }))
+        {
+            return;
+        }
+        let Some(shop) = self
+            .buildings
+            .iter()
+            .find(|b| matches!(b.kind, BuildingKind::Still | BuildingKind::Kitchen))
+            .map(|b| b.pos)
+        else {
+            return;
+        };
+        let candidates: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.alive && d.faction == Faction::Fort && d.is_idle())
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let chosen = candidates[self.rng.gen_range(0..candidates.len())];
+        let my_region = self.regions.id(self.dwarves[chosen].pos);
+        let Some(input) = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == my_region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(self.dwarves[chosen].pos))
+            .map(|(idx, _)| idx)
+        else {
+            return;
+        };
+        let start = self.dwarves[chosen].pos;
+        let item_pos = self.items[input].pos;
+        let Some(p) = path::astar(&self.map, start, item_pos, MAX_ASTAR_NODES) else {
+            return;
+        };
+        self.abandon_task(chosen);
+        self.items[input].reserved_by = Some(chosen);
+        self.dwarves[chosen].task = Task::StrangeMood {
+            shop,
+            input,
+            path: p,
+            stage: FetchStage::ToInput,
+            progress: 0,
+        };
+        let name = self.dwarves[chosen].name.clone();
+        self.log_event(format!("{name} is taken by a strange mood!"));
+    }
+
     fn maybe_migrants(&mut self, raws: &Raws) {
         let _ = raws;
         let alive = self.alive_dwarves();
@@ -1049,7 +1268,7 @@ impl Sim {
                 if let Some(z) = self.map.walk_surface_z(x, y) {
                     let pos = Pos::new(x as i32, y as i32, z as i32);
                     if self.regions.id(pos) == anchor_region {
-                        let mut d = new_dwarf(&mut self.rng, pos, Faction::Fort);
+                        let mut d = new_dwarf(&mut self.rng, pos, Faction::Fort, raws);
                         d.thoughts.push((self.clock.tick, ThoughtKind::ArrivedAtFort));
                         d.happiness += ThoughtKind::ArrivedAtFort.delta();
                         self.dwarves.push(d);
@@ -1134,7 +1353,7 @@ impl Sim {
             Haul { item: usize, dest: Pos },
         }
         let mut best: Option<(u32, Cand)> = None;
-        let mut consider = |dist: u32, c: Cand, best: &mut Option<(u32, Cand)>| {
+        let consider = |dist: u32, c: Cand, best: &mut Option<(u32, Cand)>| {
             if best.as_ref().is_none_or(|(bd, _)| dist < *bd) {
                 *best = Some((dist, c));
             }
@@ -1383,12 +1602,62 @@ impl Sim {
             return;
         }
 
+        // Stress boils over into an episode (never interrupts a mood).
+        if self.dwarves[i].stress >= 100.0
+            && !matches!(
+                self.dwarves[i].task,
+                Task::Tantrum { .. } | Task::Sulk { .. } | Task::StrangeMood { .. }
+            )
+        {
+            self.abandon_task(i);
+            let name = self.dwarves[i].name.clone();
+            if self.dwarves[i].personality.cheer < 50.0 {
+                self.dwarves[i].task = Task::Sulk { remaining: EPISODE_TICKS };
+                self.push_thought(i, ThoughtKind::FellIntoGloom);
+                self.log_event(format!("{name} has withdrawn into a dark gloom."));
+            } else {
+                self.dwarves[i].task = Task::Tantrum { remaining: EPISODE_TICKS };
+                self.push_thought(i, ThoughtKind::ThrewTantrum);
+                self.log_event(format!("{name} is throwing a tantrum!"));
+            }
+            return;
+        }
+
         let task = self.dwarves[i].task.clone();
         match task {
             Task::Idle { wander_cd } => {
                 if self.dwarves[i].fatigue >= 100.0 {
                     self.dwarves[i].task = Task::Sleep { remaining: 1200 };
                     return;
+                }
+                // Company: idle dwarves next to each other strike up a chat.
+                if self.dwarves[i].chat_cd == 0 {
+                    let me = self.dwarves[i].pos;
+                    let partner = self.dwarves.iter().enumerate().find(|(j, d)| {
+                        *j != i
+                            && d.alive
+                            && d.faction == Faction::Fort
+                            && d.is_idle()
+                            && d.chat_cd == 0
+                            && d.pos.z == me.z
+                            && d.pos.x.abs_diff(me.x) + d.pos.y.abs_diff(me.y) <= 1
+                    });
+                    if let Some((j, _)) = partner {
+                        // Warm-up scales with how social the chattier one is.
+                        let bond = 4 + (self.dwarves[i].personality.social.max(
+                            self.dwarves[j].personality.social,
+                        ) / 20.0) as i32;
+                        *self.dwarves[i].relationships.entry(j).or_insert(0) += bond;
+                        *self.dwarves[j].relationships.entry(i).or_insert(0) += bond;
+                        let cd_i = 600 + (100.0 - self.dwarves[i].personality.social) as u16 * 6;
+                        let cd_j = 600 + (100.0 - self.dwarves[j].personality.social) as u16 * 6;
+                        self.dwarves[i].chat_cd = cd_i;
+                        self.dwarves[j].chat_cd = cd_j;
+                        self.push_thought(i, ThoughtKind::PleasantChat);
+                        self.push_thought(j, ThoughtKind::PleasantChat);
+                    }
+                } else {
+                    self.dwarves[i].chat_cd -= 1;
                 }
                 if wander_cd > 0 {
                     self.dwarves[i].task = Task::Idle { wander_cd: wander_cd - 1 };
@@ -1401,7 +1670,8 @@ impl Sim {
                         self.dwarves[i].pos = n;
                         self.carry_item_along(i);
                     }
-                    let cd = self.rng.gen_range(40..160);
+                    let lazy = (100.0 - self.dwarves[i].personality.diligence) as u16;
+                    let cd = self.rng.gen_range(40..160) + lazy;
                     self.dwarves[i].task = Task::Idle { wander_cd: cd };
                 }
             }
@@ -1426,7 +1696,10 @@ impl Sim {
                     }
                     return;
                 }
-                let speed = 1 + self.dwarves[i].skill_level(Skill::Mining) as u16 / 2;
+                let diligent = self.dwarves[i].personality.diligence > 70.0;
+                let speed = 1
+                    + self.dwarves[i].skill_level(Skill::Mining) as u16 / 2
+                    + diligent as u16;
                 let progress = progress + speed;
                 if progress < MINE_WORK {
                     self.dwarves[i].task = Task::Mine { target, path, progress };
@@ -1680,6 +1953,123 @@ impl Sim {
             Task::Fight { .. } => {
                 self.dwarves[i].task = Task::Idle { wander_cd: 5 };
             }
+            Task::Tantrum { remaining } => {
+                if remaining == 0 {
+                    self.dwarves[i].stress = 50.0;
+                    self.dwarves[i].task = Task::Idle { wander_cd: 20 };
+                    return;
+                }
+                // Storm around; unsettle anyone nearby every so often.
+                if self.dwarves[i].move_cd == 0 {
+                    let pos = self.dwarves[i].pos;
+                    let mut opts = Vec::with_capacity(8);
+                    path::neighbors(&self.map, pos, &mut opts);
+                    if !opts.is_empty() {
+                        let n = opts[self.rng.gen_range(0..opts.len())];
+                        self.dwarves[i].pos = n;
+                        self.carry_item_along(i);
+                    }
+                    self.dwarves[i].move_cd = WALK_COOLDOWN;
+                } else {
+                    self.dwarves[i].move_cd -= 1;
+                }
+                if remaining % 200 == 0 {
+                    let me = self.dwarves[i].pos;
+                    let witnesses: Vec<usize> = self
+                        .dwarves
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, d)| {
+                            *j != i
+                                && d.alive
+                                && d.faction == Faction::Fort
+                                && d.pos.z == me.z
+                                && d.pos.x.abs_diff(me.x) + d.pos.y.abs_diff(me.y) <= 4
+                        })
+                        .map(|(j, _)| j)
+                        .collect();
+                    for j in witnesses {
+                        self.push_thought(j, ThoughtKind::DisturbedByTantrum);
+                    }
+                }
+                self.dwarves[i].task = Task::Tantrum { remaining: remaining - 1 };
+            }
+            Task::Sulk { remaining } => {
+                if remaining == 0 {
+                    self.dwarves[i].stress = 60.0;
+                    self.dwarves[i].task = Task::Idle { wander_cd: 30 };
+                } else {
+                    self.dwarves[i].task = Task::Sulk { remaining: remaining - 1 };
+                }
+            }
+            Task::StrangeMood { shop, input, mut path, stage, progress } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task =
+                            Task::StrangeMood { shop, input, path, stage, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                match stage {
+                    FetchStage::ToInput => {
+                        if !self.take_item(i, input) {
+                            self.abandon_task(i);
+                            return;
+                        }
+                        match path::astar(&self.map, self.dwarves[i].pos, shop, MAX_ASTAR_NODES) {
+                            Some(p) => {
+                                self.dwarves[i].task = Task::StrangeMood {
+                                    shop,
+                                    input,
+                                    path: p,
+                                    stage: FetchStage::ToStation,
+                                    progress,
+                                };
+                            }
+                            None => self.abandon_task(i),
+                        }
+                    }
+                    FetchStage::ToStation => {
+                        let progress = progress + 1;
+                        if progress < MOOD_WORK {
+                            self.dwarves[i].task =
+                                Task::StrangeMood { shop, input, path, stage, progress };
+                            return;
+                        }
+                        let material = self.items[input].stuff;
+                        self.items[input].consumed = true;
+                        self.items[input].reserved_by = None;
+                        let artifact_name = names::artifact_name(&mut self.rng);
+                        let mat_name = raws.materials.get(material).name.clone();
+                        let full = format!("{artifact_name}, a {mat_name} masterwork");
+                        self.spawn_named_item(
+                            ItemKind::Artifact,
+                            material,
+                            shop,
+                            Some(full.clone()),
+                        );
+                        self.dwarves[i].artifacts_made += 1;
+                        self.dwarves[i].stress = 0.0;
+                        let name = self.dwarves[i].name.clone();
+                        self.push_thought(i, ThoughtKind::MadeArtifact);
+                        self.log_event(format!("{name} has created {full}!"));
+                        // The whole fort takes pride in it.
+                        let admirers: Vec<usize> = self
+                            .dwarves
+                            .iter()
+                            .enumerate()
+                            .filter(|(j, d)| *j != i && d.alive && d.faction == Faction::Fort)
+                            .map(|(j, _)| j)
+                            .collect();
+                        for j in admirers {
+                            self.push_thought(j, ThoughtKind::SawArtifact);
+                        }
+                        self.dwarves[i].task = Task::Idle { wander_cd: 10 };
+                    }
+                }
+            }
         }
     }
 
@@ -1873,6 +2263,8 @@ impl Sim {
         // Happiness drifts back toward neutral.
         d.happiness += (50.0 - d.happiness).signum() * 0.0005;
 
+        // Stress slowly drains in calm times; boiling over breaks the mind.
+        d.stress = (d.stress - 0.001).max(0.0);
         let crossed_hungry = old_hunger < NEED_AT && d.hunger >= NEED_AT;
         let crossed_thirsty = old_thirst < NEED_AT && d.thirst >= NEED_AT;
         let now_starving = d.hunger >= 100.0 && d.starving_since.is_none();
@@ -1917,6 +2309,22 @@ impl Sim {
         // counters at the call sites.
         if self.dwarves[i].faction == Faction::Fort {
             self.stats.deaths += 1;
+            // Friends grieve.
+            let mourners: Vec<usize> = self
+                .dwarves
+                .iter()
+                .enumerate()
+                .filter(|(j, d)| {
+                    *j != i
+                        && d.alive
+                        && d.faction == Faction::Fort
+                        && d.relationships.get(&i).copied().unwrap_or(0) >= FRIEND_AT
+                })
+                .map(|(j, _)| j)
+                .collect();
+            for j in mourners {
+                self.push_thought(j, ThoughtKind::FriendDied);
+            }
         }
     }
 
@@ -1924,8 +2332,17 @@ impl Sim {
         let tick = self.clock.tick;
         let d = &mut self.dwarves[i];
         d.happiness = (d.happiness + kind.delta()).clamp(0.0, 100.0);
+        // Bad thoughts pile onto stress; a sunny disposition sheds most of
+        // it, a gloomy one magnifies it. Good thoughts bleed stress off.
+        let delta = kind.delta();
+        if delta < 0.0 {
+            let amplifier = 1.5 - d.personality.cheer / 100.0; // 0.5..1.5
+            d.stress = (d.stress - delta * amplifier).min(150.0);
+        } else {
+            d.stress = (d.stress - delta * 0.5).max(0.0);
+        }
         d.thoughts.push((tick, kind));
-        if d.thoughts.len() > 8 {
+        if d.thoughts.len() > 12 {
             d.thoughts.remove(0);
         }
     }
@@ -1935,9 +2352,14 @@ impl Sim {
     }
 
     fn spawn_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos) {
+        self.spawn_named_item(kind, stuff, pos, None);
+    }
+
+    fn spawn_named_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos, name: Option<String>) {
         self.items.push(Item {
             kind,
             stuff,
+            name,
             pos,
             state: ItemState::OnGround,
             reserved_by: None,
@@ -2080,7 +2502,16 @@ impl Sim {
                     self.items[input].reserved_by = None;
                 }
             }
-            Task::Idle { .. } | Task::Sleep { .. } | Task::Fight { .. } => {}
+            Task::StrangeMood { input, .. } => {
+                if self.items[input].reserved_by == Some(i) {
+                    self.items[input].reserved_by = None;
+                }
+            }
+            Task::Idle { .. }
+            | Task::Sleep { .. }
+            | Task::Fight { .. }
+            | Task::Tantrum { .. }
+            | Task::Sulk { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -2097,7 +2528,7 @@ impl Sim {
     }
 }
 
-fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction) -> Dwarf {
+fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> Dwarf {
     Dwarf {
         name: names::dwarf_name(rng),
         pos,
@@ -2110,11 +2541,18 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction) -> Dwarf {
         blood: 100.0,
         breath: 100.0,
         body: default_body(),
+        personality: Personality::roll(rng),
+        stress: 0.0,
+        relationships: BTreeMap::new(),
+        favorite_material: rng.gen_range(0..raws.materials.len()) as u16,
+        favorite_crop: rng.gen_range(0..raws.plants.len()) as u16,
+        artifacts_made: 0,
         thoughts: Vec::new(),
         skills: BTreeMap::new(),
         task: Task::Idle { wander_cd: rng.gen_range(20..80) },
         move_cd: 0,
         attack_cd: 0,
+        chat_cd: 0,
         starving_since: None,
         dehydrated_since: None,
     }
@@ -2123,7 +2561,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction) -> Dwarf {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 6;
+const SAVE_VERSION: u32 = 7;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

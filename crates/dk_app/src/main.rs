@@ -943,6 +943,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Seed | ItemKind::Crop => lighten(raws.plants.get(stuff).color),
         ItemKind::Meal => Color::srgb(0.9, 0.62, 0.3),
         ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
+        ItemKind::Artifact => Color::srgb(1.0, 0.85, 0.25),
     }
 }
 
@@ -1167,6 +1168,10 @@ fn update_hud(
             ItemKind::Crop => reg.0.plants.get(it.stuff).name.clone(),
             ItemKind::Meal => "prepared meal".to_string(),
             ItemKind::Drink => "mug of drink".to_string(),
+            ItemKind::Artifact => it
+                .name
+                .clone()
+                .unwrap_or_else(|| "a legendary artifact".to_string()),
         };
         under = format!("{under} · {what}");
     }
@@ -1180,15 +1185,23 @@ fn update_hud(
         .map(|d| {
             let wounds = if d.is_wounded() { " · WOUNDED" } else { "" };
             let mut s = format!(
-                "\n{} — {} · happiness {:.0} · hunger {:.0} thirst {:.0} · blood {:.0}{}",
+                "\n{} — {} · happiness {:.0} stress {:.0} · hunger {:.0} thirst {:.0} · blood {:.0}{}",
                 d.name,
                 d.task_name(),
                 d.happiness,
+                d.stress,
                 d.hunger,
                 d.thirst,
                 d.blood,
                 wounds
             );
+            let idx = sim
+                .0
+                .dwarves
+                .iter()
+                .position(|x| std::ptr::eq(x, d))
+                .unwrap_or(0);
+            s.push_str(&format!("\n  {}", sim.0.biography(idx, &reg.0)));
             for (_, t) in d.thoughts.iter().rev().take(3) {
                 s.push_str(&format!("\n  · {} ({:+.0})", t.text(), t.delta()));
             }

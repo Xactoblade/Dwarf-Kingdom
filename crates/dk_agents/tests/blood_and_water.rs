@@ -103,7 +103,7 @@ fn raiders_drown_in_the_flood_chamber() {
 
     // The raiding party arrives at the west edge.
     for p in [Pos::new(1, 12, 1), Pos::new(1, 11, 1), Pos::new(2, 12, 1)] {
-        sim.spawn_raider_at(p);
+        sim.spawn_raider_at(p, &raws);
     }
     assert_eq!(sim.alive_hostiles(), 3);
 
@@ -149,7 +149,7 @@ fn defenders_win_a_brawl_and_heal_by_resting() {
     sim.rebuild_caches();
     sim.invasions = false;
 
-    sim.spawn_raider_at(Pos::new(10, 12, 1));
+    sim.spawn_raider_at(Pos::new(10, 12, 1), &raws);
 
     let mut ticks = 0;
     while sim.alive_hostiles() > 0 && ticks < 30_000 {
