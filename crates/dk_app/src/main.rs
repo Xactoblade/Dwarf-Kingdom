@@ -41,6 +41,8 @@ const DWARF_COUNT: usize = 7;
 /// Overworld regions (rendered 2x on the 96x96 tile grid).
 const OW: usize = 48;
 const HISTORY_YEARS: u32 = 80;
+/// Lines per page in the Legends viewer.
+const LEGENDS_PAGE: usize = 30;
 
 // ---------------------------------------------------------------- resources
 
@@ -62,6 +64,10 @@ struct WorldRes(World);
 
 #[derive(Resource, Default)]
 struct LegendsScroll(usize);
+
+/// Whether a saved fortress existed at launch (embark-screen F9 hint).
+#[derive(Resource)]
+struct HasSave(bool);
 
 #[derive(Resource)]
 struct SimRes(Option<Sim>);
@@ -186,16 +192,12 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.add_embark_supplies(raws);
     // Wire the nearest hostile civ's grudge-bearers as siege leaders.
-    if let Some(civ) = world.nearest_hostile_civ(region.0, region.1) {
+    if let Some((civ_name, leaders)) = world.siege_pack(region.0, region.1) {
         sim.siege_roster = Some(SiegeRoster {
-            civ_name: civ.name.clone(),
-            leaders: world
-                .siege_leaders(civ.id)
+            civ_name,
+            leaders: leaders
                 .into_iter()
-                .map(|f| SiegeLeader {
-                    name: f.name.clone(),
-                    grudge: f.grudges.last().map(|(_, g)| g.clone()).unwrap_or_default(),
-                })
+                .map(|(name, grudge)| SiegeLeader { name, grudge })
                 .collect(),
         });
     }
@@ -269,6 +271,7 @@ fn main() {
         .insert_resource(WorldRes(world))
         .insert_resource(ScreenRes(screen))
         .insert_resource(LegendsScroll(0))
+        .insert_resource(HasSave(save_path().exists()))
         .insert_resource(SimRes(sim))
         .insert_resource(ViewZ(start_z))
         .insert_resource(Cursor { x: MAP_W as i32 / 2, y: MAP_H as i32 / 2 })
@@ -409,10 +412,13 @@ fn run_sim(
 /// overlay layer once a second instead of every frame.
 fn overlay_refresh(
     time: Res<Time>,
+    screen: Res<ScreenRes>,
     mut timer: ResMut<OverlayRefresh>,
     mut dirty: ResMut<MapDirty>,
 ) {
-    if timer.0.tick(time.delta()).just_finished() {
+    // Farm growth/stockpile tints only change while Playing; embark and
+    // legends screens are static and need no periodic recolor.
+    if screen.0 == Screen::Playing && timer.0.tick(time.delta()).just_finished() {
         dirty.0 = true;
     }
 }
@@ -491,17 +497,22 @@ fn handle_input(
 ) {
     // ---- Legends screen: scroll and close.
     if screen.0 == Screen::Legends {
-        if keys.just_pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::ArrowDown) && repeat.0.just_finished() {
-            scroll.0 = (scroll.0 + 1).min(world.0.legends_lines().len().saturating_sub(1));
+        // The view never scrolls past the last full page.
+        let max_scroll = world.0.events.len().saturating_sub(LEGENDS_PAGE);
+        let held = |key: KeyCode, keys: &ButtonInput<KeyCode>, repeat: &MoveRepeat| {
+            keys.just_pressed(key) || (keys.pressed(key) && repeat.0.just_finished())
+        };
+        if held(KeyCode::ArrowDown, &keys, &repeat) {
+            scroll.0 = (scroll.0 + 1).min(max_scroll);
         }
-        if keys.just_pressed(KeyCode::ArrowUp) {
+        if held(KeyCode::ArrowUp, &keys, &repeat) {
             scroll.0 = scroll.0.saturating_sub(1);
         }
         if keys.just_pressed(KeyCode::PageDown) {
-            scroll.0 = (scroll.0 + 25).min(world.0.legends_lines().len().saturating_sub(1));
+            scroll.0 = (scroll.0 + LEGENDS_PAGE).min(max_scroll);
         }
         if keys.just_pressed(KeyCode::PageUp) {
-            scroll.0 = scroll.0.saturating_sub(25);
+            scroll.0 = scroll.0.saturating_sub(LEGENDS_PAGE);
         }
         if keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::Escape) {
             screen.0 = if sim.0.is_some() { Screen::Playing } else { Screen::Embark };
@@ -540,20 +551,50 @@ fn handle_input(
             dirty.0 = true;
             return;
         }
+        let mut enter_fort = |new_sim: Sim,
+                              sim: &mut SimRes,
+                              screen: &mut ScreenRes,
+                              cursor: &mut Cursor,
+                              view_z: &mut ViewZ,
+                              dirty: &mut MapDirty,
+                              camera: &mut Query<&mut Transform, With<Camera2d>>| {
+            view_z.0 = new_sim
+                .map
+                .walk_surface_z(MAP_W / 2, MAP_H / 2)
+                .unwrap_or(MAP_D / 2) as i32;
+            sim.0 = Some(new_sim);
+            cursor.x = MAP_W as i32 / 2;
+            cursor.y = MAP_H as i32 / 2;
+            // Undo any embark-screen panning/zooming: center on the fort.
+            if let Ok(mut tf) = camera.single_mut() {
+                tf.translation.x = MAP_W as f32 * TILE * 0.5;
+                tf.translation.y = MAP_H as f32 * TILE * 0.5;
+                tf.scale = Vec3::ONE;
+            }
+            screen.0 = Screen::Playing;
+            dirty.0 = true;
+        };
         if keys.just_pressed(KeyCode::Enter) {
             let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
             if world.0.overworld.get(region.0, region.1).biome.embarkable() {
                 let new_sim = embark(&world.0, &reg.0, region);
-                let start_z = new_sim
-                    .map
-                    .walk_surface_z(MAP_W / 2, MAP_H / 2)
-                    .unwrap_or(MAP_D / 2) as i32;
-                sim.0 = Some(new_sim);
-                view_z.0 = start_z;
-                cursor.x = MAP_W as i32 / 2;
-                cursor.y = MAP_H as i32 / 2;
-                screen.0 = Screen::Playing;
-                dirty.0 = true;
+                enter_fort(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+            }
+        }
+        // Continue a saved fortress straight from the embark screen.
+        if keys.just_pressed(KeyCode::F9) {
+            match load_sim(&save_path(), &reg.0) {
+                Ok(loaded)
+                    if (loaded.map.width, loaded.map.height, loaded.map.depth)
+                        != (MAP_W, MAP_H, MAP_D) =>
+                {
+                    error!("load failed: save has different map dimensions");
+                }
+                Ok(loaded) => {
+                    info!("loaded saved fortress from {}", save_path().display());
+                    enter_fort(loaded, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+                }
+                Err(e) => error!("load failed: {e:#}"),
             }
         }
         if keys.just_pressed(KeyCode::KeyQ) {
@@ -1007,6 +1048,7 @@ fn update_hud(
     reg: Res<Registry>,
     world: Res<WorldRes>,
     screen: Res<ScreenRes>,
+    has_save: Res<HasSave>,
     scroll: Res<LegendsScroll>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
@@ -1034,13 +1076,14 @@ fn update_hud(
                 .map(|c| format!("nearest threat: {} of the {}", c.name, c.race.name()))
                 .unwrap_or_default();
             let ok = if region.biome.embarkable() { "Enter: embark here" } else { "cannot embark on ocean" };
+            let resume = if has_save.0 { "   F9: continue your saved fortress" } else { "" };
             for mut text in &mut q {
                 text.0 = format!(
                     "Dwarf Kingdom :: Choose your embark\n\
                      {} years of history · {} civilizations · {} sites · {} named figures\n\
                      region ({}, {}) — {}{}\n\
                      {}\n\
-                     arrows/click: move   y: read the Legends   {}",
+                     arrows/click: move   y: read the Legends   {}{}",
                     world.0.years_simulated,
                     world.0.civs.len(),
                     world.0.sites.len(),
@@ -1051,18 +1094,23 @@ fn update_hud(
                     site,
                     enemy,
                     ok,
+                    resume,
                 );
             }
             return;
         }
         Screen::Legends => {
+            // The world is immutable; rebuild the text only when the player
+            // scrolls or the screen was just opened.
+            if !scroll.is_changed() && !screen.is_changed() {
+                return;
+            }
             let lines = world.0.legends_lines();
-            let page = 30usize;
             let top = scroll.0.min(lines.len().saturating_sub(1));
             let body: String = lines
                 .iter()
                 .skip(top)
-                .take(page)
+                .take(LEGENDS_PAGE)
                 .map(|l| format!("\n{l}"))
                 .collect();
             for mut text in &mut q {

@@ -549,6 +549,24 @@ impl World {
         leaders
     }
 
+    /// Everything needed to wire sieges for an embark at (x, y): the
+    /// nearest hostile civ's name and its grudge-bearers as
+    /// (leader name, latest grudge). One glue point for app and tests.
+    pub fn siege_pack(&self, x: usize, y: usize) -> Option<(String, Vec<(String, String)>)> {
+        let civ = self.nearest_hostile_civ(x, y)?;
+        let leaders = self
+            .siege_leaders(civ.id)
+            .into_iter()
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    f.grudges.last().map(|(_, g)| g.clone()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        Some((civ.name.clone(), leaders))
+    }
+
     /// All legends lines, oldest first, for the viewer.
     pub fn legends_lines(&self) -> Vec<String> {
         self.events

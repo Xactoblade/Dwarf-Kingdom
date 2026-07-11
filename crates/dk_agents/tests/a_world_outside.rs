@@ -8,21 +8,18 @@ mod common;
 use dk_agents::{Faction, Sim, SiegeLeader, SiegeRoster};
 use dk_history::World;
 
-/// Convert world history into the sim's siege wiring — the same glue the
-/// app uses at embark.
+/// Convert world history into the sim's siege wiring. The selection logic
+/// lives in `World::siege_pack` — the same call the app makes at embark —
+/// so this test exercises the shipping glue, not a copy of it.
 fn roster_from_world(world: &World, embark: (usize, usize)) -> SiegeRoster {
-    let civ = world
-        .nearest_hostile_civ(embark.0, embark.1)
+    let (civ_name, leaders) = world
+        .siege_pack(embark.0, embark.1)
         .expect("worldgen guarantees a hostile civ");
     SiegeRoster {
-        civ_name: civ.name.clone(),
-        leaders: world
-            .siege_leaders(civ.id)
+        civ_name,
+        leaders: leaders
             .into_iter()
-            .map(|f| SiegeLeader {
-                name: f.name.clone(),
-                grudge: f.grudges.last().map(|(_, g)| g.clone()).unwrap_or_default(),
-            })
+            .map(|(name, grudge)| SiegeLeader { name, grudge })
             .collect(),
     }
 }

@@ -962,13 +962,20 @@ impl Sim {
         }
         if spawned > 0 {
             // The party is led by a figure from world history when we have
-            // one — their grudge is the reason this is happening.
+            // one — their grudge is the reason this is happening. Leaders
+            // rotate so named sieges continue for the fort's whole life,
+            // but the slain stay dead.
+            let dead: Vec<String> = self
+                .dwarves
+                .iter()
+                .filter(|d| !d.alive && d.faction == Faction::Hostile)
+                .map(|d| d.name.clone())
+                .collect();
             let led = self.siege_roster.as_mut().and_then(|r| {
-                if r.leaders.is_empty() {
-                    None
-                } else {
-                    Some((r.civ_name.clone(), r.leaders.remove(0)))
-                }
+                let idx = r.leaders.iter().position(|l| !dead.contains(&l.name))?;
+                let leader = r.leaders.remove(idx);
+                r.leaders.push(leader.clone());
+                Some((r.civ_name.clone(), leader))
             });
             match led {
                 Some((civ, leader)) => {
@@ -2127,14 +2134,10 @@ struct SaveOut<'a> {
     sim: &'a Sim,
 }
 
-#[derive(Deserialize)]
-struct SaveIn {
-    magic: u32,
-    version: u32,
-    material_ids: Vec<String>,
-    plant_ids: Vec<String>,
-    sim: Sim,
-}
+// Read as header-then-body so version mismatches produce a clear error
+// instead of a bincode failure mid-struct. bincode serializes struct fields
+// sequentially, so this matches SaveOut's layout exactly.
+type SaveBody = (Vec<String>, Vec<String>, Sim);
 
 pub fn save_sim(sim: &Sim, path: &FsPath, raws: &Raws) -> Result<()> {
     if let Some(dir) = path.parent() {
@@ -2156,22 +2159,23 @@ pub fn save_sim(sim: &Sim, path: &FsPath, raws: &Raws) -> Result<()> {
 pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
-    let save: SaveIn = bincode::deserialize_from(std::io::BufReader::new(file))
-        .with_context(|| format!("deserializing {}", path.display()))?;
-    anyhow::ensure!(save.magic == SAVE_MAGIC, "not a Dwarf Kingdom save file");
+    let mut reader = std::io::BufReader::new(file);
+    let (magic, version): (u32, u32) = bincode::deserialize_from(&mut reader)
+        .with_context(|| format!("reading save header of {}", path.display()))?;
+    anyhow::ensure!(magic == SAVE_MAGIC, "not a Dwarf Kingdom save file");
     anyhow::ensure!(
-        save.version == SAVE_VERSION,
-        "save version {} unsupported (expected {})",
-        save.version,
-        SAVE_VERSION
+        version == SAVE_VERSION,
+        "save version {version} unsupported (expected {SAVE_VERSION}) — this save \
+         is from another game version"
     );
-    let mut sim = save.sim;
+    let (material_ids, plant_ids, sim): SaveBody = bincode::deserialize_from(&mut reader)
+        .with_context(|| format!("deserializing {}", path.display()))?;
+    let mut sim = sim;
     sim.map.validate()?;
-    sim.map.remap_materials(&save.material_ids, &raws.materials)?;
+    sim.map.remap_materials(&material_ids, &raws.materials)?;
 
-    let mat_remap = dk_world::build_remap(&save.material_ids, &raws.materials)?;
-    let plant_remap: Vec<u16> = save
-        .plant_ids
+    let mat_remap = dk_world::build_remap(&material_ids, &raws.materials)?;
+    let plant_remap: Vec<u16> = plant_ids
         .iter()
         .map(|id| {
             raws.plants
