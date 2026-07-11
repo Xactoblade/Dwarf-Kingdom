@@ -14,6 +14,11 @@ pub use path::Pos;
 /// Sentinel for "no material" (air).
 pub const NO_MATERIAL: u16 = u16::MAX;
 
+/// Water this deep (or deeper) is impassable and drowns non-swimmers.
+pub const DEEP_WATER: u8 = 4;
+/// Maximum water per tile.
+pub const MAX_WATER: u8 = 7;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TileShape {
     /// Open space. Not walkable (nothing to stand on).
@@ -26,6 +31,8 @@ pub enum TileShape {
     Stairs,
     /// Walkable slope; connects to walkable tiles one level up alongside.
     Ramp,
+    /// A closed floodgate: blocks walkers and water. Opens back into Floor.
+    Gate,
 }
 
 impl TileShape {
@@ -40,6 +47,7 @@ impl TileShape {
             TileShape::Floor => "floor",
             TileShape::Stairs => "stairs",
             TileShape::Ramp => "ramp",
+            TileShape::Gate => "closed floodgate",
         }
     }
 }
@@ -48,20 +56,29 @@ impl TileShape {
 pub struct Tile {
     pub material: u16,
     pub shape: TileShape,
+    /// Water depth 0-7 (see dk_sim). Lives on the tile so pathfinding and
+    /// rendering see it without a parallel grid.
+    pub water: u8,
 }
 
 impl Tile {
     pub const AIR: Tile = Tile {
         material: NO_MATERIAL,
         shape: TileShape::Empty,
+        water: 0,
     };
 
     pub fn solid(material: u16) -> Self {
-        Tile { material, shape: TileShape::Solid }
+        Tile { material, shape: TileShape::Solid, water: 0 }
     }
 
     pub fn floor(material: u16) -> Self {
-        Tile { material, shape: TileShape::Floor }
+        Tile { material, shape: TileShape::Floor, water: 0 }
+    }
+
+    /// Can water occupy this tile?
+    pub fn holds_water(&self) -> bool {
+        !matches!(self.shape, TileShape::Solid | TileShape::Gate)
     }
 
     pub fn is_solid(&self) -> bool {
@@ -128,8 +145,22 @@ impl Map {
         self.set(p.x as usize, p.y as usize, p.z as usize, t);
     }
 
+    /// Walkable and not dangerously deep water.
     pub fn walkable(&self, p: Pos) -> bool {
-        self.tile_at(p).is_some_and(|t| t.shape.is_walkable())
+        self.tile_at(p)
+            .is_some_and(|t| t.shape.is_walkable() && t.water < DEEP_WATER)
+    }
+
+    pub fn water_at(&self, p: Pos) -> u8 {
+        self.tile_at(p).map_or(0, |t| t.water)
+    }
+
+    pub fn set_water(&mut self, p: Pos, w: u8) {
+        if self.in_bounds(p.x as i64, p.y as i64, p.z as i64) {
+            let mut t = self.get(p.x as usize, p.y as usize, p.z as usize);
+            t.water = w;
+            self.set(p.x as usize, p.y as usize, p.z as usize, t);
+        }
     }
 
     /// Highest solid z at a column, if any.
@@ -298,7 +329,7 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
             if higher_neighbor {
                 let floor_z = h + 1;
                 let mat = map.get(x, y, floor_z).material;
-                map.set(x, y, floor_z, Tile { material: mat, shape: TileShape::Ramp });
+                map.set(x, y, floor_z, Tile { material: mat, shape: TileShape::Ramp, water: 0 });
             }
         }
     }

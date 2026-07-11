@@ -7,8 +7,9 @@
 use anyhow::{Context, Result};
 use dk_core::{Calendar, DAYS_PER_SEASON, TICKS_PER_DAY};
 use dk_raws::{MaterialCategory, Raws};
+use dk_sim::WaterSim;
 use dk_world::path::{self, Pos, Regions};
-use dk_world::{Map, Tile, TileShape};
+use dk_world::{Map, Tile, TileShape, NO_MATERIAL};
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,12 @@ pub const NEED_DEATH_TICKS: u64 = 6 * TICKS_PER_DAY;
 pub const POP_CAP: usize = 15;
 /// Outputs per brew/cook batch.
 pub const BATCH: usize = 3;
+/// Ticks between melee swings.
+pub const ATTACK_COOLDOWN: u8 = 40;
+/// Ticks fully submerged before drowning kills.
+pub const BREATH_TICKS: f32 = 240.0;
+/// Region rebuilds are throttled to once per this many ticks.
+pub const REGION_REBUILD_INTERVAL: u64 = 20;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -50,6 +57,9 @@ const FATIGUE_RATE: f32 = 0.0015;
 pub enum DesignationKind {
     Mine,
     Stairs,
+    /// Dig out the floor: this tile becomes open space, the tile below
+    /// becomes a floor. Water pours into the resulting trench.
+    Channel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -108,6 +118,10 @@ impl Item {
 pub enum BuildingKind {
     Still,
     Kitchen,
+    /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
+    Floodgate,
+    /// Pulling it toggles the floodgate at `target`.
+    Lever { target: Pos },
 }
 
 impl BuildingKind {
@@ -115,6 +129,8 @@ impl BuildingKind {
         match self {
             BuildingKind::Still => "Still",
             BuildingKind::Kitchen => "Kitchen",
+            BuildingKind::Floodgate => "Floodgate",
+            BuildingKind::Lever { .. } => "Lever",
         }
     }
 }
@@ -161,6 +177,61 @@ impl Stockpile {
         let (x0, x1, y0, y1, z) = (self.x0, self.x1, self.y0, self.y1, self.z);
         (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| Pos::new(x, y, z)))
     }
+}
+
+// ----------------------------------------------------------------- bodies
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Faction {
+    Fort,
+    Hostile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PartKind {
+    Head,
+    Torso,
+    LeftArm,
+    RightArm,
+    LeftLeg,
+    RightLeg,
+}
+
+impl PartKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            PartKind::Head => "head",
+            PartKind::Torso => "torso",
+            PartKind::LeftArm => "left arm",
+            PartKind::RightArm => "right arm",
+            PartKind::LeftLeg => "left leg",
+            PartKind::RightLeg => "right leg",
+        }
+    }
+
+    fn vital(self) -> bool {
+        matches!(self, PartKind::Head | PartKind::Torso)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BodyPart {
+    pub kind: PartKind,
+    pub hp: i16,
+    pub max_hp: i16,
+    pub bleeding: u8,
+}
+
+fn default_body() -> Vec<BodyPart> {
+    let part = |kind: PartKind, hp: i16| BodyPart { kind, hp, max_hp: hp, bleeding: 0 };
+    vec![
+        part(PartKind::Head, 20),
+        part(PartKind::Torso, 40),
+        part(PartKind::LeftArm, 25),
+        part(PartKind::RightArm, 25),
+        part(PartKind::LeftLeg, 25),
+        part(PartKind::RightLeg, 25),
+    ]
 }
 
 // ---------------------------------------------------------------- thoughts
@@ -246,6 +317,8 @@ pub enum Task {
     Plant { tile: Pos, seed: usize, path: Vec<Pos>, stage: FetchStage },
     Harvest { tile: Pos, path: Vec<Pos>, progress: u16 },
     Craft { shop: Pos, input: usize, kind: CraftKind, path: Vec<Pos>, stage: FetchStage, progress: u16 },
+    /// Hostiles chasing a fort creature (index into dwarves).
+    Fight { target: usize, path: Vec<Pos>, repath_cd: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,14 +326,21 @@ pub struct Dwarf {
     pub name: String,
     pub pos: Pos,
     pub alive: bool,
+    pub faction: Faction,
     pub hunger: f32,
     pub thirst: f32,
     pub fatigue: f32,
     pub happiness: f32,
+    /// 0-100; bleeding drains it, running out is fatal.
+    pub blood: f32,
+    /// 0-100; drains while submerged in deep water.
+    pub breath: f32,
+    pub body: Vec<BodyPart>,
     pub thoughts: Vec<(u64, ThoughtKind)>,
     pub skills: BTreeMap<Skill, u32>,
     pub task: Task,
     move_cd: u8,
+    attack_cd: u8,
     /// Tick a fully maxed need started, for death countdowns.
     starving_since: Option<u64>,
     dehydrated_since: Option<u64>,
@@ -287,7 +367,12 @@ impl Dwarf {
             Task::Harvest { .. } => "harvesting",
             Task::Craft { kind: CraftKind::Brew, .. } => "brewing",
             Task::Craft { kind: CraftKind::Cook, .. } => "cooking",
+            Task::Fight { .. } => "attacking",
         }
+    }
+
+    pub fn is_wounded(&self) -> bool {
+        self.body.iter().any(|p| p.hp < p.max_hp || p.bleeding > 0)
     }
 }
 
@@ -298,6 +383,9 @@ pub struct SimStats {
     pub drinks_brewed: u32,
     pub migrants_arrived: u32,
     pub deaths: u32,
+    pub raiders_arrived: u32,
+    pub raiders_slain: u32,
+    pub drownings: u32,
 }
 
 // --------------------------------------------------------------------- sim
@@ -313,6 +401,11 @@ pub struct Sim {
     pub designations: BTreeMap<Pos, Designation>,
     pub stats: SimStats,
     pub clock: Calendar,
+    pub water: WaterSim,
+    /// Rolling event log shown in the UI (tick, message).
+    pub log: Vec<(u64, String)>,
+    /// World setting: do raiding parties attack this fort?
+    pub invasions: bool,
     rng: ChaCha8Rng,
     /// Per-item back-off after a failed haul pathfind (item index -> tick).
     haul_retry: BTreeMap<usize, u64>,
@@ -346,12 +439,29 @@ impl Sim {
                         if dwarves.iter().any(|d: &Dwarf| d.pos == pos) {
                             continue;
                         }
-                        dwarves.push(new_dwarf(&mut rng, pos));
+                        dwarves.push(new_dwarf(&mut rng, pos, Faction::Fort));
                     }
                 }
             }
         }
         assert!(!dwarves.is_empty(), "no walkable spawn tiles found");
+
+        // A natural spring rises at the lowest point of the surface,
+        // slowly forming a pond dwarves can channel water from.
+        let mut water = WaterSim::default();
+        let mut lowest: Option<(usize, i32, i32)> = None;
+        for y in 0..map.height {
+            for x in 0..map.width {
+                if let Some(z) = map.walk_surface_z(x, y) {
+                    if lowest.is_none_or(|(lz, _, _)| z < lz) {
+                        lowest = Some((z, x as i32, y as i32));
+                    }
+                }
+            }
+        }
+        if let Some((z, x, y)) = lowest {
+            water.springs.insert(Pos::new(x, y, z as i32));
+        }
 
         Sim {
             map,
@@ -363,6 +473,9 @@ impl Sim {
             designations: BTreeMap::new(),
             stats: SimStats::default(),
             clock: Calendar::default(),
+            water,
+            log: Vec::new(),
+            invasions: true,
             rng,
             haul_retry: BTreeMap::new(),
             map_changed: true,
@@ -370,9 +483,18 @@ impl Sim {
         }
     }
 
+    pub fn log_event(&mut self, msg: String) {
+        self.log.push((self.clock.tick, msg));
+        if self.log.len() > 60 {
+            self.log.remove(0);
+        }
+    }
+
     /// Rebuild caches after deserialization.
     pub fn rebuild_caches(&mut self) {
         self.regions = Regions::new(&self.map);
+        let map = &self.map;
+        self.water.wake_all(map);
         self.map_changed = true;
     }
 
@@ -385,11 +507,18 @@ impl Sim {
             for x in a.x.min(b.x)..=a.x.max(b.x) {
                 let p = Pos::new(x, y, a.z);
                 let Some(tile) = self.map.tile_at(p) else { continue };
+                let below_solid = self
+                    .map
+                    .tile_at(Pos::new(x, y, a.z - 1))
+                    .is_some_and(|t| t.is_solid());
                 let workable = match kind {
                     DesignationKind::Mine => tile.is_solid(),
                     DesignationKind::Stairs => {
                         tile.is_solid()
                             || matches!(tile.shape, TileShape::Floor | TileShape::Ramp)
+                    }
+                    DesignationKind::Channel => {
+                        tile.shape.is_walkable() && below_solid
                     }
                 };
                 if workable && !self.designations.contains_key(&p) {
@@ -457,7 +586,60 @@ impl Sim {
         {
             return false;
         }
+        if kind == BuildingKind::Floodgate {
+            // Floodgates start closed: the tile becomes a barrier.
+            let tile = self.map.tile_at(pos).unwrap();
+            self.map
+                .set_at(pos, Tile { material: tile.material, shape: TileShape::Gate, water: tile.water });
+            self.regions.dirty = true;
+            self.map_changed = true;
+            self.water.wake(pos);
+        }
         self.buildings.push(Building { kind, pos });
+        true
+    }
+
+    /// Place a lever linked to the nearest floodgate. Returns the linked
+    /// gate position if any.
+    pub fn add_lever(&mut self, pos: Pos) -> Option<Pos> {
+        let target = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Floodgate)
+            .min_by_key(|b| b.pos.manhattan(pos))?
+            .pos;
+        if self.add_building(BuildingKind::Lever { target }, pos) {
+            Some(target)
+        } else {
+            None
+        }
+    }
+
+    /// Pull the lever at `pos`: toggles its linked floodgate open/closed.
+    pub fn pull_lever(&mut self, pos: Pos) -> bool {
+        let Some(target) = self.buildings.iter().find_map(|b| match b.kind {
+            BuildingKind::Lever { target } if b.pos == pos => Some(target),
+            _ => None,
+        }) else {
+            return false;
+        };
+        self.toggle_floodgate(target)
+    }
+
+    pub fn toggle_floodgate(&mut self, pos: Pos) -> bool {
+        let Some(tile) = self.map.tile_at(pos) else { return false };
+        let new_shape = match tile.shape {
+            TileShape::Gate => TileShape::Floor,
+            TileShape::Floor => TileShape::Gate,
+            _ => return false,
+        };
+        self.map
+            .set_at(pos, Tile { material: tile.material, shape: new_shape, water: tile.water });
+        self.regions.dirty = true;
+        self.map_changed = true;
+        self.water.wake(pos);
+        let state = if new_shape == TileShape::Gate { "closed" } else { "opened" };
+        self.log_event(format!("The floodgate at ({}, {}) {state}.", pos.x, pos.y));
         true
     }
 
@@ -527,9 +709,13 @@ impl Sim {
                 .stockpiles
                 .iter()
                 .any(|s| x <= s.x1 && s.x0 <= x1 && y <= s.y1 && s.y0 <= y1);
-            let farmed = (y..=y1)
-                .any(|yy| (x..=x1).any(|xx| self.farms.contains_key(&Pos::new(xx, yy, z))));
-            if !overlaps && !farmed {
+            let blocked = (y..=y1).any(|yy| {
+                (x..=x1).any(|xx| {
+                    let p = Pos::new(xx, yy, z);
+                    self.farms.contains_key(&p) || self.building_at(p).is_some()
+                })
+            });
+            if !overlaps && !blocked {
                 self.add_stockpile(Pos::new(x, y, z), Pos::new(x1, y1, z));
                 cells += 9;
             }
@@ -618,8 +804,19 @@ impl Sim {
         self.items.iter().filter(|i| i.active() && i.kind == kind).count()
     }
 
+    /// Living fort citizens (hostiles excluded).
     pub fn alive_dwarves(&self) -> usize {
-        self.dwarves.iter().filter(|d| d.alive).count()
+        self.dwarves
+            .iter()
+            .filter(|d| d.alive && d.faction == Faction::Fort)
+            .count()
+    }
+
+    pub fn alive_hostiles(&self) -> usize {
+        self.dwarves
+            .iter()
+            .filter(|d| d.alive && d.faction == Faction::Hostile)
+            .count()
     }
 
     /// Is an item claimable as a consumable/ingredient right now?
@@ -633,22 +830,76 @@ impl Sim {
 
     pub fn step(&mut self, raws: &Raws) {
         self.clock.advance();
-        if self.regions.dirty {
+
+        // Water first: it changes what is walkable this tick.
+        {
+            let map = &mut self.map;
+            if self.water.step(map) {
+                self.regions.dirty = true;
+                self.map_changed = true;
+            }
+        }
+        // Region rebuilds are throttled; A* remains the authority in between.
+        if self.regions.dirty && self.clock.tick % REGION_REBUILD_INTERVAL == 0 {
             self.regions.rebuild(&self.map);
         }
+
         self.grow_farms(raws);
         if self.clock.tick % ASSIGN_INTERVAL == 0 {
             self.assign_jobs(raws);
         }
         for i in 0..self.dwarves.len() {
             if self.dwarves[i].alive {
-                self.update_dwarf(i, raws);
+                match self.dwarves[i].faction {
+                    Faction::Fort => self.update_dwarf(i, raws),
+                    Faction::Hostile => self.update_hostile(i),
+                }
             }
         }
-        // Season boundary: migrants may arrive.
+        // Season boundary: migrants and (later years) raiders.
         let season_ticks = TICKS_PER_DAY * DAYS_PER_SEASON;
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
             self.maybe_migrants(raws);
+            let seasons_elapsed = self.clock.tick / season_ticks;
+            if self.invasions && seasons_elapsed >= 2 {
+                let wealth = self.items.iter().filter(|i| i.active()).count();
+                let n = (1 + wealth / 150).min(5);
+                self.spawn_raiders(n);
+            }
+        }
+    }
+
+    /// Spawn a single raider at an exact position (tests/scenarios).
+    pub fn spawn_raider_at(&mut self, pos: Pos) {
+        let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile);
+        r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
+        self.dwarves.push(r);
+        self.stats.raiders_arrived += 1;
+    }
+
+    /// Spawn a raiding party at the map edge. Public for tests/scenarios.
+    pub fn spawn_raiders(&mut self, count: usize) {
+        let mut spawned = 0;
+        'outer: for y in 1..self.map.height - 1 {
+            for x in [1usize, self.map.width - 2] {
+                if spawned >= count {
+                    break 'outer;
+                }
+                if let Some(z) = self.map.walk_surface_z(x, y) {
+                    let pos = Pos::new(x as i32, y as i32, z as i32);
+                    if self.dwarves.iter().any(|d| d.alive && d.pos == pos) {
+                        continue;
+                    }
+                    let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile);
+                    r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
+                    self.dwarves.push(r);
+                    self.stats.raiders_arrived += 1;
+                    spawned += 1;
+                }
+            }
+        }
+        if spawned > 0 {
+            self.log_event(format!("A raiding party of {spawned} has arrived!"));
         }
     }
 
@@ -678,8 +929,9 @@ impl Sim {
             return;
         }
         let food = self.count_kind(ItemKind::Meal) + self.count_kind(ItemKind::Crop);
-        if food < alive {
-            return; // word gets out that the fort is starving
+        let drink = self.count_kind(ItemKind::Drink);
+        if food < alive || drink < alive {
+            return; // word gets out that the fort is starving (or dry)
         }
         let Some(anchor) = self.dwarves.iter().find(|d| d.alive).map(|d| d.pos) else {
             return;
@@ -695,7 +947,7 @@ impl Sim {
                 if let Some(z) = self.map.walk_surface_z(x, y) {
                     let pos = Pos::new(x as i32, y as i32, z as i32);
                     if self.regions.id(pos) == anchor_region {
-                        let mut d = new_dwarf(&mut self.rng, pos);
+                        let mut d = new_dwarf(&mut self.rng, pos, Faction::Fort);
                         d.thoughts.push((self.clock.tick, ThoughtKind::ArrivedAtFort));
                         d.happiness += ThoughtKind::ArrivedAtFort.delta();
                         self.dwarves.push(d);
@@ -711,35 +963,62 @@ impl Sim {
 
     fn assign_jobs(&mut self, raws: &Raws) {
         let alive = self.alive_dwarves();
-        let want_drinks = self.count_kind(ItemKind::Drink) < alive * 3;
-        let want_meals = self.count_kind(ItemKind::Meal) < alive * 3;
+        // Count batches already in flight so a 1-item deficit doesn't send
+        // every idle dwarf to the workshops at once.
+        let mut pending_brews = 0usize;
+        let mut pending_cooks = 0usize;
+        for d in &self.dwarves {
+            if d.alive {
+                match d.task {
+                    Task::Craft { kind: CraftKind::Brew, .. } => pending_brews += 1,
+                    Task::Craft { kind: CraftKind::Cook, .. } => pending_cooks += 1,
+                    _ => {}
+                }
+            }
+        }
         for i in 0..self.dwarves.len() {
-            if self.dwarves[i].alive && self.dwarves[i].is_idle() {
-                self.assign_one(i, raws, want_drinks, want_meals);
+            let d = &self.dwarves[i];
+            if d.alive && d.faction == Faction::Fort && d.is_idle() {
+                let want_drinks =
+                    self.count_kind(ItemKind::Drink) + pending_brews * BATCH < alive * 3;
+                let want_meals =
+                    self.count_kind(ItemKind::Meal) + pending_cooks * BATCH < alive * 3;
+                match self.assign_one(i, raws, want_drinks, want_meals) {
+                    Some(CraftKind::Brew) => pending_brews += 1,
+                    Some(CraftKind::Cook) => pending_cooks += 1,
+                    None => {}
+                }
             }
         }
     }
 
-    fn assign_one(&mut self, i: usize, raws: &Raws, want_drinks: bool, want_meals: bool) {
+    fn assign_one(
+        &mut self,
+        i: usize,
+        raws: &Raws,
+        want_drinks: bool,
+        want_meals: bool,
+    ) -> Option<CraftKind> {
         let dwarf_pos = self.dwarves[i].pos;
         let my_region = self.regions.id(dwarf_pos);
         if my_region == 0 {
-            return;
+            return None;
         }
         let tick = self.clock.tick;
 
         // --- Needs come first.
         if self.dwarves[i].hunger >= NEED_AT {
-            if let Some(item) = self.nearest_food(dwarf_pos, my_region) {
+            let hunger = self.dwarves[i].hunger;
+            if let Some(item) = self.nearest_food(dwarf_pos, my_region, hunger) {
                 if self.start_goto_item(i, item, |it, p| Task::Eat { item: it, path: p }) {
-                    return;
+                    return None;
                 }
             }
         }
         if self.dwarves[i].thirst >= NEED_AT {
             if let Some(item) = self.nearest_kind(ItemKind::Drink, dwarf_pos, my_region) {
                 if self.start_goto_item(i, item, |it, p| Task::Drink { item: it, path: p }) {
-                    return;
+                    return None;
                 }
             }
         }
@@ -768,6 +1047,9 @@ impl Sim {
             path::work_positions(&self.map, target, &mut scratch);
             if let Some(&work) = scratch
                 .iter()
+                // Channeling from the doomed tile itself would drop the digger
+                // into the trench.
+                .filter(|&&w| !(des.kind == DesignationKind::Channel && w == target))
                 .filter(|&&w| self.regions.id(w) == my_region)
                 .min_by_key(|&&w| w.manhattan(dwarf_pos))
             {
@@ -835,7 +1117,8 @@ impl Sim {
         }
 
         // --- Commit the winner.
-        let Some((_, cand)) = best else { return };
+        let Some((_, cand)) = best else { return None };
+        let mut started_craft = None;
         match cand {
             Cand::Mine { target, work } => {
                 match path::astar(&self.map, dwarf_pos, work, MAX_ASTAR_NODES) {
@@ -875,6 +1158,7 @@ impl Sim {
                         stage: FetchStage::ToInput,
                         progress: 0,
                     };
+                    started_craft = Some(kind);
                 }
             }
             Cand::Haul { item, dest } => {
@@ -891,6 +1175,7 @@ impl Sim {
                 }
             }
         }
+        started_craft
     }
 
     fn nearest_kind(&self, kind: ItemKind, near: Pos, region: u32) -> Option<usize> {
@@ -904,10 +1189,22 @@ impl Sim {
             .map(|(i, _)| i)
     }
 
-    /// Meals first; raw crops as a joyless fallback.
-    fn nearest_food(&self, near: Pos, region: u32) -> Option<usize> {
-        self.nearest_kind(ItemKind::Meal, near, region)
-            .or_else(|| self.nearest_kind(ItemKind::Crop, near, region))
+    /// Meals first. Raw crops are a joyless fallback — and if a kitchen
+    /// exists, only a desperate dwarf raids the larder (crops turn into
+    /// three meals each when cooked).
+    fn nearest_food(&self, near: Pos, region: u32, hunger: f32) -> Option<usize> {
+        if let Some(meal) = self.nearest_kind(ItemKind::Meal, near, region) {
+            return Some(meal);
+        }
+        let has_kitchen = self
+            .buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::Kitchen);
+        if !has_kitchen || hunger >= 85.0 {
+            self.nearest_kind(ItemKind::Crop, near, region)
+        } else {
+            None
+        }
     }
 
     fn nearest_seed(&self, crop: u16, near: Pos, region: u32) -> Option<usize> {
@@ -977,6 +1274,11 @@ impl Sim {
         self.tick_needs(i);
         if !self.dwarves[i].alive {
             return; // needs may have killed them this very tick
+        }
+        // Self-defense: fight any adjacent hostile before doing anything else.
+        if let Some(enemy) = self.adjacent_enemy(i) {
+            self.melee(i, enemy);
+            return;
         }
 
         let task = self.dwarves[i].task.clone();
@@ -1061,11 +1363,13 @@ impl Sim {
                         return;
                     }
                     let here = self.dwarves[i].pos;
+                    // Only resting items block a cell — creatures carrying
+                    // things through the stockpile don't occupy it.
                     let taken = self.items.iter().enumerate().any(|(j, it)| {
                         j != item
                             && it.active()
                             && it.pos == here
-                            && it.state != (ItemState::Carried { by: i })
+                            && matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
                     });
                     self.items[item].pos = here;
                     self.items[item].reserved_by = None;
@@ -1269,11 +1573,177 @@ impl Sim {
                     }
                 }
             }
+            // Fort citizens never chase (hostiles use update_hostile);
+            // clear it if it somehow appears.
+            Task::Fight { .. } => {
+                self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+            }
+        }
+    }
+
+    /// Raider AI: chase the nearest fort creature; swing when adjacent;
+    /// approach greedily when no path exists (e.g. walls or moats).
+    fn update_hostile(&mut self, i: usize) {
+        self.tick_vitals(i);
+        if !self.dwarves[i].alive {
+            return;
+        }
+        if let Some(enemy) = self.adjacent_enemy(i) {
+            self.melee(i, enemy);
+            return;
+        }
+        let my_pos = self.dwarves[i].pos;
+        let target = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.alive && d.faction == Faction::Fort)
+            .min_by_key(|(_, d)| d.pos.manhattan(my_pos))
+            .map(|(j, _)| j);
+        let Some(target) = target else {
+            // Nobody left to fight; mill about.
+            self.dwarves[i].task = Task::Idle { wander_cd: 50 };
+            return;
+        };
+
+        let (mut path, mut repath_cd) = match self.dwarves[i].task.clone() {
+            Task::Fight { target: t, path, repath_cd } if t == target => (path, repath_cd),
+            _ => (Vec::new(), 0),
+        };
+        if repath_cd == 0 && path.is_empty() {
+            path = path::astar(&self.map, my_pos, self.dwarves[target].pos, 20_000)
+                .unwrap_or_default();
+            repath_cd = 120;
+        }
+        repath_cd = repath_cd.saturating_sub(1);
+
+        if !path.is_empty() {
+            if !self.step_along(i, &mut path) {
+                path.clear();
+            }
+        } else if self.dwarves[i].move_cd == 0 {
+            // No path (walls, moats): press greedily toward the target.
+            let goal = self.dwarves[target].pos;
+            let mut opts = Vec::with_capacity(8);
+            path::neighbors(&self.map, my_pos, &mut opts);
+            if let Some(&next) = opts.iter().min_by_key(|q| q.manhattan(goal)) {
+                if next.manhattan(goal) < my_pos.manhattan(goal) {
+                    self.dwarves[i].pos = next;
+                    self.dwarves[i].move_cd = WALK_COOLDOWN;
+                }
+            }
+        } else {
+            self.dwarves[i].move_cd -= 1;
+        }
+        self.dwarves[i].task = Task::Fight { target, path, repath_cd };
+    }
+
+    fn adjacent_enemy(&self, i: usize) -> Option<usize> {
+        let me = &self.dwarves[i];
+        self.dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.alive && d.faction != me.faction)
+            .find(|(_, d)| d.pos.manhattan(me.pos) <= 1)
+            .map(|(j, _)| j)
+    }
+
+    /// One melee swing, if off cooldown: pick a body part, deal damage,
+    /// start bleeding, log it, and kill on vital destruction.
+    fn melee(&mut self, attacker: usize, defender: usize) {
+        if self.dwarves[attacker].attack_cd > 0 {
+            self.dwarves[attacker].attack_cd -= 1;
+            return;
+        }
+        self.dwarves[attacker].attack_cd = ATTACK_COOLDOWN;
+
+        // Torso is the biggest target; head the deadliest.
+        let roll = self.rng.gen_range(0..8usize);
+        let part_kind = match roll {
+            0 => PartKind::Head,
+            1 | 2 | 3 => PartKind::Torso,
+            4 => PartKind::LeftArm,
+            5 => PartKind::RightArm,
+            6 => PartKind::LeftLeg,
+            _ => PartKind::RightLeg,
+        };
+        let dmg = self.rng.gen_range(8..=20) as i16;
+        let bleed = self.rng.gen_range(1..=3) as u8;
+
+        let att_name = self.dwarves[attacker].name.clone();
+        let def_name = self.dwarves[defender].name.clone();
+        let d = &mut self.dwarves[defender];
+        let Some(part) = d.body.iter_mut().find(|pt| pt.kind == part_kind) else { return };
+        part.hp -= dmg;
+        part.bleeding = part.bleeding.saturating_add(bleed);
+        let destroyed = part.hp <= 0;
+        let vital = part.kind.vital();
+        self.log_event(format!(
+            "{att_name} strikes {def_name} in the {}!",
+            part_kind.name()
+        ));
+        if destroyed && vital {
+            self.log_event(format!("{def_name} falls dead!"));
+            self.kill_dwarf(defender);
+            if self.dwarves[defender].faction == Faction::Hostile {
+                self.stats.raiders_slain += 1;
+            }
+        }
+    }
+
+    /// Blood, breath, bleeding, and rest-healing — applies to every faction.
+    fn tick_vitals(&mut self, i: usize) {
+        let tick = self.clock.tick;
+        let pos = self.dwarves[i].pos;
+        let submerged = self.map.water_at(pos) >= 5;
+        let name = self.dwarves[i].name.clone();
+        let d = &mut self.dwarves[i];
+
+        if submerged {
+            d.breath -= 100.0 / BREATH_TICKS;
+        } else {
+            d.breath = (d.breath + 2.0).min(100.0);
+        }
+        let drowned = d.breath <= 0.0;
+
+        let bleeding: u32 = d.body.iter().map(|p| p.bleeding as u32).sum();
+        if bleeding > 0 {
+            d.blood -= bleeding as f32 * 0.01;
+        } else {
+            d.blood = (d.blood + 0.002).min(100.0);
+        }
+        let resting = matches!(d.task, Task::Sleep { .. });
+        let decay_every = if resting { 100 } else { 400 };
+        if tick % decay_every == 0 {
+            for p in &mut d.body {
+                p.bleeding = p.bleeding.saturating_sub(1);
+            }
+        }
+        if resting && tick % 200 == 0 {
+            for p in &mut d.body {
+                if p.hp < p.max_hp {
+                    p.hp += 1;
+                }
+            }
+        }
+        let bled_out = d.blood <= 0.0;
+
+        if drowned {
+            self.stats.drownings += 1;
+            self.log_event(format!("{name} has drowned."));
+            self.kill_dwarf(i);
+        } else if bled_out {
+            self.log_event(format!("{name} has bled out."));
+            self.kill_dwarf(i);
         }
     }
 
     /// Needs tick + hunger/thirst thoughts + death countdowns.
     fn tick_needs(&mut self, i: usize) {
+        self.tick_vitals(i);
+        if !self.dwarves[i].alive {
+            return;
+        }
         let tick = self.clock.tick;
         let d = &mut self.dwarves[i];
         let old_hunger = d.hunger;
@@ -1401,18 +1871,54 @@ impl Sim {
             return;
         };
         let tile = self.map.tile_at(target).expect("designated tile in bounds");
-        let new_shape = match des.kind {
-            DesignationKind::Mine => TileShape::Floor,
-            DesignationKind::Stairs => TileShape::Stairs,
-        };
-        self.map.set_at(target, Tile { material: tile.material, shape: new_shape });
+        let mut boulder_from = tile;
+        match des.kind {
+            DesignationKind::Mine => {
+                self.map.set_at(
+                    target,
+                    Tile { material: tile.material, shape: TileShape::Floor, water: tile.water },
+                );
+            }
+            DesignationKind::Stairs => {
+                self.map.set_at(
+                    target,
+                    Tile { material: tile.material, shape: TileShape::Stairs, water: tile.water },
+                );
+            }
+            DesignationKind::Channel => {
+                // The floor is dug away: open space here, floor below.
+                self.map.set_at(
+                    target,
+                    Tile { material: NO_MATERIAL, shape: TileShape::Empty, water: tile.water },
+                );
+                let below = Pos::new(target.x, target.y, target.z - 1);
+                if let Some(bt) = self.map.tile_at(below) {
+                    if bt.is_solid() {
+                        boulder_from = bt;
+                        self.map.set_at(
+                            below,
+                            Tile { material: bt.material, shape: TileShape::Floor, water: bt.water },
+                        );
+                    }
+                }
+                self.water.wake(below);
+            }
+        }
         self.regions.dirty = true;
         self.map_changed = true;
+        self.water.wake(target);
 
-        if tile.is_solid()
-            && raws.materials.get(tile.material).category != MaterialCategory::Soil
+        if boulder_from.is_solid()
+            && boulder_from.material != NO_MATERIAL
+            && raws.materials.get(boulder_from.material).category != MaterialCategory::Soil
         {
-            self.spawn_item(ItemKind::Boulder, tile.material, target);
+            // Channeled boulders land in the trench below.
+            let drop_at = if des.kind == DesignationKind::Channel {
+                Pos::new(target.x, target.y, target.z - 1)
+            } else {
+                target
+            };
+            self.spawn_item(ItemKind::Boulder, boulder_from.material, drop_at);
         }
         self.add_xp(i, Skill::Mining, 20);
         self.dwarves[i].task = Task::Idle { wander_cd: 2 };
@@ -1451,7 +1957,7 @@ impl Sim {
                     self.items[input].reserved_by = None;
                 }
             }
-            Task::Idle { .. } | Task::Sleep { .. } => {}
+            Task::Idle { .. } | Task::Sleep { .. } | Task::Fight { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -1468,19 +1974,24 @@ impl Sim {
     }
 }
 
-fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos) -> Dwarf {
+fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction) -> Dwarf {
     Dwarf {
         name: names::dwarf_name(rng),
         pos,
         alive: true,
+        faction,
         hunger: rng.gen_range(0.0..20.0),
         thirst: rng.gen_range(0.0..20.0),
         fatigue: rng.gen_range(0.0..30.0),
         happiness: 50.0,
+        blood: 100.0,
+        breath: 100.0,
+        body: default_body(),
         thoughts: Vec::new(),
         skills: BTreeMap::new(),
         task: Task::Idle { wander_cd: rng.gen_range(20..80) },
         move_cd: 0,
+        attack_cd: 0,
         starving_since: None,
         dehydrated_since: None,
     }
@@ -1489,7 +2000,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos) -> Dwarf {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 4;
+const SAVE_VERSION: u32 = 5;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

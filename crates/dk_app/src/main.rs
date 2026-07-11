@@ -23,7 +23,8 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
-    load_sim, save_sim, BuildingKind, DesignationKind, FarmState, ItemKind, ItemState, Sim,
+    load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
+    Sim,
 };
 use dk_raws::Raws;
 use dk_world::path::Pos;
@@ -73,6 +74,7 @@ struct SimControl {
 enum UiKind {
     Mine,
     Stairs,
+    Channel,
     Stockpile,
     Farm,
     Cancel,
@@ -83,6 +85,7 @@ impl UiKind {
         match self {
             UiKind::Mine => "MINE",
             UiKind::Stairs => "STAIRS",
+            UiKind::Channel => "CHANNEL",
             UiKind::Stockpile => "STOCKPILE",
             UiKind::Farm => "FARM",
             UiKind::Cancel => "CANCEL",
@@ -445,6 +448,7 @@ fn handle_input(
         (KeyCode::KeyX, UiKind::Stairs),
         (KeyCode::KeyP, UiKind::Stockpile),
         (KeyCode::KeyF, UiKind::Farm),
+        (KeyCode::KeyH, UiKind::Channel),
         (KeyCode::KeyC, UiKind::Cancel),
     ] {
         if !keys.just_pressed(key) {
@@ -459,6 +463,9 @@ fn handle_input(
                     }
                     UiKind::Stairs => {
                         sim.0.designate_rect(DesignationKind::Stairs, anchor, here);
+                    }
+                    UiKind::Channel => {
+                        sim.0.designate_rect(DesignationKind::Channel, anchor, here);
                     }
                     UiKind::Stockpile => sim.0.add_stockpile(anchor, here),
                     UiKind::Farm => {
@@ -485,6 +492,7 @@ fn handle_input(
     for (key, kind) in [
         (KeyCode::KeyV, BuildingKind::Still),
         (KeyCode::KeyK, BuildingKind::Kitchen),
+        (KeyCode::KeyG, BuildingKind::Floodgate),
     ] {
         if keys.just_pressed(key) {
             let here = cursor.pos(view_z.0);
@@ -495,6 +503,23 @@ fn handle_input(
             }
             dirty.0 = true;
         }
+    }
+    if keys.just_pressed(KeyCode::KeyL) {
+        let here = cursor.pos(view_z.0);
+        match sim.0.add_lever(here) {
+            Some(gate) => info!("lever placed, linked to floodgate at {:?}", gate),
+            None => warn!("no floodgate to link (build one with 'g' first)"),
+        }
+        dirty.0 = true;
+    }
+    if keys.just_pressed(KeyCode::KeyT) {
+        let here = cursor.pos(view_z.0);
+        if sim.0.pull_lever(here) {
+            info!("lever pulled");
+        } else {
+            warn!("no lever at the cursor");
+        }
+        dirty.0 = true;
     }
 
     // Time controls.
@@ -535,10 +560,10 @@ fn handle_input(
             tf.translation.x += pan;
         }
         if keys.just_pressed(KeyCode::Equal) {
-            tf.scale *= 0.8;
+            tf.scale = (tf.scale * 0.8).clamp(Vec3::splat(0.2), Vec3::splat(4.0));
         }
         if keys.just_pressed(KeyCode::Minus) {
-            tf.scale *= 1.25;
+            tf.scale = (tf.scale * 1.25).clamp(Vec3::splat(0.2), Vec3::splat(4.0));
         }
     }
 
@@ -608,7 +633,7 @@ fn tile_color(
         }
         let [r, g, b] = raws.materials.get(tile.material).color;
         let shade = match tile.shape {
-            TileShape::Solid => 1.0,
+            TileShape::Solid | TileShape::Gate => 1.0,
             TileShape::Ramp => 0.8,
             TileShape::Stairs => 0.7,
             TileShape::Floor => 0.55,
@@ -635,8 +660,15 @@ fn tile_color(
         let tint = match b.kind {
             BuildingKind::Still => [0.85, 0.5, 0.22],
             BuildingKind::Kitchen => [0.8, 0.25, 0.2],
+            BuildingKind::Floodgate => [0.55, 0.55, 0.6],
+            BuildingKind::Lever { .. } => [0.9, 0.85, 0.3],
         };
         rgb = mix(rgb, tint, 0.6);
+    }
+    let water = sim.map.water_at(here);
+    if water > 0 {
+        let k = 0.25 + 0.08 * water as f32;
+        rgb = mix(rgb, [0.15, 0.35, 0.9], k.min(0.85));
     }
     if sim.designations.contains_key(&here) {
         rgb = mix(rgb, [1.0, 0.62, 0.12], 0.45);
@@ -732,11 +764,15 @@ fn sync_agent_sprites(
     }
 
     for (i, &e) in pools.dwarves.iter().enumerate() {
-        let Ok((mut tf, _, mut vis)) = sprites.get_mut(e) else { continue };
+        let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
         match sim.0.dwarves.get(i) {
             Some(d) if d.alive && d.pos.z == view_z.0 => {
                 tf.translation.x = d.pos.x as f32 * TILE;
                 tf.translation.y = d.pos.y as f32 * TILE;
+                sprite.color = match d.faction {
+                    Faction::Fort => Color::srgb(0.93, 0.79, 0.55),
+                    Faction::Hostile => Color::srgb(0.85, 0.25, 0.25),
+                };
                 *vis = Visibility::Visible;
             }
             _ => *vis = Visibility::Hidden,
@@ -805,6 +841,10 @@ fn update_hud(
     if let Some(b) = sim.0.building_at(here) {
         under = format!("{under} · {}", b.kind.name());
     }
+    let water = sim.0.map.water_at(here);
+    if water > 0 {
+        under = format!("{under} · water {water}/7");
+    }
     if let Some(it) = sim
         .0
         .items
@@ -828,13 +868,16 @@ fn update_hud(
         .iter()
         .find(|d| d.alive && d.pos == here)
         .map(|d| {
+            let wounds = if d.is_wounded() { " · WOUNDED" } else { "" };
             let mut s = format!(
-                "\n{} — {} · happiness {:.0} · hunger {:.0} thirst {:.0}",
+                "\n{} — {} · happiness {:.0} · hunger {:.0} thirst {:.0} · blood {:.0}{}",
                 d.name,
                 d.task_name(),
                 d.happiness,
                 d.hunger,
-                d.thirst
+                d.thirst,
+                d.blood,
+                wounds
             );
             for (_, t) in d.thoughts.iter().rev().take(3) {
                 s.push_str(&format!("\n  · {} ({:+.0})", t.text(), t.delta()));
@@ -859,15 +902,27 @@ fn update_hud(
         .0
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
+    let log_tail = sim
+        .0
+        .log
+        .iter()
+        .rev()
+        .take(2)
+        .map(|(_, m)| format!("\n> {m}"))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
 
     for mut text in &mut q {
         text.0 = format!(
-            "Dwarf Kingdom :: Phase 2 :: Survive a Year\n\
+            "Dwarf Kingdom :: Phase 3 :: Blood & Water\n\
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   migrants {}\n\
-             d:mine x:stairs f:farm p:stockpile v:still k:kitchen c:cancel   space:pause 1/2/3:speed   [ ]:z   F5/F9:save/load   Q:quit{}{}",
+             harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)\n\
+             d:mine x:stairs h:channel f:farm p:stockpile v:still k:kitchen g:floodgate l:lever t:pull c:cancel\n\
+             space:pause 1/2/3:speed   [ ]:z   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
@@ -889,7 +944,11 @@ fn update_hud(
             sim.0.stats.meals_cooked,
             sim.0.stats.drinks_brewed,
             sim.0.stats.migrants_arrived,
+            sim.0.alive_hostiles(),
+            sim.0.stats.raiders_slain,
+            sim.0.stats.drownings,
             mode_txt,
+            log_tail,
             dwarf_panel,
         );
     }

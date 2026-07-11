@@ -15,6 +15,7 @@ fn embark_survives_to_year_two() {
     let mut rng = dk_core::rng_from_seed(2026);
     let map = dk_world::generate(&raws.materials, &mut rng, 32, 32, 16, 2026);
     let mut sim = Sim::new(map, &raws, rng, 7);
+    sim.invasions = false; // peace: this test is about the food economy
     sim.add_embark_supplies(&raws);
 
     let cx = sim.map.width as i32 / 2;

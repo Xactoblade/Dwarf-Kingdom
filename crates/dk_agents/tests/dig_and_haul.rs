@@ -13,7 +13,8 @@ fn build_sim(seed: u64) -> (Sim, Raws) {
     let raws = common::test_raws();
     let mut rng = dk_core::rng_from_seed(seed);
     let map = dk_world::generate(&raws.materials, &mut rng, 32, 32, 16, seed);
-    let sim = Sim::new(map, &raws, rng, 5);
+    let mut sim = Sim::new(map, &raws, rng, 5);
+    sim.invasions = false;
     (sim, raws)
 }
 
