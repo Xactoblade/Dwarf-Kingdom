@@ -111,8 +111,8 @@ fn killing_a_trader_bans_trade_for_a_year() {
 
     assert!(sim.caravan.is_none(), "the survivors flee");
     assert!(
-        sim.log.iter().any(|(_, m)| m.contains("was killed")),
-        "the outrage is recorded"
+        sim.log.iter().any(|(_, m)| m.contains("died in your care")),
+        "the outrage is recorded (a death not caused by raiders is on you)"
     );
     assert!(sim.stats.deaths == 0, "a dead visitor is not a lost citizen");
 

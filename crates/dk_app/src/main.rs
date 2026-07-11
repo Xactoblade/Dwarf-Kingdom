@@ -365,15 +365,21 @@ fn main() {
         .add_systems(
             Update,
             (
-                handle_mouse,
-                handle_input,
-                handle_trade_input,
-                overlay_refresh,
-                redraw_tiles,
-                sync_agent_sprites,
-                position_cursor_sprite,
-                update_hud,
-                screenshot_mode,
+                (
+                    handle_mouse,
+                    handle_input,
+                    handle_trade_input,
+                    overlay_refresh,
+                    redraw_tiles,
+                )
+                    .chain(),
+                (
+                    sync_agent_sprites,
+                    position_cursor_sprite,
+                    update_hud,
+                    screenshot_mode,
+                )
+                    .chain(),
             )
                 .chain(),
         )
@@ -789,13 +795,6 @@ fn handle_input(
     }
 
     // ---- Playing.
-    if keys.just_pressed(KeyCode::KeyR) {
-        if sim.0.as_ref().is_some_and(|s| s.caravan.is_some()) {
-            screen.0 = Screen::Trade;
-            dirty.0 = true;
-            return;
-        }
-    }
     if keys.just_pressed(KeyCode::KeyY) {
         legends.from = Screen::Playing;
         legends.scroll = 0;
@@ -1012,21 +1011,41 @@ fn handle_trade_input(
     mut sim: ResMut<SimRes>,
     mut dirty: ResMut<MapDirty>,
 ) {
+    // 'r' during play opens the negotiation (when a caravan is visiting).
+    if screen.0 == Screen::Playing
+        && keys.just_pressed(KeyCode::KeyR)
+        && sim.0.as_ref().is_some_and(|s| s.caravan.is_some())
+    {
+        *trade = TradeState::default(); // a fresh deal every visit
+        screen.0 = Screen::Trade;
+        dirty.0 = true;
+        return;
+    }
     if screen.0 != Screen::Trade {
         return;
     }
     let Some(sim_inner) = sim.0.as_mut() else {
+        *trade = TradeState::default();
         screen.0 = Screen::Playing;
         return;
     };
-    // Caravan left mid-negotiation?
+    // Caravan left mid-negotiation? Abandon the deal entirely — stale
+    // selections must never carry into the next caravan's visit.
     let Some(caravan_len) = sim_inner.caravan.as_ref().map(|c| c.goods.len()) else {
+        *trade = TradeState::default();
         screen.0 = Screen::Playing;
         dirty.0 = true;
         return;
     };
     let yours = tradeable_items(sim_inner);
+    // The fort keeps living while you haggle: items get eaten, hauled, and
+    // reserved under you. Prune dead selections and keep the cursor in
+    // bounds every frame, or Space can index past the end and panic.
+    let yours_set: std::collections::BTreeSet<usize> = yours.iter().copied().collect();
+    trade.offer.retain(|i| yours_set.contains(i));
+    trade.request.retain(|&g| g < caravan_len);
     let col_len = if trade.side == 0 { caravan_len } else { yours.len() };
+    trade.cursor = trade.cursor.min(col_len.saturating_sub(1));
 
     if keys.just_pressed(KeyCode::Tab)
         || keys.just_pressed(KeyCode::ArrowLeft)
@@ -1161,6 +1180,11 @@ fn tile_visual(
     if water > 0 {
         let k = 0.25 + 0.08 * water as f32;
         rgb = mix(rgb, [0.15, 0.35, 0.9], k.min(0.85));
+    }
+    let magma = sim.map.magma_at(here);
+    if magma > 0 {
+        let k = 0.5 + 0.06 * magma as f32;
+        rgb = mix(rgb, [1.0, 0.32, 0.02], k.min(0.95));
     }
     if sim.designations.contains_key(&here) {
         rgb = mix(rgb, [1.0, 0.62, 0.12], 0.45);
@@ -1563,7 +1587,17 @@ fn update_hud(
                 ));
             }
             let mut right = "YOUR STORES\n".to_string();
-            for (row, &i) in yours.iter().enumerate().take(24) {
+            // A 24-row window that follows the cursor.
+            const WINDOW: usize = 24;
+            let start = if trade.side == 1 {
+                trade.cursor.saturating_sub(WINDOW / 2).min(yours.len().saturating_sub(WINDOW))
+            } else {
+                0
+            };
+            if start > 0 {
+                right.push_str(&format!("  ... {start} above ...\n"));
+            }
+            for (row, &i) in yours.iter().enumerate().skip(start).take(WINDOW) {
                 let it = &sim.items[i];
                 let sel = if trade.offer.contains(&i) { "[x]" } else { "[ ]" };
                 let cur = if trade.side == 1 && trade.cursor == row { ">" } else { " " };
@@ -1573,8 +1607,9 @@ fn update_hud(
                     item_value(it, &reg.0)
                 ));
             }
-            if yours.len() > 24 {
-                right.push_str(&format!("  ... and {} more\n", yours.len() - 24));
+            let below = yours.len().saturating_sub(start + WINDOW);
+            if below > 0 {
+                right.push_str(&format!("  ... {below} below ...\n"));
             }
             for mut text in &mut q {
                 text.0 = format!(
@@ -1619,6 +1654,10 @@ fn update_hud(
     let water = sim.0.map.water_at(here);
     if water > 0 {
         under = format!("{under} · water {water}/7");
+    }
+    let magma = sim.0.map.magma_at(here);
+    if magma > 0 {
+        under = format!("{under} · MAGMA {magma}/7");
     }
     if let Some(it) = sim
         .0

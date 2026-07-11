@@ -260,8 +260,8 @@ mod tests {
     fn stairs_connect_z_levels() {
         let mut m = flat_map();
         // Carve a stair shaft at (2,2): z1 and a floor + stair at z2.
-        m.set(2, 2, 1, Tile { material: 0, shape: TileShape::Stairs, water: 0 });
-        m.set(2, 2, 2, Tile { material: 0, shape: TileShape::Stairs, water: 0 });
+        m.set(2, 2, 1, Tile { material: 0, shape: TileShape::Stairs, water: 0, magma: 0 });
+        m.set(2, 2, 2, Tile { material: 0, shape: TileShape::Stairs, water: 0, magma: 0 });
         m.set(3, 2, 2, Tile::floor(0));
         let path = astar(&m, Pos::new(0, 0, 1), Pos::new(3, 2, 2), 10_000).unwrap();
         assert_eq!(*path.last().unwrap(), Pos::new(3, 2, 2));
@@ -297,7 +297,7 @@ mod tests {
                     m.set(x, y, 2, Tile::floor(0));
                 }
             }
-            m.set(3, y, 1, Tile { material: 0, shape: TileShape::Ramp, water: 0 });
+            m.set(3, y, 1, Tile { material: 0, shape: TileShape::Ramp, water: 0, magma: 0 });
         }
         let low = Pos::new(0, 0, 1);
         let high = Pos::new(7, 7, 2);
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn work_positions_include_stairs_above() {
         let mut m = flat_map();
-        m.set(2, 2, 1, Tile { material: 0, shape: TileShape::Stairs, water: 0 });
+        m.set(2, 2, 1, Tile { material: 0, shape: TileShape::Stairs, water: 0, magma: 0 });
         let mut out = Vec::new();
         // Target: solid tile below the stair (digging downward).
         work_positions(&m, Pos::new(2, 2, 0), &mut out);

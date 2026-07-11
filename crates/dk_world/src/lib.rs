@@ -59,6 +59,8 @@ pub struct Tile {
     /// Water depth 0-7 (see dk_sim). Lives on the tile so pathfinding and
     /// rendering see it without a parallel grid.
     pub water: u8,
+    /// Magma depth 0-7. Any amount is impassable and lethal.
+    pub magma: u8,
 }
 
 impl Tile {
@@ -66,14 +68,15 @@ impl Tile {
         material: NO_MATERIAL,
         shape: TileShape::Empty,
         water: 0,
+        magma: 0,
     };
 
     pub fn solid(material: u16) -> Self {
-        Tile { material, shape: TileShape::Solid, water: 0 }
+        Tile { material, shape: TileShape::Solid, water: 0, magma: 0 }
     }
 
     pub fn floor(material: u16) -> Self {
-        Tile { material, shape: TileShape::Floor, water: 0 }
+        Tile { material, shape: TileShape::Floor, water: 0, magma: 0 }
     }
 
     /// Can water occupy this tile?
@@ -145,10 +148,23 @@ impl Map {
         self.set(p.x as usize, p.y as usize, p.z as usize, t);
     }
 
-    /// Walkable and not dangerously deep water.
+    /// Walkable, not dangerously deep water, and free of magma (any depth
+    /// of magma is death — nobody paths through it).
     pub fn walkable(&self, p: Pos) -> bool {
         self.tile_at(p)
-            .is_some_and(|t| t.shape.is_walkable() && t.water < DEEP_WATER)
+            .is_some_and(|t| t.shape.is_walkable() && t.water < DEEP_WATER && t.magma == 0)
+    }
+
+    pub fn magma_at(&self, p: Pos) -> u8 {
+        self.tile_at(p).map_or(0, |t| t.magma)
+    }
+
+    pub fn set_magma(&mut self, p: Pos, m: u8) {
+        if self.in_bounds(p.x as i64, p.y as i64, p.z as i64) {
+            let mut t = self.get(p.x as usize, p.y as usize, p.z as usize);
+            t.magma = m;
+            self.set(p.x as usize, p.y as usize, p.z as usize, t);
+        }
     }
 
     pub fn water_at(&self, p: Pos) -> u8 {
@@ -329,7 +345,7 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
             if higher_neighbor {
                 let floor_z = h + 1;
                 let mat = map.get(x, y, floor_z).material;
-                map.set(x, y, floor_z, Tile { material: mat, shape: TileShape::Ramp, water: 0 });
+                map.set(x, y, floor_z, Tile { material: mat, shape: TileShape::Ramp, water: 0, magma: 0 });
             }
         }
     }
@@ -354,6 +370,55 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
                 // Veins wander mostly horizontally.
                 if rng.gen_ratio(1, 4) {
                     z += rng.gen_range(-1..=1);
+                }
+            }
+        }
+    }
+
+    // --- Caverns: blobby open galleries carved deep beneath the surface,
+    // and magma pockets pooling at the roots of the world.
+    let cav_lo = (depth / 8).max(2);
+    let cav_hi = (depth / 4).max(cav_lo + 1);
+    let mag_hi = (depth / 10).max(1);
+    let coarse2 = 6usize;
+    let gw2 = width / coarse2 + 2;
+    let gh2 = height / coarse2 + 2;
+    let cav_grid: Vec<f32> = (0..gw2 * gh2).map(|_| rng.gen_range(0.0f32..1.0)).collect();
+    let mag_grid: Vec<f32> = (0..gw2 * gh2).map(|_| rng.gen_range(0.0f32..1.0)).collect();
+    let field_at = |grid: &Vec<f32>, x: usize, y: usize| -> f32 {
+        let fx = x as f32 / coarse2 as f32;
+        let fy = y as f32 / coarse2 as f32;
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (tx, ty) = (fx.fract(), fy.fract());
+        let g = |gx: usize, gy: usize| grid[gy * gw2 + gx];
+        let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
+        let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
+        top * (1.0 - ty) + bot * ty
+    };
+    for y in 0..height {
+        for x in 0..width {
+            // Cavern galleries: hollow where the noise runs high.
+            if field_at(&cav_grid, x, y) > 0.62 {
+                for z in cav_lo..=cav_hi {
+                    if map.get(x, y, z).is_solid() {
+                        map.set(x, y, z, Tile::AIR);
+                    }
+                }
+                // A walkable cavern floor sits on the solid below.
+                if map.get(x, y, cav_lo - 1).is_solid() {
+                    let mat = map.get(x, y, cav_lo - 1).material;
+                    map.set(x, y, cav_lo, Tile::floor(mat));
+                }
+            }
+            // Magma pockets: pooled fire in the deepest stone.
+            if field_at(&mag_grid, x, y) > 0.72 {
+                for z in 1..=mag_hi {
+                    if map.get(x, y, z).is_solid() {
+                        let mat = map.get(x, y, z).material;
+                        let mut t = Tile::floor(mat);
+                        t.magma = 7;
+                        map.set(x, y, z, t);
+                    }
                 }
             }
         }

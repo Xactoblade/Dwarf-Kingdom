@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use dk_core::{Calendar, DAYS_PER_SEASON, TICKS_PER_DAY};
 use dk_raws::{MaterialCategory, Raws};
-use dk_sim::WaterSim;
+use dk_sim::{FluidSim, WaterSim};
 use dk_world::path::{self, Pos, Regions};
 use dk_world::{Map, Tile, TileShape, NO_MATERIAL};
 use rand::Rng;
@@ -525,7 +525,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Crop => 5,
         ItemKind::Meal => 8,
         ItemKind::Drink => 8,
-        ItemKind::Artifact => 200,
+        // Precious, but not a wagon-buying cheat: the material matters.
+        ItemKind::Artifact => 50 + raws.materials.get(item.stuff).value * 5,
     }
 }
 
@@ -559,6 +560,8 @@ pub struct Sim {
     pub stats: SimStats,
     pub clock: Calendar,
     pub water: WaterSim,
+    /// The second fluid: slower, hotter, considerably less forgiving.
+    pub magma: FluidSim,
     /// Adventure mode: index of the player-controlled creature, if any.
     pub player: Option<usize>,
     /// Adventure quest: (target name, completed).
@@ -575,6 +578,9 @@ pub struct Sim {
     pub caravan: Option<Caravan>,
     /// Killing traders has consequences: no caravans until this tick.
     pub trade_ban_until: u64,
+    /// Set when a hostile (not the fort) kills a trader — the caravan
+    /// scatters but the civ blames the raiders, not you.
+    trader_lost_to_raiders: bool,
     /// Rolling event log shown in the UI (tick, message).
     pub log: Vec<(u64, String)>,
     /// World setting: do raiding parties attack this fort?
@@ -618,6 +624,9 @@ impl Sim {
         }
         assert!(!dwarves.is_empty(), "no walkable spawn tiles found");
 
+        let mut magma = FluidSim::magma();
+        magma.wake_all(&map);
+
         // A natural spring rises at the lowest point of the surface,
         // slowly forming a pond dwarves can channel water from.
         let mut water = WaterSim::default();
@@ -646,6 +655,7 @@ impl Sim {
             stats: SimStats::default(),
             clock: Calendar::default(),
             water,
+            magma,
             player: None,
             quest: None,
             quest_target: None,
@@ -654,6 +664,7 @@ impl Sim {
             trade_partner: None,
             caravan: None,
             trade_ban_until: 0,
+            trader_lost_to_raiders: false,
             log: Vec::new(),
             invasions: true,
             rng,
@@ -675,6 +686,7 @@ impl Sim {
         self.regions = Regions::new(&self.map);
         let map = &self.map;
         self.water.wake_all(map);
+        self.magma.wake_all(map);
         self.map_changed = true;
     }
 
@@ -775,11 +787,12 @@ impl Sim {
             // Floodgates start closed: the tile becomes a barrier.
             let tile = self.map.tile_at(pos).unwrap();
             self.map
-                .set_at(pos, Tile { material: tile.material, shape: TileShape::Gate, water: 0 });
+                .set_at(pos, Tile { material: tile.material, shape: TileShape::Gate, water: 0, magma: 0 });
             self.displace_water(pos, tile.water);
             self.regions.dirty = true;
             self.map_changed = true;
             self.water.wake(pos);
+            self.magma.wake(pos);
         }
         self.buildings.push(Building { kind, pos });
         true
@@ -852,13 +865,14 @@ impl Sim {
         // tile is skipped by the water CA, so it must never hold any.
         let kept_water = if new_shape == TileShape::Gate { 0 } else { tile.water };
         self.map
-            .set_at(pos, Tile { material: tile.material, shape: new_shape, water: kept_water });
+            .set_at(pos, Tile { material: tile.material, shape: new_shape, water: kept_water, magma: 0 });
         if new_shape == TileShape::Gate {
             self.displace_water(pos, tile.water);
         }
         self.regions.dirty = true;
         self.map_changed = true;
         self.water.wake(pos);
+        self.magma.wake(pos);
         let state = if new_shape == TileShape::Gate { "closed" } else { "opened" };
         self.log_event(format!("The floodgate at ({}, {}) {state}.", pos.x, pos.y));
         true
@@ -1290,14 +1304,20 @@ impl Sim {
     pub fn step(&mut self, raws: &Raws) {
         self.clock.advance();
 
-        // Water first: it changes what is walkable this tick.
+        // Fluids first: they change what is walkable this tick. Magma is
+        // slow and heavy — it moves at a quarter of water's pace.
         {
             let map = &mut self.map;
             if self.water.step(map) {
                 self.regions.dirty = true;
                 self.map_changed = true;
             }
+            if self.clock.tick % 4 == 0 && self.magma.step(map) {
+                self.regions.dirty = true;
+                self.map_changed = true;
+            }
         }
+        self.form_obsidian(raws);
         // Region rebuilds are throttled; A* remains the authority in between.
         if self.regions.dirty && self.clock.tick % REGION_REBUILD_INTERVAL == 0 {
             self.regions.rebuild(&self.map);
@@ -1439,6 +1459,49 @@ impl Sim {
         }
     }
 
+    /// Where water met magma this tick, stone is born.
+    fn form_obsidian(&mut self, raws: &Raws) {
+        if self.water.contacts.is_empty() && self.magma.contacts.is_empty() {
+            return;
+        }
+        let contacts: Vec<Pos> = self
+            .water
+            .contacts
+            .drain(..)
+            .chain(self.magma.contacts.drain(..))
+            .collect();
+        let obsidian = raws
+            .materials
+            .index_of("obsidian")
+            .or_else(|| {
+                raws.materials
+                    .indices_in_category(MaterialCategory::Igneous)
+                    .first()
+                    .copied()
+            })
+            .unwrap_or(0);
+        let mut formed = 0;
+        for p in contacts {
+            let Some(t) = self.map.tile_at(p) else { continue };
+            // Only a genuine meeting point hardens (both fluids interacted
+            // there; the contact tile holds the defender's fluid).
+            if !t.holds_water() || (t.water == 0 && t.magma == 0) {
+                continue;
+            }
+            self.map.set_at(p, Tile::solid(obsidian));
+            self.water.wake(p);
+            self.magma.wake(p);
+            formed += 1;
+        }
+        if formed > 0 {
+            self.regions.dirty = true;
+            self.map_changed = true;
+            self.log_event(format!(
+                "Water meets magma with a roar of steam — {formed} tile(s) of obsidian form."
+            ));
+        }
+    }
+
     /// A merchant caravan from the fort's trade partner arrives, wagons
     /// loaded with what their homeland produces.
     fn maybe_caravan(&mut self, raws: &Raws) {
@@ -1532,7 +1595,6 @@ impl Sim {
         if trader_dead {
             let civ = caravan.civ_name.clone();
             let traders = caravan.traders.clone();
-            // Survivors flee; the civ remembers for a year.
             for &t in &traders {
                 if let Some(d) = self.dwarves.get_mut(t) {
                     if d.alive {
@@ -1541,11 +1603,20 @@ impl Sim {
                 }
             }
             self.caravan = None;
-            self.trade_ban_until =
-                self.clock.tick + TICKS_PER_DAY * dk_core::DAYS_PER_YEAR;
-            self.log_event(format!(
-                "A trader from {civ} was killed! The caravan flees; no more will come this year."
-            ));
+            if self.trader_lost_to_raiders {
+                // The civ blames the raiders; trade resumes next season.
+                self.trader_lost_to_raiders = false;
+                self.log_event(format!(
+                    "Raiders slew a trader from {civ}! The caravan scatters."
+                ));
+            } else {
+                // Died to your levers, your floods, or your dwarves' blades.
+                self.trade_ban_until =
+                    self.clock.tick + TICKS_PER_DAY * dk_core::DAYS_PER_YEAR;
+                self.log_event(format!(
+                    "A trader from {civ} died in your care! No caravans will come this year."
+                ));
+            }
             return;
         }
         if self.clock.tick >= caravan.leaves_at {
@@ -1650,6 +1721,10 @@ impl Sim {
     /// Visitors mill about near where they stand; no jobs, no needs (they
     /// carry their own provisions), but they will defend themselves.
     fn update_visitor(&mut self, i: usize) {
+        self.tick_vitals(i);
+        if !self.dwarves[i].alive {
+            return;
+        }
         if let Some(enemy) = self.adjacent_enemy(i) {
             self.melee(i, enemy);
             return;
@@ -2696,6 +2771,12 @@ impl Sim {
         ));
         if destroyed && vital {
             self.log_event(format!("{def_name} falls dead!"));
+            // Merchants killed by raiders are a tragedy, not your crime.
+            if self.dwarves[defender].faction == Faction::Visitor
+                && self.dwarves[attacker].faction == Faction::Hostile
+            {
+                self.trader_lost_to_raiders = true;
+            }
             self.kill_dwarf(defender);
             if self.dwarves[defender].faction == Faction::Hostile {
                 self.stats.raiders_slain += 1;
@@ -2717,6 +2798,7 @@ impl Sim {
             d.breath = (d.breath + 2.0).min(100.0);
         }
         let drowned = d.breath <= 0.0;
+        let incinerated = self.map.magma_at(pos) > 0;
 
         let bleeding: u32 = d.body.iter().map(|p| p.bleeding as u32).sum();
         if bleeding > 0 {
@@ -2740,7 +2822,13 @@ impl Sim {
         }
         let bled_out = d.blood <= 0.0;
 
-        if drowned {
+        if incinerated {
+            if self.dwarves[i].faction == Faction::Hostile {
+                self.stats.raiders_slain += 1;
+            }
+            self.log_event(format!("{name} is incinerated by magma!"));
+            self.kill_dwarf(i);
+        } else if drowned {
             // HUD semantics: drownings counts raiders killed by floods.
             if self.dwarves[i].faction == Faction::Hostile {
                 self.stats.drownings += 1;
@@ -2931,20 +3019,20 @@ impl Sim {
             DesignationKind::Mine => {
                 self.map.set_at(
                     target,
-                    Tile { material: tile.material, shape: TileShape::Floor, water: tile.water },
+                    Tile { material: tile.material, shape: TileShape::Floor, water: tile.water, magma: 0 },
                 );
             }
             DesignationKind::Stairs => {
                 self.map.set_at(
                     target,
-                    Tile { material: tile.material, shape: TileShape::Stairs, water: tile.water },
+                    Tile { material: tile.material, shape: TileShape::Stairs, water: tile.water, magma: 0 },
                 );
             }
             DesignationKind::Channel => {
                 // The floor is dug away: open space here, floor below.
                 self.map.set_at(
                     target,
-                    Tile { material: NO_MATERIAL, shape: TileShape::Empty, water: tile.water },
+                    Tile { material: NO_MATERIAL, shape: TileShape::Empty, water: tile.water, magma: 0 },
                 );
                 let below = Pos::new(target.x, target.y, target.z - 1);
                 if let Some(bt) = self.map.tile_at(below) {
@@ -2952,16 +3040,18 @@ impl Sim {
                         boulder_from = bt;
                         self.map.set_at(
                             below,
-                            Tile { material: bt.material, shape: TileShape::Floor, water: bt.water },
+                            Tile { material: bt.material, shape: TileShape::Floor, water: bt.water, magma: 0 },
                         );
                     }
                 }
                 self.water.wake(below);
+                self.magma.wake(below);
             }
         }
         self.regions.dirty = true;
         self.map_changed = true;
         self.water.wake(target);
+        self.magma.wake(target);
 
         if boulder_from.is_solid()
             && boulder_from.material != NO_MATERIAL
@@ -3071,7 +3161,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 10;
+const SAVE_VERSION: u32 = 11;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -3135,11 +3225,24 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
         anyhow::ensure!((v as usize) < table.len(), "corrupt save: {what} index {v} out of range");
         Ok(table[v as usize])
     };
-    for item in &mut sim.items {
+    // Boulders AND artifacts carry material indices; everything else is
+    // plant-based. Caravan wagon goods are items too and must be remapped.
+    let remap_item = |item: &mut Item| -> Result<()> {
         item.stuff = match item.kind {
-            ItemKind::Boulder => remap_one(&mat_remap, item.stuff, "material")?,
+            ItemKind::Boulder | ItemKind::Artifact => {
+                remap_one(&mat_remap, item.stuff, "material")?
+            }
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
+        Ok(())
+    };
+    for item in &mut sim.items {
+        remap_item(item)?;
+    }
+    if let Some(caravan) = &mut sim.caravan {
+        for item in &mut caravan.goods {
+            remap_item(item)?;
+        }
     }
     for farm in sim.farms.values_mut() {
         farm.crop = remap_one(&plant_remap, farm.crop, "plant")?;

@@ -113,7 +113,7 @@ fn the_player_can_climb_stairs() {
         }
     }
     let stairs = |m: &mut dk_world::Map, x: usize, y: usize, z: usize| {
-        m.set(x, y, z, dk_world::Tile { material: 2, shape: dk_world::TileShape::Stairs, water: 0 });
+        m.set(x, y, z, dk_world::Tile { material: 2, shape: dk_world::TileShape::Stairs, water: 0, magma: 0 });
     };
     stairs(&mut m, 4, 4, 1);
     stairs(&mut m, 4, 4, 2);

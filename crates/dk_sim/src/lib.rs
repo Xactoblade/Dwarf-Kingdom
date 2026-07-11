@@ -1,8 +1,10 @@
-//! Physical simulation systems. Phase 3: water as a cellular automaton.
+//! Physical simulation systems: fluids as cellular automata.
 //!
-//! Water lives on tiles as a depth 0-7 (`Tile::water`). The automaton keeps
-//! an *active set* — only tiles that changed recently are stepped, so settled
-//! lakes cost nothing (BLUEPRINT.md hard-part #2).
+//! Water and magma live on tiles as depths 0-7 (`Tile::water`/`Tile::magma`),
+//! each moved by its own `FluidSim`. The automaton keeps an *active set* —
+//! only tiles that changed recently are stepped, so settled lakes and magma
+//! seas cost nothing (BLUEPRINT.md hard-part #2). Where the two fluids meet,
+//! the contact is recorded for the game layer to turn into obsidian.
 
 use dk_world::path::Pos;
 use dk_world::{Map, MAX_WATER};
@@ -12,16 +14,76 @@ use std::collections::{BTreeSet, VecDeque};
 /// Deterministic, fixed neighbor order for the automaton.
 const FLOW_ORDER: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FluidKind {
+    #[default]
+    Water,
+    Magma,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct WaterSim {
-    /// Tiles that refill to full depth every step (natural springs).
+pub struct FluidSim {
+    pub kind: FluidKind,
+    /// Tiles that refill to full depth every step (springs / magma vents).
     pub springs: BTreeSet<Pos>,
+    /// Tiles where this fluid ran into the other one — the game layer
+    /// turns these into obsidian. Drained by the caller each tick.
+    #[serde(skip)]
+    pub contacts: Vec<Pos>,
     /// Tiles that might change next step. Rebuilt on load via `wake_all`.
     #[serde(skip)]
     active: BTreeSet<Pos>,
 }
 
-impl WaterSim {
+/// The historical name — water was the first fluid.
+pub type WaterSim = FluidSim;
+
+impl FluidSim {
+    pub fn magma() -> Self {
+        FluidSim { kind: FluidKind::Magma, ..Default::default() }
+    }
+
+    fn depth(&self, map: &Map, p: Pos) -> u8 {
+        match self.kind {
+            FluidKind::Water => map.water_at(p),
+            FluidKind::Magma => map.magma_at(p),
+        }
+    }
+
+    fn set_depth(&self, map: &mut Map, p: Pos, v: u8) {
+        match self.kind {
+            FluidKind::Water => map.set_water(p, v),
+            FluidKind::Magma => map.set_magma(p, v),
+        }
+    }
+
+    fn other_depth(&self, map: &Map, p: Pos) -> u8 {
+        match self.kind {
+            FluidKind::Water => map.magma_at(p),
+            FluidKind::Magma => map.water_at(p),
+        }
+    }
+
+    /// Did a depth change alter pathability? Any magma blocks; water blocks
+    /// at DEEP_WATER.
+    fn crossed(&self, before: u8, after: u8) -> bool {
+        match self.kind {
+            FluidKind::Water => {
+                (before >= dk_world::DEEP_WATER) != (after >= dk_world::DEEP_WATER)
+            }
+            FluidKind::Magma => (before == 0) != (after == 0),
+        }
+    }
+
+    /// Can this fluid enter tile q? Shape must hold fluid AND the other
+    /// fluid must be absent — meeting it is a contact, not a merge.
+    fn accepts(&self, map: &Map, q: Pos) -> Option<bool> {
+        let t = map.tile_at(q)?;
+        if !t.holds_water() {
+            return Some(false);
+        }
+        Some(self.other_depth(map, q) == 0)
+    }
     /// Mark a tile (and its flow neighbors) as needing simulation — call
     /// after any terrain edit that could let water move.
     pub fn wake(&mut self, p: Pos) {
@@ -40,7 +102,7 @@ impl WaterSim {
             for y in 0..map.height as i32 {
                 for x in 0..map.width as i32 {
                     let p = Pos::new(x, y, z);
-                    if map.water_at(p) > 0 {
+                    if self.depth(map, p) > 0 {
                         self.wake(p);
                     }
                 }
@@ -58,14 +120,15 @@ impl WaterSim {
         let current: Vec<Pos> = self.active.iter().copied().collect();
         self.active.clear();
 
-        // Springs first: they push water into the system.
+        // Springs first: they push fluid into the system.
         let springs: Vec<Pos> = self.springs.iter().copied().collect();
         for s in springs {
             let Some(tile) = map.tile_at(s) else { continue };
-            if tile.holds_water() && tile.water < MAX_WATER {
-                map.set_water(s, MAX_WATER);
+            let cur = self.depth(map, s);
+            if tile.holds_water() && self.other_depth(map, s) == 0 && cur < MAX_WATER {
+                self.set_depth(map, s, MAX_WATER);
                 self.wake(s);
-                crossed_threshold |= crossed(tile.water, MAX_WATER);
+                crossed_threshold |= self.crossed(cur, MAX_WATER);
             }
         }
 
@@ -74,29 +137,38 @@ impl WaterSim {
             if !tile.holds_water() {
                 continue;
             }
-            let mut w = tile.water;
+            let mut w = self.depth(map, p);
             if w == 0 {
                 continue;
             }
 
             // 1. Fall: everything possible goes straight down.
             let below = Pos::new(p.x, p.y, p.z - 1);
-            if let Some(bt) = map.tile_at(below) {
-                if bt.holds_water() && bt.water < MAX_WATER {
-                    let space = MAX_WATER - bt.water;
-                    let moved = w.min(space);
-                    let new_below = bt.water + moved;
-                    map.set_water(below, new_below);
-                    w -= moved;
-                    map.set_water(p, w);
-                    crossed_threshold |= crossed(bt.water, new_below);
-                    crossed_threshold |= crossed(tile.water, w);
-                    self.wake(below);
-                    self.wake(p);
-                    if w == 0 {
-                        continue;
+            match self.accepts(map, below) {
+                Some(true) => {
+                    let bd = self.depth(map, below);
+                    if bd < MAX_WATER {
+                        let space = MAX_WATER - bd;
+                        let moved = w.min(space);
+                        let new_below = bd + moved;
+                        self.set_depth(map, below, new_below);
+                        let before = w;
+                        w -= moved;
+                        self.set_depth(map, p, w);
+                        crossed_threshold |= self.crossed(bd, new_below);
+                        crossed_threshold |= self.crossed(before, w);
+                        self.wake(below);
+                        self.wake(p);
+                        if w == 0 {
+                            continue;
+                        }
                     }
                 }
+                Some(false) if map.tile_at(below).is_some_and(|t| t.holds_water()) => {
+                    // The other fluid is down there: contact.
+                    self.contacts.push(below);
+                }
+                _ => {}
             }
 
             // 2. Spread: equalize with lower orthogonal neighbors, one unit
@@ -106,16 +178,24 @@ impl WaterSim {
                     break;
                 }
                 let q = Pos::new(p.x + dx, p.y + dy, p.z);
-                let Some(qt) = map.tile_at(q) else { continue };
-                if !qt.holds_water() || qt.water + 1 >= w {
+                match self.accepts(map, q) {
+                    Some(true) => {}
+                    Some(false) if map.tile_at(q).is_some_and(|t| t.holds_water()) => {
+                        self.contacts.push(q);
+                        continue;
+                    }
+                    _ => continue,
+                }
+                let qd = self.depth(map, q);
+                if qd + 1 >= w {
                     continue;
                 }
-                let new_q = qt.water + 1;
-                map.set_water(q, new_q);
+                let new_q = qd + 1;
+                self.set_depth(map, q, new_q);
                 w -= 1;
-                map.set_water(p, w);
-                crossed_threshold |= crossed(qt.water, new_q);
-                crossed_threshold |= crossed(w + 1, w);
+                self.set_depth(map, p, w);
+                crossed_threshold |= self.crossed(qd, new_q);
+                crossed_threshold |= self.crossed(w + 1, w);
                 self.wake(q);
                 self.wake(p);
             }
@@ -144,7 +224,7 @@ impl WaterSim {
             .copied()
             .collect::<BTreeSet<Pos>>()
             .into_iter()
-            .filter(|&p| map.water_at(p) > 0)
+            .filter(|&p| self.depth(map, p) > 0)
             .collect();
         let mut visited: BTreeSet<Pos> = BTreeSet::new();
         for seed in seeds {
@@ -161,11 +241,13 @@ impl WaterSim {
                 }
                 // A dry tile that would cascade water further down belongs to
                 // the fall pass, not the standing body.
+                if self.other_depth(map, p) > 0 {
+                    continue; // the other fluid owns this tile
+                }
                 let below = Pos::new(p.x, p.y, p.z - 1);
-                let below_absorbs = map
-                    .tile_at(below)
-                    .is_some_and(|b| b.holds_water() && b.water < MAX_WATER);
-                if below_absorbs && t.water == 0 {
+                let below_absorbs = self.accepts(map, below) == Some(true)
+                    && self.depth(map, below) < MAX_WATER;
+                if below_absorbs && self.depth(map, p) == 0 {
                     continue;
                 }
                 body.push(p);
@@ -178,9 +260,11 @@ impl WaterSim {
                         continue;
                     }
                     let Some(qt) = map.tile_at(q) else { continue };
-                    // Expand through water, or from water onto dry shoreline
+                    // Expand through fluid, or from fluid onto dry shoreline
                     // (never dry-to-dry: that would flood-fill the world).
-                    if qt.holds_water() && (qt.water > 0 || t.water > 0) {
+                    let qd = self.depth(map, q);
+                    let pd = self.depth(map, p);
+                    if qt.holds_water() && (qd > 0 || pd > 0) {
                         visited.insert(q);
                         queue.push_back(q);
                     }
@@ -189,7 +273,7 @@ impl WaterSim {
             if body.len() < 2 {
                 continue;
             }
-            let total: u32 = body.iter().map(|&p| map.water_at(p) as u32).sum();
+            let total: u32 = body.iter().map(|&p| self.depth(map, p) as u32).sum();
             if total == 0 {
                 continue;
             }
@@ -214,21 +298,16 @@ impl WaterSim {
                 } else {
                     base
                 };
-                let cur = map.water_at(p);
+                let cur = self.depth(map, p);
                 if cur != target {
-                    map.set_water(p, target);
+                    self.set_depth(map, p, target);
                     self.wake(p);
-                    changed |= crossed(cur, target);
+                    changed |= self.crossed(cur, target);
                 }
             }
         }
         changed
     }
-}
-
-/// Did a depth change cross the pathability threshold?
-fn crossed(before: u8, after: u8) -> bool {
-    (before >= dk_world::DEEP_WATER) != (after >= dk_world::DEEP_WATER)
 }
 
 /// Total water on the map — used by conservation tests.
@@ -302,7 +381,7 @@ mod tests {
         for y in 0..8 {
             m.set(4, y, 1, Tile::solid(0));
         }
-        m.set(4, 4, 1, Tile { material: 0, shape: TileShape::Gate, water: 0 });
+        m.set(4, 4, 1, Tile { material: 0, shape: TileShape::Gate, water: 0, magma: 0 });
         // Flood the west chamber.
         for y in 0..8 {
             for x in 0..4 {
