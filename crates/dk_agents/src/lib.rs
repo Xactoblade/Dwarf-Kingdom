@@ -195,6 +195,16 @@ impl Stockpile {
 pub enum Faction {
     Fort,
     Hostile,
+    /// Caravan traders and other guests: protected, not commanded.
+    Visitor,
+}
+
+impl Faction {
+    /// Who fights whom: hostiles against everyone else, nobody else
+    /// starts anything.
+    pub fn hostile_to(self, other: Faction) -> bool {
+        (self == Faction::Hostile) != (other == Faction::Hostile)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -473,6 +483,8 @@ pub struct SimStats {
     pub raiders_arrived: u32,
     pub raiders_slain: u32,
     pub drownings: u32,
+    pub caravans_arrived: u32,
+    pub trades_completed: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -484,6 +496,37 @@ pub enum PlayerAction {
     /// +1 up / -1 down through stairs.
     Climb(i32),
     Wait,
+}
+
+// ----------------------------------------------------------------- trade
+
+/// A caravan buys at a margin: your offer must beat the asked value by this
+/// ratio (they came a long way).
+pub const TRADE_MARGIN: f32 = 1.2;
+/// Ticks a caravan stays before packing up.
+pub const CARAVAN_STAY: u64 = 12 * TICKS_PER_DAY;
+
+/// A visiting merchant company and its wagon of goods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Caravan {
+    pub civ_name: String,
+    /// Goods in the wagon (not on the map until bought).
+    pub goods: Vec<Item>,
+    pub leaves_at: u64,
+    /// Dwarf indices of the escorting traders.
+    pub traders: Vec<usize>,
+}
+
+/// Trade value of an item, in a common coin.
+pub fn item_value(item: &Item, raws: &Raws) -> u32 {
+    match item.kind {
+        ItemKind::Boulder => raws.materials.get(item.stuff).value * 3,
+        ItemKind::Seed => 3,
+        ItemKind::Crop => 5,
+        ItemKind::Meal => 8,
+        ItemKind::Drink => 8,
+        ItemKind::Artifact => 200,
+    }
 }
 
 // ---------------------------------------------------------------- sieges
@@ -526,6 +569,12 @@ pub struct Sim {
     pub deeds: Vec<String>,
     /// Who attacks this fort and why — wired from world history at embark.
     pub siege_roster: Option<SiegeRoster>,
+    /// Friendly civ that sends caravans — wired from world history at embark.
+    pub trade_partner: Option<String>,
+    /// The caravan currently visiting, if any.
+    pub caravan: Option<Caravan>,
+    /// Killing traders has consequences: no caravans until this tick.
+    pub trade_ban_until: u64,
     /// Rolling event log shown in the UI (tick, message).
     pub log: Vec<(u64, String)>,
     /// World setting: do raiding parties attack this fort?
@@ -602,6 +651,9 @@ impl Sim {
             quest_target: None,
             deeds: Vec::new(),
             siege_roster: None,
+            trade_partner: None,
+            caravan: None,
+            trade_ban_until: 0,
             log: Vec::new(),
             invasions: true,
             rng,
@@ -1267,10 +1319,17 @@ impl Sim {
             match self.dwarves[i].faction {
                 Faction::Fort => self.update_dwarf(i, raws),
                 Faction::Hostile => self.update_hostile(i),
+                Faction::Visitor => self.update_visitor(i),
             }
         }
-        // Season boundary: migrants, moods, and (later years) raiders.
+        // Caravans arrive mid-season (offset from raids and migrants).
         let season_ticks = TICKS_PER_DAY * DAYS_PER_SEASON;
+        if self.clock.tick % season_ticks == season_ticks / 2 {
+            self.maybe_caravan(raws);
+        }
+        self.tick_caravan();
+
+        // Season boundary: migrants, moods, and (later years) raiders.
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
             self.maybe_migrants(raws);
             self.maybe_strange_mood();
@@ -1376,6 +1435,237 @@ impl Sim {
                 } else {
                     FarmState::Growing { progress: next as u32 }
                 };
+            }
+        }
+    }
+
+    /// A merchant caravan from the fort's trade partner arrives, wagons
+    /// loaded with what their homeland produces.
+    fn maybe_caravan(&mut self, raws: &Raws) {
+        if self.caravan.is_some()
+            || self.trade_partner.is_none()
+            || self.clock.tick < self.trade_ban_until
+            || self.alive_dwarves() == 0
+        {
+            return;
+        }
+        let civ_name = self.trade_partner.clone().unwrap();
+
+        // Traders enter at the map edge, like everyone else.
+        let mut traders = Vec::new();
+        'outer: for y in 1..self.map.height - 1 {
+            for x in [1usize, self.map.width - 2] {
+                if traders.len() >= 2 {
+                    break 'outer;
+                }
+                if let Some(z) = self.map.walk_surface_z(x, y) {
+                    let pos = Pos::new(x as i32, y as i32, z as i32);
+                    if self.dwarves.iter().any(|d| d.alive && d.pos == pos) {
+                        continue;
+                    }
+                    let mut t = new_dwarf(&mut self.rng, pos, Faction::Visitor, raws);
+                    t.name = format!("trader {}", t.name);
+                    self.dwarves.push(t);
+                    traders.push(self.dwarves.len() - 1);
+                }
+            }
+        }
+        if traders.is_empty() {
+            return;
+        }
+
+        // The wagon: ores, seeds, and provisions from home.
+        let mut goods = Vec::new();
+        let ores = raws.materials.indices_in_category(MaterialCategory::Ore);
+        for _ in 0..self.rng.gen_range(2..5usize) {
+            if !ores.is_empty() {
+                let ore = ores[self.rng.gen_range(0..ores.len())];
+                goods.push(Item {
+                    kind: ItemKind::Boulder,
+                    stuff: ore,
+                    name: None,
+                    pos: Pos::new(0, 0, 0),
+                    state: ItemState::OnGround,
+                    reserved_by: None,
+                    consumed: false,
+                });
+            }
+        }
+        for _ in 0..self.rng.gen_range(3..7usize) {
+            let plant = self.rng.gen_range(0..raws.plants.len()) as u16;
+            let kind = match self.rng.gen_range(0..3) {
+                0 => ItemKind::Seed,
+                1 => ItemKind::Meal,
+                _ => ItemKind::Drink,
+            };
+            goods.push(Item {
+                kind,
+                stuff: plant,
+                name: None,
+                pos: Pos::new(0, 0, 0),
+                state: ItemState::OnGround,
+                reserved_by: None,
+                consumed: false,
+            });
+        }
+
+        self.stats.caravans_arrived += 1;
+        self.log_event(format!(
+            "A caravan from {civ_name} has arrived! ({} goods — press r to trade)",
+            goods.len()
+        ));
+        self.caravan = Some(Caravan {
+            civ_name,
+            goods,
+            leaves_at: self.clock.tick + CARAVAN_STAY,
+            traders,
+        });
+    }
+
+    /// Departure and the consequences of dead traders.
+    fn tick_caravan(&mut self) {
+        let Some(caravan) = &self.caravan else { return };
+        let trader_dead = caravan
+            .traders
+            .iter()
+            .any(|&t| self.dwarves.get(t).is_some_and(|d| !d.alive));
+        if trader_dead {
+            let civ = caravan.civ_name.clone();
+            let traders = caravan.traders.clone();
+            // Survivors flee; the civ remembers for a year.
+            for &t in &traders {
+                if let Some(d) = self.dwarves.get_mut(t) {
+                    if d.alive {
+                        d.alive = false; // fled the map
+                    }
+                }
+            }
+            self.caravan = None;
+            self.trade_ban_until =
+                self.clock.tick + TICKS_PER_DAY * dk_core::DAYS_PER_YEAR;
+            self.log_event(format!(
+                "A trader from {civ} was killed! The caravan flees; no more will come this year."
+            ));
+            return;
+        }
+        if self.clock.tick >= caravan.leaves_at {
+            let civ = caravan.civ_name.clone();
+            let traders = caravan.traders.clone();
+            for &t in &traders {
+                if let Some(d) = self.dwarves.get_mut(t) {
+                    d.alive = false; // departed the map
+                }
+            }
+            self.caravan = None;
+            self.log_event(format!("The caravan from {civ} has departed."));
+        }
+    }
+
+    /// Execute a trade: `offer` are indices into sim items (must be stored,
+    /// unreserved goods), `request` are indices into the caravan's wagon.
+    /// The caravan accepts when the offer beats the ask by TRADE_MARGIN.
+    pub fn execute_trade(
+        &mut self,
+        offer: &[usize],
+        request: &[usize],
+        raws: &Raws,
+    ) -> Result<(), String> {
+        let Some(caravan) = &self.caravan else {
+            return Err("no caravan is visiting".to_string());
+        };
+        if request.is_empty() {
+            return Err("select something to buy".to_string());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for &i in offer.iter().chain(request.iter()) {
+            let _ = i;
+        }
+        for &i in offer {
+            if !seen.insert(("o", i)) {
+                return Err("duplicate offer item".to_string());
+            }
+            let Some(it) = self.items.get(i) else {
+                return Err("no such item".to_string());
+            };
+            if !it.active()
+                || it.reserved_by.is_some()
+                || !matches!(it.state, ItemState::Stored { .. } | ItemState::OnGround)
+            {
+                return Err(format!("{:?} is not available to trade", it.kind));
+            }
+        }
+        for &g in request {
+            if !seen.insert(("r", g)) {
+                return Err("duplicate requested item".to_string());
+            }
+            if g >= caravan.goods.len() {
+                return Err("no such caravan good".to_string());
+            }
+        }
+        let offered: u32 = offer.iter().map(|&i| item_value(&self.items[i], raws)).sum();
+        let asked: u32 = request
+            .iter()
+            .map(|&g| item_value(&caravan.goods[g], raws))
+            .sum();
+        if (offered as f32) < asked as f32 * TRADE_MARGIN {
+            return Err(format!(
+                "the merchants scoff: they ask {} in goods for that (you offered {})",
+                (asked as f32 * TRADE_MARGIN).ceil() as u32,
+                offered
+            ));
+        }
+
+        // Deal. Your goods leave with the wagon; theirs land at a trader's feet.
+        let drop_at = self
+            .caravan
+            .as_ref()
+            .and_then(|c| c.traders.first().copied())
+            .and_then(|t| self.dwarves.get(t))
+            .map(|d| d.pos)
+            .unwrap_or_else(|| self.dwarves[0].pos);
+        for &i in offer {
+            self.items[i].consumed = true;
+        }
+        // Remove bought goods from the wagon (descending order keeps indices valid).
+        let mut bought: Vec<usize> = request.to_vec();
+        bought.sort_unstable_by(|a, b| b.cmp(a));
+        let caravan = self.caravan.as_mut().unwrap();
+        let mut received = Vec::new();
+        for g in bought {
+            received.push(caravan.goods.remove(g));
+        }
+        for mut it in received {
+            it.pos = drop_at;
+            it.state = ItemState::OnGround;
+            self.items.push(it);
+        }
+        self.stats.trades_completed += 1;
+        self.log_event(format!(
+            "Trade completed: {} in goods for {} received.",
+            offered, asked
+        ));
+        Ok(())
+    }
+
+    /// Visitors mill about near where they stand; no jobs, no needs (they
+    /// carry their own provisions), but they will defend themselves.
+    fn update_visitor(&mut self, i: usize) {
+        if let Some(enemy) = self.adjacent_enemy(i) {
+            self.melee(i, enemy);
+            return;
+        }
+        if self.dwarves[i].move_cd > 0 {
+            self.dwarves[i].move_cd -= 1;
+            return;
+        }
+        if self.rng.gen_ratio(1, 60) {
+            let pos = self.dwarves[i].pos;
+            let mut opts = Vec::with_capacity(8);
+            path::neighbors(&self.map, pos, &mut opts);
+            if !opts.is_empty() {
+                let n = opts[self.rng.gen_range(0..opts.len())];
+                self.dwarves[i].pos = n;
+                self.dwarves[i].move_cd = WALK_COOLDOWN;
             }
         }
     }
@@ -2307,7 +2597,7 @@ impl Sim {
             .dwarves
             .iter()
             .enumerate()
-            .filter(|(_, d)| d.alive && d.faction == Faction::Fort)
+            .filter(|(_, d)| d.alive && matches!(d.faction, Faction::Fort | Faction::Visitor))
             .min_by_key(|(_, d)| d.pos.manhattan(my_pos))
             .map(|(j, _)| j);
         let Some(target) = target else {
@@ -2363,7 +2653,9 @@ impl Sim {
         self.dwarves
             .iter()
             .enumerate()
-            .filter(|(_, d)| d.alive && d.faction != me.faction && d.pos.z == me.pos.z)
+            .filter(|(_, d)| {
+                d.alive && me.faction.hostile_to(d.faction) && d.pos.z == me.pos.z
+            })
             .find(|(_, d)| d.pos.x.abs_diff(me.pos.x) + d.pos.y.abs_diff(me.pos.y) <= 1)
             .map(|(j, _)| j)
     }
@@ -2779,7 +3071,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 9;
+const SAVE_VERSION: u32 = 10;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

@@ -555,6 +555,14 @@ impl World {
 
     // -------------------------------------------------------------- queries
 
+    /// Friendly civ nearest to a map position (for embark caravan wiring).
+    pub fn nearest_friendly_civ(&self, x: usize, y: usize) -> Option<&Civilization> {
+        self.civs
+            .iter()
+            .filter(|c| !c.race.hostile())
+            .min_by_key(|c| c.home.0.abs_diff(x) + c.home.1.abs_diff(y))
+    }
+
     /// Hostile civ nearest to a map position (for embark siege wiring).
     pub fn nearest_hostile_civ(&self, x: usize, y: usize) -> Option<&Civilization> {
         self.civs

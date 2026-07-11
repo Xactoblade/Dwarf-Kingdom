@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
-    PlayerAction,
+    item_value, PlayerAction,
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
     SiegeLeader, SiegeRoster, Sim,
 };
@@ -56,6 +56,7 @@ enum Screen {
     Playing,
     Adventure,
     Legends,
+    Trade,
 }
 
 #[derive(Resource)]
@@ -69,6 +70,17 @@ struct WorldRes(World);
 struct LegendsState {
     scroll: usize,
     from: Screen,
+}
+
+/// Trade screen state: which column, cursor row, and the selected deal.
+#[derive(Resource, Default)]
+struct TradeState {
+    /// 0 = the caravan's wagon, 1 = your stores.
+    side: usize,
+    cursor: usize,
+    offer: std::collections::BTreeSet<usize>,
+    request: std::collections::BTreeSet<usize>,
+    message: String,
 }
 
 /// Whether a saved fortress existed at launch (embark-screen F9 hint).
@@ -247,6 +259,10 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     let map = dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed);
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.add_embark_supplies(raws);
+    // Caravans come from the nearest friendly neighbors.
+    sim.trade_partner = world
+        .nearest_friendly_civ(region.0, region.1)
+        .map(|c| c.name.clone());
     // Wire the nearest hostile civ's grudge-bearers as siege leaders.
     if let Some((civ_name, leaders)) = world.siege_pack(region.0, region.1) {
         sim.siege_roster = Some(SiegeRoster {
@@ -332,6 +348,7 @@ fn main() {
         .insert_resource(WorldRes(world))
         .insert_resource(ScreenRes(screen))
         .insert_resource(LegendsState { scroll: 0, from: Screen::Embark })
+        .insert_resource(TradeState::default())
         .insert_resource(HasSave(save_path().exists()))
         .insert_resource(SimRes(sim))
         .insert_resource(ViewZ(start_z))
@@ -350,6 +367,7 @@ fn main() {
             (
                 handle_mouse,
                 handle_input,
+                handle_trade_input,
                 overlay_refresh,
                 redraw_tiles,
                 sync_agent_sprites,
@@ -589,6 +607,9 @@ fn handle_input(
     mut camera: Query<&mut Transform, With<Camera2d>>,
     mut exit: EventWriter<AppExit>,
 ) {
+    if screen.0 == Screen::Trade {
+        return; // handle_trade_input owns this screen
+    }
     // ---- Legends screen: scroll and close.
     if screen.0 == Screen::Legends {
         // The view never scrolls past the last full page.
@@ -768,6 +789,13 @@ fn handle_input(
     }
 
     // ---- Playing.
+    if keys.just_pressed(KeyCode::KeyR) {
+        if sim.0.as_ref().is_some_and(|s| s.caravan.is_some()) {
+            screen.0 = Screen::Trade;
+            dirty.0 = true;
+            return;
+        }
+    }
     if keys.just_pressed(KeyCode::KeyY) {
         legends.from = Screen::Playing;
         legends.scroll = 0;
@@ -974,6 +1002,82 @@ fn handle_input(
     }
 }
 
+/// Trade screen input — its own system to keep handle_input under Bevy's
+/// system-param limit.
+fn handle_trade_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    reg: Res<Registry>,
+    mut screen: ResMut<ScreenRes>,
+    mut trade: ResMut<TradeState>,
+    mut sim: ResMut<SimRes>,
+    mut dirty: ResMut<MapDirty>,
+) {
+    if screen.0 != Screen::Trade {
+        return;
+    }
+    let Some(sim_inner) = sim.0.as_mut() else {
+        screen.0 = Screen::Playing;
+        return;
+    };
+    // Caravan left mid-negotiation?
+    let Some(caravan_len) = sim_inner.caravan.as_ref().map(|c| c.goods.len()) else {
+        screen.0 = Screen::Playing;
+        dirty.0 = true;
+        return;
+    };
+    let yours = tradeable_items(sim_inner);
+    let col_len = if trade.side == 0 { caravan_len } else { yours.len() };
+
+    if keys.just_pressed(KeyCode::Tab)
+        || keys.just_pressed(KeyCode::ArrowLeft)
+        || keys.just_pressed(KeyCode::ArrowRight)
+    {
+        trade.side = 1 - trade.side;
+        trade.cursor = 0;
+    }
+    if keys.just_pressed(KeyCode::ArrowDown) && col_len > 0 {
+        trade.cursor = (trade.cursor + 1).min(col_len - 1);
+    }
+    if keys.just_pressed(KeyCode::ArrowUp) {
+        trade.cursor = trade.cursor.saturating_sub(1);
+    }
+    if keys.just_pressed(KeyCode::Space) && col_len > 0 {
+        if trade.side == 0 {
+            let g = trade.cursor;
+            if !trade.request.remove(&g) {
+                trade.request.insert(g);
+            }
+        } else {
+            let i = yours[trade.cursor];
+            if !trade.offer.remove(&i) {
+                trade.offer.insert(i);
+            }
+        }
+        trade.message.clear();
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        let offer: Vec<usize> = trade.offer.iter().copied().collect();
+        let request: Vec<usize> = trade.request.iter().copied().collect();
+        match sim_inner.execute_trade(&offer, &request, &reg.0) {
+            Ok(()) => {
+                trade.offer.clear();
+                trade.request.clear();
+                trade.cursor = 0;
+                trade.message = "The merchants shake on it.".to_string();
+                dirty.0 = true;
+            }
+            Err(e) => trade.message = e,
+        }
+    }
+    if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyR) {
+        trade.offer.clear();
+        trade.request.clear();
+        trade.message.clear();
+        screen.0 = Screen::Playing;
+        dirty.0 = true;
+    }
+}
+
 fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
     [
         base[0] * (1.0 - k) + tint[0] * k,
@@ -1139,6 +1243,31 @@ fn redraw_tiles(
     }
 }
 
+/// Fort items eligible for trade, in a stable display order.
+fn tradeable_items(sim: &Sim) -> Vec<usize> {
+    sim.items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| {
+            it.active()
+                && it.reserved_by.is_none()
+                && matches!(it.state, ItemState::Stored { .. } | ItemState::OnGround)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
+    match it.kind {
+        ItemKind::Boulder => format!("{} boulder", raws.materials.get(it.stuff).name),
+        ItemKind::Seed => format!("{} seeds", raws.plants.get(it.stuff).name),
+        ItemKind::Crop => raws.plants.get(it.stuff).name.clone(),
+        ItemKind::Meal => "prepared meal".to_string(),
+        ItemKind::Drink => "mug of drink".to_string(),
+        ItemKind::Artifact => it.name.clone().unwrap_or_else(|| "artifact".to_string()),
+    }
+}
+
 fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
     let lighten = |c: [u8; 3]| {
         let l = |v: u8| (v as f32 / 255.0 * 1.3).min(1.0);
@@ -1223,16 +1352,21 @@ fn sync_agent_sprites(
                         // Full-color figures; the glyph carries the faction.
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(match d.faction {
-                                Faction::Fort => "dwarf",
+                                Faction::Fort | Faction::Visitor => "dwarf",
                                 Faction::Hostile => "raider",
                             });
                         }
-                        sprite.color = Color::WHITE;
+                        // Traders wear the road's gold dust.
+                        sprite.color = match d.faction {
+                            Faction::Visitor => Color::srgb(1.0, 0.85, 0.55),
+                            _ => Color::WHITE,
+                        };
                     }
                     None => {
                         sprite.color = match d.faction {
                             Faction::Fort => Color::srgb(0.93, 0.79, 0.55),
                             Faction::Hostile => Color::srgb(0.85, 0.25, 0.25),
+                            Faction::Visitor => Color::srgb(0.95, 0.85, 0.4),
                         };
                     }
                 }
@@ -1298,6 +1432,7 @@ fn update_hud(
     screen: Res<ScreenRes>,
     has_save: Res<HasSave>,
     scroll: Res<LegendsState>,
+    trade: Res<TradeState>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
     control: Res<SimControl>,
@@ -1405,6 +1540,53 @@ fn update_hud(
             }
             return;
         }
+        Screen::Trade => {
+            let Some(sim) = sim.0.as_ref() else { return };
+            let Some(caravan) = sim.caravan.as_ref() else { return };
+            let yours = tradeable_items(sim);
+            let offered: u32 = trade.offer.iter().map(|&i| item_value(&sim.items[i], &reg.0)).sum();
+            let asked: u32 = trade
+                .request
+                .iter()
+                .filter(|&&g| g < caravan.goods.len())
+                .map(|&g| item_value(&caravan.goods[g], &reg.0))
+                .sum();
+            let need = (asked as f32 * dk_agents::TRADE_MARGIN).ceil() as u32;
+            let mut left = format!("THEIR WAGON ({})\n", caravan.civ_name);
+            for (g, it) in caravan.goods.iter().enumerate() {
+                let sel = if trade.request.contains(&g) { "[x]" } else { "[ ]" };
+                let cur = if trade.side == 0 && trade.cursor == g { ">" } else { " " };
+                left.push_str(&format!(
+                    "{cur}{sel} {} ({})\n",
+                    item_label(&reg.0, it),
+                    item_value(it, &reg.0)
+                ));
+            }
+            let mut right = "YOUR STORES\n".to_string();
+            for (row, &i) in yours.iter().enumerate().take(24) {
+                let it = &sim.items[i];
+                let sel = if trade.offer.contains(&i) { "[x]" } else { "[ ]" };
+                let cur = if trade.side == 1 && trade.cursor == row { ">" } else { " " };
+                right.push_str(&format!(
+                    "{cur}{sel} {} ({})\n",
+                    item_label(&reg.0, it),
+                    item_value(it, &reg.0)
+                ));
+            }
+            if yours.len() > 24 {
+                right.push_str(&format!("  ... and {} more\n", yours.len() - 24));
+            }
+            for mut text in &mut q {
+                text.0 = format!(
+                    "Dwarf Kingdom :: Trading with {}\n\
+                     offering {offered} · they ask {need} (their price {asked} + the road)\n\
+                     tab/arrows: switch column & move   space: select   Enter: strike the deal   Esc: walk away\n\
+                     {}\n\n{left}\n{right}",
+                    caravan.civ_name, trade.message
+                );
+            }
+            return;
+        }
         Screen::Playing => {}
     }
     let Some(sim) = sim.0.as_ref() else { return };
@@ -1498,11 +1680,14 @@ fn update_hud(
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
     let cal = &sim.0.clock;
-    let status = if control.paused {
+    let mut status = if control.paused {
         "PAUSED".to_string()
     } else {
         format!("speed {}", control.speed)
     };
+    if sim.0.caravan.is_some() {
+        status.push_str("   CARAVAN VISITING — press r to trade");
+    }
     let mode_txt = mode
         .0
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
