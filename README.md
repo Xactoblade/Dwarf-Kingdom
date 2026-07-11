@@ -6,7 +6,7 @@ and physics-driven stories of triumph and collapse.
 
 Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 
-## Status: Phase 5 — Hearts & Minds
+## Status: Phase 6 — Adventure Mode (first slice)
 
 - [x] Phase 0: workspace, data-driven raws, world gen, z-level renderer, sim clock
 - [x] Phase 1: agents, mine/stairs designations, A* + region-gated jobs,
@@ -45,6 +45,12 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 - [x] Headless exit tests: individuals differ, friendship→grief works,
       stress episodes fire and resolve, moods yield named artifacts, and
       every dwarf's story is unique
+- [x] Adventure mode ('a' on the embark screen): play one hero turn-by-turn
+      in the same simulation — the world only moves when you do
+- [x] A quest from history: your civ's nemesis stalks the same map; hunt
+      them down, and the deed is recorded in your saga
+- [x] Headless exit tests: time is turn-based, the nemesis falls to a
+      played hunt, stairs climb, the deed is logged
 
 ## Run
 
@@ -56,6 +62,8 @@ cargo run -p dk_app
 |---|---|
 | Mouse | Left-click: move cursor · wheel: zoom · right-drag: pan |
 | Enter | (Embark screen) found the fortress at the cursor's region |
+| `a` | (Embark screen) begin an adventure at the cursor's region |
+| Arrows / `[` `]` / `.` | (Adventure) move & attack / take stairs / wait |
 | `y` | Open/close the Legends viewer (world history) |
 | Arrow keys | Move cursor (tile/dwarf info in HUD) |
 | `[` / `]` | Z-level down / up |

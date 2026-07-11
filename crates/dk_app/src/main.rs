@@ -23,6 +23,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
+    PlayerAction,
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
     SiegeLeader, SiegeRoster, Sim,
 };
@@ -53,6 +54,7 @@ struct Registry(Raws);
 enum Screen {
     Embark,
     Playing,
+    Adventure,
     Legends,
 }
 
@@ -62,8 +64,12 @@ struct ScreenRes(Screen);
 #[derive(Resource)]
 struct WorldRes(World);
 
-#[derive(Resource, Default)]
-struct LegendsScroll(usize);
+/// Legends viewer state: scroll offset and which screen to return to.
+#[derive(Resource)]
+struct LegendsState {
+    scroll: usize,
+    from: Screen,
+}
 
 /// Whether a saved fortress existed at launch (embark-screen F9 hint).
 #[derive(Resource)]
@@ -270,7 +276,7 @@ fn main() {
         .insert_resource(Registry(raws))
         .insert_resource(WorldRes(world))
         .insert_resource(ScreenRes(screen))
-        .insert_resource(LegendsScroll(0))
+        .insert_resource(LegendsState { scroll: 0, from: Screen::Embark })
         .insert_resource(HasSave(save_path().exists()))
         .insert_resource(SimRes(sim))
         .insert_resource(ViewZ(start_z))
@@ -396,8 +402,9 @@ fn run_sim(
     screen: Res<ScreenRes>,
     mut dirty: ResMut<MapDirty>,
 ) {
-    // The fortress keeps living while you read Legends; only Embark pauses it.
-    if control.paused || screen.0 == Screen::Embark {
+    // The fortress keeps living while you read Legends. Embark has no sim,
+    // and Adventure advances only when the player acts.
+    if control.paused || matches!(screen.0, Screen::Embark | Screen::Adventure) {
         return;
     }
     let Some(sim) = sim.0.as_mut() else { return };
@@ -483,7 +490,7 @@ fn handle_input(
     reg: Res<Registry>,
     world: Res<WorldRes>,
     mut screen: ResMut<ScreenRes>,
-    mut scroll: ResMut<LegendsScroll>,
+    mut legends: ResMut<LegendsState>,
     mut repeat: ResMut<MoveRepeat>,
     mut cursor: ResMut<Cursor>,
     mut view_z: ResMut<ViewZ>,
@@ -503,19 +510,19 @@ fn handle_input(
             keys.just_pressed(key) || (keys.pressed(key) && repeat.0.just_finished())
         };
         if held(KeyCode::ArrowDown, &keys, &repeat) {
-            scroll.0 = (scroll.0 + 1).min(max_scroll);
+            legends.scroll = (legends.scroll + 1).min(max_scroll);
         }
         if held(KeyCode::ArrowUp, &keys, &repeat) {
-            scroll.0 = scroll.0.saturating_sub(1);
+            legends.scroll = legends.scroll.saturating_sub(1);
         }
         if keys.just_pressed(KeyCode::PageDown) {
-            scroll.0 = (scroll.0 + LEGENDS_PAGE).min(max_scroll);
+            legends.scroll = (legends.scroll + LEGENDS_PAGE).min(max_scroll);
         }
         if keys.just_pressed(KeyCode::PageUp) {
-            scroll.0 = scroll.0.saturating_sub(LEGENDS_PAGE);
+            legends.scroll = legends.scroll.saturating_sub(LEGENDS_PAGE);
         }
         if keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::Escape) {
-            screen.0 = if sim.0.is_some() { Screen::Playing } else { Screen::Embark };
+            screen.0 = if sim.0.is_some() { legends.from } else { Screen::Embark };
             dirty.0 = true;
         }
         if keys.just_pressed(KeyCode::KeyQ) {
@@ -547,6 +554,8 @@ fn handle_input(
             cursor.y = (cursor.y + dy).clamp(0, MAP_H as i32 - 1);
         }
         if keys.just_pressed(KeyCode::KeyY) {
+            legends.from = Screen::Embark;
+            legends.scroll = 0;
             screen.0 = Screen::Legends;
             dirty.0 = true;
             return;
@@ -581,6 +590,17 @@ fn handle_input(
                 enter_fort(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
             }
         }
+        // 'a': walk this world as a lone adventurer instead.
+        if keys.just_pressed(KeyCode::KeyA) {
+            let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+            if world.0.overworld.get(region.0, region.1).biome.embarkable() {
+                let mut new_sim = embark(&world.0, &reg.0, region);
+                if new_sim.begin_adventure(&reg.0).is_some() {
+                    enter_fort(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+                    screen.0 = Screen::Adventure;
+                }
+            }
+        }
         // Continue a saved fortress straight from the embark screen.
         if keys.just_pressed(KeyCode::F9) {
             match load_sim(&save_path(), &reg.0) {
@@ -603,10 +623,68 @@ fn handle_input(
         return;
     }
 
+    // ---- Adventure: turn-based control of a single hero.
+    if screen.0 == Screen::Adventure {
+        let mut acted: Option<PlayerAction> = None;
+        for (key, action) in [
+            (KeyCode::ArrowLeft, PlayerAction::Move(-1, 0)),
+            (KeyCode::ArrowRight, PlayerAction::Move(1, 0)),
+            (KeyCode::ArrowUp, PlayerAction::Move(0, 1)),
+            (KeyCode::ArrowDown, PlayerAction::Move(0, -1)),
+            (KeyCode::BracketRight, PlayerAction::Climb(1)),
+            (KeyCode::BracketLeft, PlayerAction::Climb(-1)),
+            (KeyCode::Period, PlayerAction::Wait),
+        ] {
+            if keys.just_pressed(key) {
+                acted = Some(action);
+                break;
+            }
+        }
+        if let (Some(action), Some(sim_inner)) = (acted, sim.0.as_mut()) {
+            sim_inner.player_step(action, &reg.0);
+            // The view follows the hero.
+            if let Some(hero) = sim_inner.player {
+                let p = sim_inner.dwarves[hero].pos;
+                view_z.0 = p.z;
+                cursor.x = p.x;
+                cursor.y = p.y;
+                if let Ok(mut tf) = camera.single_mut() {
+                    tf.translation.x = p.x as f32 * TILE;
+                    tf.translation.y = p.y as f32 * TILE;
+                }
+            }
+            dirty.0 = true;
+        }
+        if keys.just_pressed(KeyCode::KeyY) {
+            legends.from = Screen::Adventure;
+            legends.scroll = 0;
+            screen.0 = Screen::Legends;
+            dirty.0 = true;
+            return;
+        }
+        if keys.just_pressed(KeyCode::Escape) {
+            // Back to the world map; the adventure ends.
+            sim.0 = None;
+            screen.0 = Screen::Embark;
+            if let Ok(mut tf) = camera.single_mut() {
+                tf.translation.x = MAP_W as f32 * TILE * 0.5;
+                tf.translation.y = MAP_H as f32 * TILE * 0.5;
+                tf.scale = Vec3::ONE;
+            }
+            dirty.0 = true;
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyQ) {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+
     // ---- Playing.
     if keys.just_pressed(KeyCode::KeyY) {
+        legends.from = Screen::Playing;
+        legends.scroll = 0;
         screen.0 = Screen::Legends;
-        scroll.0 = 0;
         dirty.0 = true;
         return;
     }
@@ -1050,7 +1128,7 @@ fn update_hud(
     world: Res<WorldRes>,
     screen: Res<ScreenRes>,
     has_save: Res<HasSave>,
-    scroll: Res<LegendsScroll>,
+    scroll: Res<LegendsState>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
     control: Res<SimControl>,
@@ -1107,7 +1185,7 @@ fn update_hud(
                 return;
             }
             let lines = world.0.legends_lines();
-            let top = scroll.0.min(lines.len().saturating_sub(1));
+            let top = scroll.scroll.min(lines.len().saturating_sub(1));
             let body: String = lines
                 .iter()
                 .skip(top)
@@ -1119,6 +1197,41 @@ fn update_hud(
                     "Dwarf Kingdom :: Legends — {} recorded events (up/down to scroll, y/Esc to close)\n{}",
                     lines.len(),
                     body
+                );
+            }
+            return;
+        }
+        Screen::Adventure => {
+            let Some(sim) = sim.0.as_ref() else { return };
+            let Some(hero) = sim.player else { return };
+            let d = &sim.dwarves[hero];
+            let quest = match &sim.quest {
+                Some((name, false)) => format!("Quest: slay {name}"),
+                Some((name, true)) => format!("Quest complete — {name} is slain!"),
+                None => "Wander freely.".to_string(),
+            };
+            let status = if d.alive {
+                format!(
+                    "{} — torso {} · blood {:.0} · hunger {:.0} thirst {:.0}",
+                    d.name, d.body[1].hp, d.blood, d.hunger, d.thirst
+                )
+            } else {
+                format!("{} has fallen. Their deeds are remembered. (Esc)", d.name)
+            };
+            let log_tail: String = sim
+                .log
+                .iter()
+                .rev()
+                .take(4)
+                .map(|(_, m)| format!("\n> {m}"))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            for mut text in &mut q {
+                text.0 = format!(
+                    "Dwarf Kingdom :: Adventure\n{status}\n{quest}\n\
+                     arrows: move/attack   [ ]: stairs   .: wait   y: Legends   Esc: abandon   Q: quit{log_tail}"
                 );
             }
             return;
