@@ -4152,7 +4152,10 @@ impl Sim {
 
         // The alarm: civilians drop everything and flee to a burrow; when it
         // lifts they return to work. Soldiers ignore it (they hold the line).
-        if self.alarm && !self.dwarves[i].soldier && !self.burrows.is_empty() {
+        // A dwarf with a pressing hunger or thirst is let out to eat or drink
+        // first, so a long-held alarm never quietly starves the fort.
+        let famished = self.dwarves[i].hunger >= NEED_AT || self.dwarves[i].thirst >= NEED_AT;
+        if self.alarm && !famished && !self.dwarves[i].soldier && !self.burrows.is_empty() {
             if !matches!(self.dwarves[i].task, Task::Shelter { .. }) {
                 let here = self.dwarves[i].pos;
                 let region = self.regions.id(here);
@@ -4170,7 +4173,11 @@ impl Sim {
                 }
             }
             // fall through to walk/hold the Shelter task
-        } else if !self.alarm && matches!(self.dwarves[i].task, Task::Shelter { .. }) {
+        } else if matches!(self.dwarves[i].task, Task::Shelter { .. }) {
+            // Released from the burrow: the alarm lifted, or a pressing need
+            // (hunger/thirst) sends this one out to be fed. Back to Idle so the
+            // job board (or the needs handler) picks them up; if still famished
+            // under an active alarm, they'll re-shelter once fed.
             self.dwarves[i].task = Task::Idle { wander_cd: 3 };
         }
 
@@ -4233,11 +4240,16 @@ impl Sim {
             }
         }
 
-        // Stress boils over into an episode (never interrupts a mood).
+        // Stress boils over into an episode (never interrupts a mood, and
+        // never while huddled in a burrow — a tantrum there would fight the
+        // alarm retreat every tick; it can break out once the alarm lifts).
         if self.dwarves[i].stress >= 100.0
             && !matches!(
                 self.dwarves[i].task,
-                Task::Tantrum { .. } | Task::Sulk { .. } | Task::StrangeMood { .. }
+                Task::Tantrum { .. }
+                    | Task::Sulk { .. }
+                    | Task::StrangeMood { .. }
+                    | Task::Shelter { .. }
             )
         {
             self.abandon_task(i);

@@ -75,6 +75,44 @@ fn the_alarm_sends_civilians_to_the_burrow() {
 }
 
 #[test]
+fn sheltering_does_not_freeze_the_stressed_or_starve_the_thirsty() {
+    // Two regressions from the burrows review: a max-stress civilian must not
+    // oscillate Shelter<->Tantrum (and so never reach the burrow), and a
+    // parched civilian must be let out to drink rather than starve under a
+    // long alarm.
+    let (mut sim, raws) = fort(8803);
+    // dwarf 1 is deeply stressed; dwarf 2 is very thirsty. Neither is a soldier.
+    sim.dwarves[1].stress = 130.0;
+    sim.dwarves[2].thirst = 90.0;
+    let thirst0 = sim.dwarves[2].thirst;
+    sim.toggle_alarm();
+
+    let mut stressed_reached_burrow = false;
+    let mut thirst_relieved = false;
+    for _ in 0..12_000 {
+        sim.step(&raws);
+        if sim.burrow_at(sim.dwarves[1].pos) {
+            stressed_reached_burrow = true;
+        }
+        if sim.dwarves[2].thirst < thirst0 {
+            thirst_relieved = true;
+        }
+        if stressed_reached_burrow && thirst_relieved {
+            break;
+        }
+    }
+    assert!(
+        stressed_reached_burrow,
+        "a stressed civilian still reaches the burrow (no tantrum oscillation)"
+    );
+    assert!(
+        thirst_relieved,
+        "a thirsty civilian is let out to drink rather than starve under the alarm"
+    );
+    assert!(sim.dwarves.iter().all(|d| d.alive), "nobody dies under the alarm");
+}
+
+#[test]
 fn no_alarm_means_business_as_usual() {
     let (mut sim, raws) = fort(8802);
     // Alarm never sounded: nobody shelters.
