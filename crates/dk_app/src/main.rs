@@ -163,6 +163,7 @@ enum UiKind {
     Farm,
     Pasture,
     Tavern,
+    Fishery,
     Cancel,
 }
 
@@ -176,6 +177,7 @@ impl UiKind {
             UiKind::Farm => "FARM",
             UiKind::Pasture => "PASTURE",
             UiKind::Tavern => "TAVERN",
+            UiKind::Fishery => "FISHERY",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -890,6 +892,7 @@ fn handle_input(
         (KeyCode::KeyF, UiKind::Farm),
         (KeyCode::KeyN, UiKind::Pasture),
         (KeyCode::KeyO, UiKind::Tavern),
+        (KeyCode::KeyZ, UiKind::Fishery),
         (KeyCode::KeyH, UiKind::Channel),
         (KeyCode::KeyC, UiKind::Cancel),
     ] {
@@ -915,6 +918,7 @@ fn handle_input(
                     }
                     UiKind::Pasture => sim.0.add_pasture(anchor, here),
                     UiKind::Tavern => sim.0.add_tavern(anchor, here),
+                    UiKind::Fishery => sim.0.add_fishery(anchor, here),
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -1319,6 +1323,9 @@ fn tile_visual(
     }
     if sim.tavern_at(here) {
         rgb = mix(rgb, [0.7, 0.45, 0.75], 0.3);
+    }
+    if sim.fishery_at(here) {
+        rgb = mix(rgb, [0.2, 0.7, 0.7], 0.28);
     }
     if let Some((a, b)) = selection {
         if view_z == a.z
@@ -1981,7 +1988,7 @@ fn update_hud(
              Year {}, {} {}   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern u:cull v:still k:kitchen m:crafts j:loom b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull v:still k:kitchen m:crafts j:loom b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

@@ -70,6 +70,8 @@ pub const WOOL_INTERVAL: u64 = 12 * TICKS_PER_DAY;
 pub const TAVERN_STRESS_AT: f32 = 40.0;
 /// Ticks spent relaxing at the tavern.
 pub const RELAX_TICKS: u16 = 300;
+/// Ticks of work to land a catch while fishing.
+pub const FISH_WORK: u16 = 220;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -533,6 +535,8 @@ pub enum Task {
     Butcher { animal: usize, path: Vec<Pos>, progress: u16 },
     /// Unwind at the tavern: walk there, drink, socialize, shed stress.
     Relax { spot: Pos, path: Vec<Pos>, remaining: u16, drank: bool },
+    /// Fish at a bank tile beside water until something bites.
+    Fish { spot: Pos, path: Vec<Pos>, progress: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -603,6 +607,7 @@ impl Dwarf {
             Task::StrangeMood { .. } => "in a strange mood!",
             Task::Butcher { .. } => "butchering",
             Task::Relax { .. } => "relaxing at the tavern",
+            Task::Fish { .. } => "fishing",
         }
     }
 
@@ -629,6 +634,7 @@ pub struct SimStats {
     pub animals_butchered: u32,
     pub crafts_made: u32,
     pub cloth_woven: u32,
+    pub fish_caught: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -741,6 +747,7 @@ pub struct Sim {
     pub stockpiles: Vec<Stockpile>,
     pub pastures: Vec<Rect>,
     pub taverns: Vec<Rect>,
+    pub fisheries: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
     pub farms: BTreeMap<Pos, FarmTile>,
@@ -843,6 +850,7 @@ impl Sim {
             stockpiles: Vec::new(),
             pastures: Vec::new(),
             taverns: Vec::new(),
+            fisheries: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
             farms: BTreeMap::new(),
@@ -982,6 +990,48 @@ impl Sim {
 
     pub fn tavern_at(&self, p: Pos) -> bool {
         self.taverns.iter().any(|t| t.contains(p))
+    }
+
+    /// Designate a fishery over water (dwarves fish from its banks).
+    pub fn add_fishery(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.fisheries.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn fishery_at(&self, p: Pos) -> bool {
+        self.fisheries.iter().any(|f| f.contains(p))
+    }
+
+    /// A walkable tile bordering water inside a fishery — where a dwarf can
+    /// stand to fish.
+    fn fishing_bank(&self, near: Pos, region: u32) -> Option<Pos> {
+        let mut best: Option<(u32, Pos)> = None;
+        for f in &self.fisheries {
+            for cell in f.cells() {
+                // The bank must be walkable and in our region; some adjacent
+                // tile within the fishery must hold water.
+                if !self.map.walkable(cell) || self.regions.id(cell) != region {
+                    continue;
+                }
+                let has_water = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| {
+                    let w = Pos::new(cell.x + dx, cell.y + dy, cell.z);
+                    f.contains(w) && self.map.water_at(w) > 0
+                });
+                if has_water {
+                    let d = cell.manhattan(near);
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, cell));
+                    }
+                }
+            }
+        }
+        best.map(|(_, p)| p)
     }
 
     /// Place an animal (embark stock, a caravan purchase, or a test).
@@ -2613,6 +2663,7 @@ impl Sim {
             Craft { shop: Pos, input: usize, kind: CraftKind },
             Haul { item: usize, dest: Pos },
             Butcher { animal: usize },
+            Fish { spot: Pos },
         }
         let mut best: Option<(u32, Cand)> = None;
         let consider = |dist: u32, c: Cand, best: &mut Option<(u32, Cand)>| {
@@ -2690,6 +2741,12 @@ impl Sim {
         if let Some((shop, input)) = self.craft_wool_pair(dwarf_pos, my_region) {
             let d = self.items[input].pos.manhattan(dwarf_pos);
             consider(d, Cand::Craft { shop, input, kind: CraftKind::Weave }, &mut best);
+        }
+        // Fishing: when the larder runs low, cast a line from a fishery bank.
+        if want_meals && !self.fisheries.is_empty() {
+            if let Some(spot) = self.fishing_bank(dwarf_pos, my_region) {
+                consider(spot.manhattan(dwarf_pos), Cand::Fish { spot }, &mut best);
+            }
         }
 
         // Butchering: marked animals reachable from here.
@@ -2799,6 +2856,11 @@ impl Sim {
                 if let Some(p) = path::astar(&self.map, dwarf_pos, animal_pos, MAX_ASTAR_NODES) {
                     self.animals[animal].reserved_by = Some(i);
                     self.dwarves[i].task = Task::Butcher { animal, path: p, progress: 0 };
+                }
+            }
+            Cand::Fish { spot } => {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::Fish { spot, path: p, progress: 0 };
                 }
             }
         }
@@ -3442,6 +3504,27 @@ impl Sim {
                         Task::Relax { spot, path, remaining: remaining - 1, drank };
                 }
             }
+            Task::Fish { spot, mut path, progress } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Fish { spot, path, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // Standing on the bank: cast until something bites.
+                let progress = progress + 1;
+                if progress < FISH_WORK {
+                    self.dwarves[i].task = Task::Fish { spot, path, progress };
+                    return;
+                }
+                // A catch: prepared fish, ready to eat.
+                self.spawn_item(ItemKind::Meal, 0, self.dwarves[i].pos);
+                self.stats.fish_caught += 1;
+                self.add_xp(i, Skill::Farming, 10);
+                self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -4041,7 +4124,8 @@ impl Sim {
             | Task::Fight { .. }
             | Task::Tantrum { .. }
             | Task::Sulk { .. }
-            | Task::Relax { .. } => {}
+            | Task::Relax { .. }
+            | Task::Fish { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -4093,7 +4177,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 18;
+const SAVE_VERSION: u32 = 19;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
