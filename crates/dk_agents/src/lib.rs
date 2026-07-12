@@ -68,6 +68,8 @@ pub const BREED_COOLDOWN: u64 = 15 * TICKS_PER_DAY;
 pub const BUTCHER_WORK: u16 = 80;
 /// Ticks of work to war-train a dog.
 pub const TRAIN_WORK: u16 = 160;
+/// Ticks of work to raise a constructed wall.
+pub const BUILD_WORK: u16 = 60;
 /// A pasture won't overbreed past this many head.
 pub const HERD_CAP: usize = 12;
 /// Days between an adult sheep growing a shearable coat.
@@ -670,6 +672,8 @@ pub enum Task {
     Butcher { animal: usize, path: Vec<Pos>, progress: u16 },
     /// Walk to a marked dog and train it for war over time.
     Train { animal: usize, path: Vec<Pos>, progress: u16 },
+    /// Fetch a boulder and raise a wall on a planned construction tile.
+    Build { site: Pos, input: usize, path: Vec<Pos>, stage: FetchStage, progress: u16 },
     /// Unwind at the tavern: walk there, drink, socialize, shed stress.
     Relax { spot: Pos, path: Vec<Pos>, remaining: u16, drank: bool },
     /// Fish at a bank tile beside water until something bites.
@@ -758,6 +762,7 @@ impl Dwarf {
             Task::StrangeMood { .. } => "in a strange mood!",
             Task::Butcher { .. } => "butchering",
             Task::Train { .. } => "training a war dog",
+            Task::Build { .. } => "building a wall",
             Task::Relax { .. } => "relaxing at the tavern",
             Task::Fish { .. } => "fishing",
             Task::Pray { .. } => "praying at the temple",
@@ -922,6 +927,10 @@ pub struct Sim {
     /// Engraved wall faces: position -> the scene carved there. Grows as
     /// dwarves smooth walls; read by the UI to describe and tint them.
     pub engravings: BTreeMap<Pos, String>,
+    /// Planned constructions: a walkable tile marked to become a wall.
+    /// `true` once a builder has claimed it. A dwarf hauls a boulder over and
+    /// raises the wall.
+    pub constructions: BTreeMap<Pos, bool>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -1029,6 +1038,7 @@ impl Sim {
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
             engravings: BTreeMap::new(),
+            constructions: BTreeMap::new(),
             stats: SimStats::default(),
             clock: Calendar::default(),
             weather: Weather::Clear,
@@ -1116,6 +1126,23 @@ impl Sim {
         added
     }
 
+    /// Plan a constructed wall on a walkable tile. Fails if the tile is solid,
+    /// already carries a building/farm/designation/plan, or has no solid
+    /// neighbour to key the masonry to would be fine — we allow open sites.
+    pub fn designate_construction(&mut self, p: Pos) -> bool {
+        let Some(tile) = self.map.tile_at(p) else { return false };
+        if tile.is_solid()
+            || self.building_at(p).is_some()
+            || self.farms.contains_key(&p)
+            || self.designations.contains_key(&p)
+            || self.constructions.contains_key(&p)
+        {
+            return false;
+        }
+        self.constructions.insert(p, false);
+        true
+    }
+
     pub fn cancel_rect(&mut self, a: Pos, b: Pos) -> usize {
         assert_eq!(a.z, b.z);
         let mut removed = 0;
@@ -1127,6 +1154,14 @@ impl Sim {
                     for i in 0..self.dwarves.len() {
                         if matches!(self.dwarves[i].task, Task::Mine { target, .. } if target == p)
                         {
+                            self.abandon_task(i);
+                        }
+                    }
+                }
+                if self.constructions.remove(&p).is_some() {
+                    removed += 1;
+                    for i in 0..self.dwarves.len() {
+                        if matches!(self.dwarves[i].task, Task::Build { site, .. } if site == p) {
                             self.abandon_task(i);
                         }
                     }
@@ -3455,6 +3490,7 @@ impl Sim {
             Haul { item: usize, dest: Pos },
             Butcher { animal: usize },
             Train { animal: usize },
+            Build { site: Pos, input: usize },
             Fish { spot: Pos },
         }
         let mut best: Option<(u32, Cand)> = None;
@@ -3545,6 +3581,11 @@ impl Sim {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeWeapon }, &mut best);
             }
+        }
+        // Construction: haul a boulder to a planned wall and raise it.
+        if let Some((site, input)) = self.build_pair(dwarf_pos, my_region) {
+            let d = self.items[input].pos.manhattan(dwarf_pos);
+            consider(d, Cand::Build { site, input }, &mut best);
         }
         // Fishing: when the larder runs low, cast a line from a fishery bank.
         if want_meals && !self.fisheries.is_empty() {
@@ -3678,6 +3719,22 @@ impl Sim {
                 if let Some(p) = path::astar(&self.map, dwarf_pos, animal_pos, MAX_ASTAR_NODES) {
                     self.animals[animal].reserved_by = Some(i);
                     self.dwarves[i].task = Task::Train { animal, path: p, progress: 0 };
+                }
+            }
+            Cand::Build { site, input } => {
+                let input_pos = self.items[input].pos;
+                if let Some(p) = path::astar(&self.map, dwarf_pos, input_pos, MAX_ASTAR_NODES) {
+                    self.items[input].reserved_by = Some(i);
+                    if let Some(a) = self.constructions.get_mut(&site) {
+                        *a = true;
+                    }
+                    self.dwarves[i].task = Task::Build {
+                        site,
+                        input,
+                        path: p,
+                        stage: FetchStage::ToInput,
+                        progress: 0,
+                    };
                 }
             }
             Cand::Fish { spot } => {
@@ -3843,6 +3900,29 @@ impl Sim {
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(i, _)| i)?;
         Some((shop.pos, input))
+    }
+
+    /// Nearest (construction site, boulder) pair for raising a wall: an
+    /// unclaimed plan reachable in this region, and a boulder to build it with.
+    fn build_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let site = self
+            .constructions
+            .iter()
+            .filter(|(&p, &assigned)| !assigned && self.regions.id(p) == region)
+            .min_by_key(|(&p, _)| p.manhattan(near))
+            .map(|(&p, _)| p)?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((site, input))
     }
 
     /// How many soldiers the fort has enlisted, and how many forged weapons
@@ -4372,6 +4452,117 @@ impl Sim {
                             }
                         }
                         self.add_xp(i, skill, 30);
+                        self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+                    }
+                }
+            }
+            Task::Build { site, input, mut path, stage, progress } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Build { site, input, path, stage, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // The plan may have been cancelled or the boulder lost.
+                let valid = self.constructions.contains_key(&site)
+                    && self.items.get(input).is_some_and(|it| it.active());
+                if !valid {
+                    self.abandon_task(i);
+                    return;
+                }
+                match stage {
+                    FetchStage::ToInput => {
+                        if !self.take_item(i, input) {
+                            self.abandon_task(i);
+                            return;
+                        }
+                        // Head for a tile beside the site — never onto it, or
+                        // the wall would rise around the builder.
+                        let here = self.dwarves[i].pos;
+                        let region = self.regions.id(here);
+                        let mut work = Vec::with_capacity(6);
+                        path::work_positions(&self.map, site, &mut work);
+                        let dest = work
+                            .iter()
+                            .filter(|w| self.regions.id(**w) == region)
+                            .min_by_key(|w| w.manhattan(here))
+                            .copied();
+                        match dest.and_then(|d| path::astar(&self.map, here, d, MAX_ASTAR_NODES)) {
+                            Some(p) => {
+                                self.dwarves[i].task = Task::Build {
+                                    site,
+                                    input,
+                                    path: p,
+                                    stage: FetchStage::ToStation,
+                                    progress,
+                                };
+                            }
+                            None => self.abandon_task(i),
+                        }
+                    }
+                    FetchStage::ToStation => {
+                        // If we've drifted from the site, walk back beside it.
+                        let here = self.dwarves[i].pos;
+                        if here.x.abs_diff(site.x) + here.y.abs_diff(site.y) != 1
+                            || here.z != site.z
+                        {
+                            let region = self.regions.id(here);
+                            let mut work = Vec::with_capacity(6);
+                            path::work_positions(&self.map, site, &mut work);
+                            let dest = work
+                                .iter()
+                                .filter(|w| self.regions.id(**w) == region)
+                                .min_by_key(|w| w.manhattan(here))
+                                .copied();
+                            match dest.and_then(|d| path::astar(&self.map, here, d, MAX_ASTAR_NODES))
+                            {
+                                Some(p) if !p.is_empty() => {
+                                    self.dwarves[i].task =
+                                        Task::Build { site, input, path: p, stage, progress };
+                                }
+                                _ => self.abandon_task(i),
+                            }
+                            return;
+                        }
+                        let progress = progress + 1;
+                        if progress < BUILD_WORK {
+                            self.dwarves[i].task =
+                                Task::Build { site, input, path, stage, progress };
+                            return;
+                        }
+                        // Never wall in a creature standing on the site: wait.
+                        let occupied = self.dwarves.iter().any(|d| d.alive && d.pos == site)
+                            || self.animals.iter().any(|a| a.alive && a.pos == site);
+                        if occupied {
+                            self.dwarves[i].task = Task::Build {
+                                site,
+                                input,
+                                path,
+                                stage,
+                                progress: BUILD_WORK - 1,
+                            };
+                            return;
+                        }
+                        // Raise the wall from the carried stone.
+                        let mat = self.items[input].stuff;
+                        self.items[input].consumed = true;
+                        self.items[input].reserved_by = None;
+                        let tile = self.map.tile_at(site).unwrap();
+                        self.map.set_at(
+                            site,
+                            Tile { material: mat, shape: TileShape::Solid, water: 0, magma: 0 },
+                        );
+                        self.displace_water(site, tile.water);
+                        self.constructions.remove(&site);
+                        self.regions.dirty = true;
+                        self.map_changed = true;
+                        self.water.wake(site);
+                        self.magma.wake(site);
+                        self.add_xp(i, Skill::Mining, 15);
+                        let name = self.dwarves[i].name.clone();
+                        self.log_event(format!("{name} raises a wall."));
                         self.dwarves[i].task = Task::Idle { wander_cd: 3 };
                     }
                 }
@@ -5421,6 +5612,15 @@ impl Sim {
                     self.items[input].reserved_by = None;
                 }
             }
+            Task::Build { site, input, .. } => {
+                if self.items[input].reserved_by == Some(i) {
+                    self.items[input].reserved_by = None;
+                }
+                // Free the plan for another builder.
+                if let Some(assigned) = self.constructions.get_mut(&site) {
+                    *assigned = false;
+                }
+            }
             Task::Butcher { animal, .. } | Task::Train { animal, .. } => {
                 if let Some(a) = self.animals.get_mut(animal) {
                     if a.reserved_by == Some(i) {
@@ -5508,7 +5708,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 35;
+const SAVE_VERSION: u32 = 36;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
