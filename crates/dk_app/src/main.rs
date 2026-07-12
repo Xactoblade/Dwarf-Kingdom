@@ -892,6 +892,7 @@ fn handle_input(
         (KeyCode::KeyV, BuildingKind::Still),
         (KeyCode::KeyK, BuildingKind::Kitchen),
         (KeyCode::KeyG, BuildingKind::Floodgate),
+        (KeyCode::KeyB, BuildingKind::Tomb),
     ] {
         if keys.just_pressed(key) {
             let here = cursor.pos(view_z.0);
@@ -1167,6 +1168,7 @@ fn tile_visual(
             BuildingKind::Kitchen => [0.8, 0.25, 0.2],
             BuildingKind::Floodgate => [0.55, 0.55, 0.6],
             BuildingKind::Lever { .. } => [0.9, 0.85, 0.3],
+            BuildingKind::Tomb => [0.6, 0.55, 0.75],
         };
         rgb = mix(rgb, tint, 0.6);
         glyph = match b.kind {
@@ -1174,6 +1176,7 @@ fn tile_visual(
             BuildingKind::Kitchen => "kitchen",
             BuildingKind::Floodgate => "gate",
             BuildingKind::Lever { .. } => "lever",
+            BuildingKind::Tomb => "tomb",
         };
     }
     let water = sim.map.water_at(here);
@@ -1274,6 +1277,7 @@ fn tradeable_items(sim: &Sim) -> Vec<usize> {
         .enumerate()
         .filter(|(_, it)| {
             it.active()
+                && it.kind != ItemKind::Corpse // the dead are not for sale
                 && it.reserved_by.is_none()
                 && matches!(it.state, ItemState::Stored { .. } | ItemState::OnGround)
         })
@@ -1289,6 +1293,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Meal => "prepared meal".to_string(),
         ItemKind::Drink => "mug of drink".to_string(),
         ItemKind::Artifact => it.name.clone().unwrap_or_else(|| "artifact".to_string()),
+        ItemKind::Corpse => it.name.clone().unwrap_or_else(|| "remains".to_string()),
     }
 }
 
@@ -1303,6 +1308,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Meal => Color::srgb(0.9, 0.62, 0.3),
         ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
         ItemKind::Artifact => Color::srgb(1.0, 0.85, 0.25),
+        ItemKind::Corpse => Color::srgb(0.75, 0.8, 0.9),
     }
 }
 
@@ -1368,6 +1374,17 @@ fn sync_agent_sprites(
     for (i, &e) in pools.dwarves.iter().enumerate() {
         let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
         match sim.0.dwarves.get(i) {
+            Some(d) if d.ghost && d.pos.z == view_z.0 => {
+                tf.translation.x = d.pos.x as f32 * TILE;
+                tf.translation.y = d.pos.y as f32 * TILE;
+                if let Some(ts) = &tileset.0 {
+                    if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                        atlas.index = ts.index("dwarf");
+                    }
+                }
+                sprite.color = Color::srgba(0.8, 0.9, 1.0, 0.45);
+                *vis = Visibility::Visible;
+            }
             Some(d) if d.alive && d.pos.z == view_z.0 => {
                 tf.translation.x = d.pos.x as f32 * TILE;
                 tf.translation.y = d.pos.y as f32 * TILE;
@@ -1418,11 +1435,14 @@ fn sync_agent_sprites(
                             ItemKind::Meal => "meal",
                             ItemKind::Drink => "drink",
                             ItemKind::Artifact => "artifact",
+                            ItemKind::Corpse => "dwarf",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
                         }
-                        sprite.color = if ts.is_tinted(glyph) {
+                        sprite.color = if it.kind == ItemKind::Corpse {
+                            Color::srgba(0.75, 0.8, 0.9, 0.8) // the pale dead
+                        } else if ts.is_tinted(glyph) {
                             item_color(&reg.0, it.kind, it.stuff)
                         } else {
                             Color::WHITE
@@ -1675,6 +1695,10 @@ fn update_hud(
                 .name
                 .clone()
                 .unwrap_or_else(|| "a legendary artifact".to_string()),
+            ItemKind::Corpse => it
+                .name
+                .clone()
+                .unwrap_or_else(|| "remains".to_string()),
         };
         under = format!("{under} · {what}");
     }

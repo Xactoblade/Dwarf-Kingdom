@@ -395,12 +395,30 @@ def t_lever():
     outline(t)
     return t
 
+def t_tomb():
+    t = Tile(210)
+    STONE = (168, 168, 176, 255)
+    STONE_D = (120, 120, 130, 255)
+    # A headstone on a low mound.
+    t.fill(4, 24, 28, 29, (110, 90, 60, 255))
+    t.fill(6, 23, 26, 25, (90, 120, 60, 255))
+    t.fill(11, 8, 21, 24, STONE)
+    t.disc(16, 9, 5, STONE)
+    t.fill(11, 8, 13, 24, STONE_D)
+    t.fill(11, 22, 21, 24, STONE_D)
+    # An inscription
+    for iy in (12, 15, 18):
+        t.fill(14, iy, 19, iy + 1, STONE_D)
+    outline(t)
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
     ("seed", t_seed), ("crop", t_crop), ("dwarf", t_dwarf), ("raider", t_raider),
     ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
     ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
+    ("tomb", t_tomb),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder", "seed", "crop"]
 

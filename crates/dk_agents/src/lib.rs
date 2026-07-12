@@ -52,6 +52,8 @@ pub const MOOD_WORK: u16 = 300;
 pub const EPISODE_TICKS: u16 = 800;
 /// Relationship level at which two dwarves count as friends.
 pub const FRIEND_AT: i32 = 30;
+/// Days an unburied fort corpse waits before its ghost rises.
+pub const GHOST_AFTER_DAYS: u64 = 8;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -91,6 +93,8 @@ pub enum ItemKind {
     Drink,
     /// A strange mood's masterwork. `stuff` = material index.
     Artifact,
+    /// A dead citizen, awaiting burial. `stuff` unused; `name` names them.
+    Corpse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +132,8 @@ impl Item {
 pub enum BuildingKind {
     Still,
     Kitchen,
+    /// A resting place. Burying a corpse here lays its ghost to rest.
+    Tomb,
     /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
     Floodgate,
     /// Pulling it toggles the floodgate at `target`.
@@ -139,6 +145,7 @@ impl BuildingKind {
         match self {
             BuildingKind::Still => "Still",
             BuildingKind::Kitchen => "Kitchen",
+            BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
         }
@@ -149,6 +156,8 @@ impl BuildingKind {
 pub struct Building {
     pub kind: BuildingKind,
     pub pos: Pos,
+    /// Tombs: whether someone rests here already.
+    pub occupied: bool,
 }
 
 // ------------------------------------------------------------------- farms
@@ -314,6 +323,8 @@ pub enum ThoughtKind {
     MandateMet,
     Punished,
     SawPunishment,
+    Haunted,
+    LaidToRest,
 }
 
 impl ThoughtKind {
@@ -339,6 +350,8 @@ impl ThoughtKind {
             ThoughtKind::MandateMet => 6.0,
             ThoughtKind::Punished => -15.0,
             ThoughtKind::SawPunishment => -6.0,
+            ThoughtKind::Haunted => -8.0,
+            ThoughtKind::LaidToRest => 8.0,
         }
     }
 
@@ -367,6 +380,8 @@ impl ThoughtKind {
             ThoughtKind::MandateMet => "saw their mandate fulfilled",
             ThoughtKind::Punished => "was beaten for a failed mandate",
             ThoughtKind::SawPunishment => "watched a comrade being punished",
+            ThoughtKind::Haunted => "was tormented by a restless ghost",
+            ThoughtKind::LaidToRest => "took comfort in a proper burial",
         }
     }
 }
@@ -450,6 +465,9 @@ pub struct Dwarf {
     /// Tick a fully maxed need started, for death countdowns.
     starving_since: Option<u64>,
     dehydrated_since: Option<u64>,
+    /// When they died, and whether their unquiet spirit walks.
+    pub died_at: Option<u64>,
+    pub ghost: bool,
 }
 
 impl Dwarf {
@@ -576,6 +594,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Drink => 8,
         // Precious, but not a wagon-buying cheat: the material matters.
         ItemKind::Artifact => 50 + raws.materials.get(item.stuff).value * 5,
+        // The dead are not for sale.
+        ItemKind::Corpse => 0,
     }
 }
 
@@ -849,7 +869,7 @@ impl Sim {
             self.water.wake(pos);
             self.magma.wake(pos);
         }
-        self.buildings.push(Building { kind, pos });
+        self.buildings.push(Building { kind, pos, occupied: false });
         true
     }
 
@@ -1408,6 +1428,10 @@ impl Sim {
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_nobility();
         }
+        // The unquiet dead stir every other day.
+        if self.clock.tick % (2 * TICKS_PER_DAY) == 0 && self.clock.tick > 0 {
+            self.tick_ghosts();
+        }
 
         // Season boundary: migrants, moods, and (later years) raiders.
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
@@ -1516,6 +1540,104 @@ impl Sim {
                     FarmState::Growing { progress: next as u32 }
                 };
             }
+        }
+    }
+
+    /// Lay a corpse to rest in a tomb: the ghost (if risen) departs, and
+    /// those who loved them find some peace.
+    fn bury(&mut self, corpse: usize, tomb: usize, hauler: usize) {
+        let name = self.items[corpse]
+            .name
+            .clone()
+            .unwrap_or_else(|| "the departed".to_string());
+        self.items[corpse].consumed = true;
+        self.items[corpse].reserved_by = None;
+        self.buildings[tomb].occupied = true;
+        // Quiet the matching ghost.
+        let dead: Option<usize> = self.dwarves.iter().position(|d| {
+            !d.alive && d.faction == Faction::Fort && name.contains(&d.name)
+        });
+        if let Some(dd) = dead {
+            if self.dwarves[dd].ghost {
+                self.dwarves[dd].ghost = false;
+                let gname = self.dwarves[dd].name.clone();
+                self.log_event(format!("The ghost of {gname} is finally at peace."));
+            }
+            // Friends of the dead take comfort.
+            let mourners: Vec<usize> = self
+                .dwarves
+                .iter()
+                .enumerate()
+                .filter(|(j, d)| {
+                    *j != dd
+                        && d.alive
+                        && d.faction == Faction::Fort
+                        && d.relationships.get(&dd).copied().unwrap_or(0) >= FRIEND_AT
+                })
+                .map(|(j, _)| j)
+                .collect();
+            for m in mourners {
+                self.push_thought(m, ThoughtKind::LaidToRest);
+            }
+        }
+        self.log_event(format!("{name} laid to rest in the tomb."));
+        self.dwarves[hauler].task = Task::Idle { wander_cd: 5 };
+    }
+
+    /// The unquiet dead: unburied citizens rise as ghosts and torment the
+    /// living until someone builds them a tomb.
+    fn tick_ghosts(&mut self) {
+        let tick = self.clock.tick;
+        // Rise: any fort corpse still above ground past the grace period.
+        let unburied: Vec<String> = self
+            .items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Corpse)
+            .filter_map(|it| it.name.clone())
+            .collect();
+        for i in 0..self.dwarves.len() {
+            let d = &self.dwarves[i];
+            if d.alive || d.faction != Faction::Fort || d.ghost {
+                continue;
+            }
+            let Some(died) = d.died_at else { continue };
+            if tick - died < GHOST_AFTER_DAYS * TICKS_PER_DAY {
+                continue;
+            }
+            if !unburied.iter().any(|n| n.contains(&d.name)) {
+                continue; // buried (or no corpse ever) — they rest
+            }
+            self.dwarves[i].ghost = true;
+            let name = self.dwarves[i].name.clone();
+            self.log_event(format!(
+                "The restless ghost of {name} rises! Bury their remains to grant them peace."
+            ));
+        }
+        // Torment: each ghost unsettles a random living citizen every couple
+        // of days.
+        let ghosts: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.ghost)
+            .map(|(i, _)| i)
+            .collect();
+        for _g in ghosts {
+            if !self.rng.gen_ratio(1, 2) {
+                continue;
+            }
+            let living: Vec<usize> = self
+                .dwarves
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.alive && d.faction == Faction::Fort)
+                .map(|(i, _)| i)
+                .collect();
+            if living.is_empty() {
+                continue;
+            }
+            let victim = living[self.rng.gen_range(0..living.len())];
+            self.push_thought(victim, ThoughtKind::Haunted);
         }
     }
 
@@ -2191,24 +2313,37 @@ impl Sim {
             }
         }
 
-        // Hauling loose items to stockpiles.
-        if !self.stockpiles.is_empty() {
-            for (idx, item) in self.items.iter().enumerate() {
-                if !item.active()
-                    || item.state != ItemState::OnGround
-                    || item.reserved_by.is_some()
-                {
-                    continue;
-                }
-                if self.haul_retry.get(&idx).is_some_and(|&t| t > tick) {
-                    continue;
-                }
-                if self.regions.id(item.pos) != my_region {
-                    continue;
-                }
-                let Some(dest) = self.find_free_cell(item.pos, my_region) else { continue };
-                consider(item.pos.manhattan(dwarf_pos), Cand::Haul { item: idx, dest }, &mut best);
+        // Hauling loose items: corpses go to open tombs, goods to stockpiles.
+        for (idx, item) in self.items.iter().enumerate() {
+            if !item.active()
+                || item.state != ItemState::OnGround
+                || item.reserved_by.is_some()
+            {
+                continue;
             }
+            if self.haul_retry.get(&idx).is_some_and(|&t| t > tick) {
+                continue;
+            }
+            if self.regions.id(item.pos) != my_region {
+                continue;
+            }
+            let dest = if item.kind == ItemKind::Corpse {
+                self.buildings
+                    .iter()
+                    .filter(|b| {
+                        b.kind == BuildingKind::Tomb
+                            && !b.occupied
+                            && self.regions.id(b.pos) == my_region
+                    })
+                    .min_by_key(|b| b.pos.manhattan(item.pos))
+                    .map(|b| b.pos)
+            } else if !self.stockpiles.is_empty() {
+                self.find_free_cell(item.pos, my_region)
+            } else {
+                None
+            };
+            let Some(dest) = dest else { continue };
+            consider(item.pos.manhattan(dwarf_pos), Cand::Haul { item: idx, dest }, &mut best);
         }
 
         // --- Commit the winner.
@@ -2512,6 +2647,19 @@ impl Sim {
                         return;
                     }
                     let here = self.dwarves[i].pos;
+                    // Corpse delivered to an open tomb: a burial.
+                    if self.items[item].kind == ItemKind::Corpse {
+                        let tomb = self
+                            .buildings
+                            .iter()
+                            .position(|b| {
+                                b.kind == BuildingKind::Tomb && b.pos == here && !b.occupied
+                            });
+                        if let Some(t) = tomb {
+                            self.bury(item, t, i);
+                            return;
+                        }
+                    }
                     // Only resting items block a cell — creatures carrying
                     // things through the stockpile don't occupy it.
                     let taken = self.items.iter().enumerate().any(|(j, it)| {
@@ -3094,9 +3242,19 @@ impl Sim {
             }
         }
         self.dwarves[i].alive = false;
+        self.dwarves[i].died_at = Some(self.clock.tick);
         // `deaths` means fort citizens lost; raider kills have their own
         // counters at the call sites.
         if self.dwarves[i].faction == Faction::Fort {
+            // The body remains, and it wants burying.
+            let name = self.dwarves[i].name.clone();
+            let pos = self.dwarves[i].pos;
+            self.spawn_named_item(
+                ItemKind::Corpse,
+                0,
+                pos,
+                Some(format!("remains of {name}")),
+            );
             self.stats.deaths += 1;
             // Friends grieve.
             let mourners: Vec<usize> = self
@@ -3347,6 +3505,8 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         chat_cd: 0,
         starving_since: None,
         dehydrated_since: None,
+        died_at: None,
+        ghost: false,
     }
 }
 
@@ -3424,6 +3584,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             ItemKind::Boulder | ItemKind::Artifact => {
                 remap_one(&mat_remap, item.stuff, "material")?
             }
+            ItemKind::Corpse => item.stuff, // no raws index to remap
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
         Ok(())
