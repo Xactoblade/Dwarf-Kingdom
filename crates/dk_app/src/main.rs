@@ -87,6 +87,14 @@ struct TradeState {
 #[derive(Resource)]
 struct HasSave(bool);
 
+/// Event sounds keyed by name, when assets/sounds/ exists. Absent = silent.
+#[derive(Resource, Default)]
+struct SoundBank(std::collections::HashMap<&'static str, Handle<AudioSource>>);
+
+/// How far through the sim log the sound system has played.
+#[derive(Resource, Default)]
+struct LogCursor(usize);
+
 /// Loaded sprite-sheet, when data/tileset.ron is present. Absent = flat
 /// colored squares (the pre-graphics look).
 #[derive(Resource, Default)]
@@ -377,6 +385,7 @@ fn main() {
                     sync_agent_sprites,
                     position_cursor_sprite,
                     update_hud,
+                    play_event_sounds,
                     screenshot_mode,
                 )
                     .chain(),
@@ -479,6 +488,19 @@ fn setup(
         }
     }
     commands.insert_resource(Tileset(tileset));
+
+    // Event sounds are optional: no directory, no sound, no errors.
+    let mut bank = std::collections::HashMap::new();
+    let sound_dir = std::path::Path::new(&assets_dir()).join("sounds");
+    if sound_dir.is_dir() {
+        for name in ["hit", "horn", "chime", "bell", "toll", "hiss", "doom", "fanfare"] {
+            if sound_dir.join(format!("{name}.wav")).is_file() {
+                bank.insert(name, asset_server.load(format!("sounds/{name}.wav")));
+            }
+        }
+    }
+    commands.insert_resource(SoundBank(bank));
+    commands.insert_resource(LogCursor(0));
 
     commands.spawn((
         Sprite {
@@ -1096,6 +1118,66 @@ fn handle_trade_input(
         screen.0 = Screen::Playing;
         dirty.0 = true;
     }
+}
+
+/// Play sounds for new fort-log events. The log is the game's narrator;
+/// this system is its voice.
+fn play_event_sounds(
+    mut commands: Commands,
+    sim: Res<SimRes>,
+    bank: Res<SoundBank>,
+    mut cursor: ResMut<LogCursor>,
+) {
+    let Some(sim) = sim.0.as_ref() else {
+        cursor.0 = 0;
+        return;
+    };
+    if bank.0.is_empty() {
+        return;
+    }
+    let len = sim.log.len();
+    if len < cursor.0 {
+        // A new fort or a loaded save: don't replay history.
+        cursor.0 = len;
+        return;
+    }
+    let mut played = 0;
+    for (_, msg) in sim.log.iter().skip(cursor.0) {
+        if played >= 2 {
+            break; // never a wall of noise in one frame
+        }
+        let key = if msg.contains("strikes") {
+            Some("hit")
+        } else if msg.contains("raiding party") {
+            Some("horn")
+        } else if msg.contains("strange mood") || msg.contains("has created") {
+            Some("chime")
+        } else if msg.contains("caravan") && msg.contains("arrived") {
+            Some("bell")
+        } else if msg.contains("laid to rest") || msg.contains("at peace") {
+            Some("toll")
+        } else if msg.contains("obsidian") {
+            Some("hiss")
+        } else if msg.contains("drowned")
+            || msg.contains("incinerated")
+            || msg.contains("falls dead")
+            || msg.contains("bled out")
+        {
+            Some("doom")
+        } else if msg.contains("elevated to baron") {
+            Some("fanfare")
+        } else {
+            None
+        };
+        if let Some(handle) = key.and_then(|k| bank.0.get(k)) {
+            commands.spawn((
+                AudioPlayer::new(handle.clone()),
+                PlaybackSettings::DESPAWN,
+            ));
+            played += 1;
+        }
+    }
+    cursor.0 = len;
 }
 
 fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
