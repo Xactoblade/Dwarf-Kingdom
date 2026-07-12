@@ -163,6 +163,7 @@ enum UiKind {
     Farm,
     Pasture,
     Tavern,
+    Temple,
     Fishery,
     Cancel,
 }
@@ -177,6 +178,7 @@ impl UiKind {
             UiKind::Farm => "FARM",
             UiKind::Pasture => "PASTURE",
             UiKind::Tavern => "TAVERN",
+            UiKind::Temple => "TEMPLE",
             UiKind::Fishery => "FISHERY",
             UiKind::Cancel => "CANCEL",
         }
@@ -442,9 +444,12 @@ fn demo_scenario(sim: &mut Sim, raws: &Raws) {
         sim.add_building(BuildingKind::Loom, Pos::new(wa.x + 3, wa.y, wa.z));
         sim.add_building(BuildingKind::Jeweler, Pos::new(wa.x + 4, wa.y, wa.z));
     }
-    // A tavern with a few drinks so the demo shows the social hub.
+    // A tavern and a temple so the demo shows the social/spiritual hubs.
     if let Some((va, vb)) = sim.find_flat_patch(cx, cy) {
         sim.add_tavern(va, vb);
+    }
+    if let Some((ea, eb)) = sim.find_flat_patch(cx, cy) {
+        sim.add_temple(ea, eb);
     }
     // A pasture with a small herd so the demo shows livestock.
     if let Some((pa, pb)) = sim.find_flat_patch(cx, cy) {
@@ -893,6 +898,7 @@ fn handle_input(
         (KeyCode::KeyF, UiKind::Farm),
         (KeyCode::KeyN, UiKind::Pasture),
         (KeyCode::KeyO, UiKind::Tavern),
+        (KeyCode::Quote, UiKind::Temple),
         (KeyCode::KeyZ, UiKind::Fishery),
         (KeyCode::KeyH, UiKind::Channel),
         (KeyCode::KeyC, UiKind::Cancel),
@@ -919,6 +925,7 @@ fn handle_input(
                     }
                     UiKind::Pasture => sim.0.add_pasture(anchor, here),
                     UiKind::Tavern => sim.0.add_tavern(anchor, here),
+                    UiKind::Temple => sim.0.add_temple(anchor, here),
                     UiKind::Fishery => sim.0.add_fishery(anchor, here),
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
@@ -1340,6 +1347,9 @@ fn tile_visual(
     }
     if sim.fishery_at(here) {
         rgb = mix(rgb, [0.2, 0.7, 0.7], 0.28);
+    }
+    if sim.temple_at(here) {
+        rgb = mix(rgb, [0.85, 0.8, 0.5], 0.28);
     }
     if let Some((a, b)) = selection {
         if view_z == a.z
@@ -2029,7 +2039,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

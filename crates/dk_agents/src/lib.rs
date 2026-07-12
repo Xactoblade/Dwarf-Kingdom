@@ -72,6 +72,10 @@ pub const TAVERN_STRESS_AT: f32 = 40.0;
 pub const RELAX_TICKS: u16 = 300;
 /// Ticks of work to land a catch while fishing.
 pub const FISH_WORK: u16 = 220;
+/// Ticks between a dwarf's visits to the temple to worship.
+pub const PRAYER_INTERVAL: u64 = 6 * TICKS_PER_DAY;
+/// Ticks spent in prayer.
+pub const PRAY_TICKS: u16 = 200;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -477,6 +481,7 @@ pub enum ThoughtKind {
     Haunted,
     LaidToRest,
     RelaxedAtTavern,
+    PrayedAtTemple,
 }
 
 impl ThoughtKind {
@@ -505,6 +510,7 @@ impl ThoughtKind {
             ThoughtKind::Haunted => -8.0,
             ThoughtKind::LaidToRest => 8.0,
             ThoughtKind::RelaxedAtTavern => 6.0,
+            ThoughtKind::PrayedAtTemple => 5.0,
         }
     }
 
@@ -536,6 +542,7 @@ impl ThoughtKind {
             ThoughtKind::Haunted => "was tormented by a restless ghost",
             ThoughtKind::LaidToRest => "took comfort in a proper burial",
             ThoughtKind::RelaxedAtTavern => "unwound at the tavern",
+            ThoughtKind::PrayedAtTemple => "found peace in prayer",
         }
     }
 }
@@ -596,6 +603,8 @@ pub enum Task {
     Relax { spot: Pos, path: Vec<Pos>, remaining: u16, drank: bool },
     /// Fish at a bank tile beside water until something bites.
     Fish { spot: Pos, path: Vec<Pos>, progress: u16 },
+    /// Worship at the temple: walk there and pray a while for solace.
+    Pray { spot: Pos, path: Vec<Pos>, remaining: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -640,6 +649,8 @@ pub struct Dwarf {
     /// Enlisted: proactively hunts hostiles instead of only defending when
     /// one walks adjacent.
     pub soldier: bool,
+    /// Tick of this dwarf's last prayer, for the worship cadence.
+    pub last_prayer: u64,
 }
 
 impl Dwarf {
@@ -673,6 +684,7 @@ impl Dwarf {
             Task::Butcher { .. } => "butchering",
             Task::Relax { .. } => "relaxing at the tavern",
             Task::Fish { .. } => "fishing",
+            Task::Pray { .. } => "praying at the temple",
         }
     }
 
@@ -818,6 +830,7 @@ pub struct Sim {
     pub stockpiles: Vec<Stockpile>,
     pub pastures: Vec<Rect>,
     pub taverns: Vec<Rect>,
+    pub temples: Vec<Rect>,
     pub fisheries: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
@@ -922,6 +935,7 @@ impl Sim {
             stockpiles: Vec::new(),
             pastures: Vec::new(),
             taverns: Vec::new(),
+            temples: Vec::new(),
             fisheries: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
@@ -1063,6 +1077,22 @@ impl Sim {
 
     pub fn tavern_at(&self, p: Pos) -> bool {
         self.taverns.iter().any(|t| t.contains(p))
+    }
+
+    /// Designate a temple where dwarves worship for solace.
+    pub fn add_temple(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.temples.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn temple_at(&self, p: Pos) -> bool {
+        self.temples.iter().any(|t| t.contains(p))
     }
 
     /// Designate a fishery over water (dwarves fish from its banks).
@@ -2830,6 +2860,23 @@ impl Sim {
                 }
             }
         }
+        // The devout seek the temple when their worship is overdue.
+        let overdue = self.clock.tick.saturating_sub(self.dwarves[i].last_prayer)
+            >= PRAYER_INTERVAL;
+        if overdue && !self.temples.is_empty() {
+            if let Some(spot) = self
+                .temples
+                .iter()
+                .flat_map(|t| t.cells())
+                .filter(|&c| self.regions.id(c) == my_region && self.map.walkable(c))
+                .min_by_key(|&c| c.manhattan(dwarf_pos))
+            {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::Pray { spot, path: p, remaining: PRAY_TICKS };
+                    return None;
+                }
+            }
+        }
 
         // --- Work candidates, nearest wins (insertion order breaks ties).
         enum Cand {
@@ -3798,6 +3845,27 @@ impl Sim {
                 self.add_xp(i, Skill::Farming, 10);
                 self.dwarves[i].task = Task::Idle { wander_cd: 5 };
             }
+            Task::Pray { spot, mut path, remaining } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Pray { spot, path, remaining };
+                    } else if self.temple_at(self.dwarves[i].pos) {
+                        self.dwarves[i].task = Task::Pray { spot, path: Vec::new(), remaining };
+                    } else {
+                        self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+                    }
+                    return;
+                }
+                // In the temple: worship quiets the heart.
+                self.dwarves[i].stress = (self.dwarves[i].stress - 0.08).max(0.0);
+                if remaining == 0 {
+                    self.dwarves[i].last_prayer = self.clock.tick;
+                    self.push_thought(i, ThoughtKind::PrayedAtTemple);
+                    self.dwarves[i].task = Task::Idle { wander_cd: 10 };
+                } else {
+                    self.dwarves[i].task = Task::Pray { spot, path, remaining: remaining - 1 };
+                }
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -4422,7 +4490,8 @@ impl Sim {
             | Task::Tantrum { .. }
             | Task::Sulk { .. }
             | Task::Relax { .. }
-            | Task::Fish { .. } => {}
+            | Task::Fish { .. }
+            | Task::Pray { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -4470,13 +4539,14 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         ghost: false,
         beast: false,
         soldier: false,
+        last_prayer: 0,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 23;
+const SAVE_VERSION: u32 = 24;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
