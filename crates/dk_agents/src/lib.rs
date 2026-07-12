@@ -64,6 +64,8 @@ pub const BREED_COOLDOWN: u64 = 15 * TICKS_PER_DAY;
 pub const BUTCHER_WORK: u16 = 80;
 /// A pasture won't overbreed past this many head.
 pub const HERD_CAP: usize = 12;
+/// Days between an adult sheep growing a shearable coat.
+pub const WOOL_INTERVAL: u64 = 12 * TICKS_PER_DAY;
 /// Stress at which a dwarf seeks the tavern to unwind.
 pub const TAVERN_STRESS_AT: f32 = 40.0;
 /// Ticks spent relaxing at the tavern.
@@ -111,6 +113,10 @@ pub enum ItemKind {
     Corpse,
     /// A decorative stone craft — a trade good. `stuff` = material index.
     Craft,
+    /// Raw wool sheared from sheep. `stuff` unused.
+    Wool,
+    /// Woven cloth — a trade good. `stuff` unused.
+    Cloth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +156,8 @@ pub enum BuildingKind {
     Kitchen,
     /// Turns stone boulders into decorative trade goods.
     Craftsdwarf,
+    /// Weaves raw wool into cloth.
+    Loom,
     /// A resting place. Burying a corpse here lays its ghost to rest.
     Tomb,
     /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
@@ -164,6 +172,7 @@ impl BuildingKind {
             BuildingKind::Still => "Still",
             BuildingKind::Kitchen => "Kitchen",
             BuildingKind::Craftsdwarf => "Craftsdwarf's Workshop",
+            BuildingKind::Loom => "Loom",
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
@@ -266,6 +275,8 @@ pub struct Animal {
     pub gestation: Option<u64>,
     /// Ticks until this animal can breed again (no birth — just a rest).
     pub breed_cd: u64,
+    /// Ticks until this animal (if a sheep) grows a shearable coat again.
+    pub wool_cd: u64,
     /// A herder has been told to slaughter this animal.
     pub marked: bool,
     /// Dwarf index that has claimed this animal for butchering.
@@ -495,6 +506,8 @@ pub enum CraftKind {
     Cook,
     /// Turn a stone boulder into a decorative trade good.
     Stonecraft,
+    /// Weave raw wool into cloth.
+    Weave,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -583,6 +596,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Brew, .. } => "brewing",
             Task::Craft { kind: CraftKind::Cook, .. } => "cooking",
             Task::Craft { kind: CraftKind::Stonecraft, .. } => "crafting",
+            Task::Craft { kind: CraftKind::Weave, .. } => "weaving",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
@@ -614,6 +628,7 @@ pub struct SimStats {
     pub mandates_failed: u32,
     pub animals_butchered: u32,
     pub crafts_made: u32,
+    pub cloth_woven: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -694,6 +709,9 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Corpse => 0,
         // A worked craft is worth several times its raw stone.
         ItemKind::Craft => raws.materials.get(item.stuff).value * 12 + 4,
+        ItemKind::Wool => 4,
+        // Cloth is a fine, renewable trade good.
+        ItemKind::Cloth => 18,
     }
 }
 
@@ -975,6 +993,7 @@ impl Sim {
             age: if adult { ADULT_TICKS } else { 0 },
             gestation: None,
             breed_cd: 0,
+            wool_cd: 0,
             marked: false,
             reserved_by: None,
             move_cd: 0,
@@ -1826,13 +1845,22 @@ impl Sim {
     /// Daily husbandry: gestation, birth, and breeding among pastured adults.
     fn tick_animals_husbandry(&mut self) {
         // Births first — ONLY the pregnant parent (gestation set) gives
-        // birth; the mate merely carries a breed cooldown.
+        // birth; the mate merely carries a breed cooldown. Sheep also grow
+        // wool that a shepherd can shear (a Wool item dropped at their feet).
         let mut newborns: Vec<(AnimalKind, Pos)> = Vec::new();
+        let mut sheared: Vec<Pos> = Vec::new();
         for a in &mut self.animals {
             if !a.alive {
                 continue;
             }
             a.breed_cd = a.breed_cd.saturating_sub(TICKS_PER_DAY);
+            if a.kind == AnimalKind::Sheep && a.is_adult() {
+                a.wool_cd = a.wool_cd.saturating_sub(TICKS_PER_DAY);
+                if a.wool_cd == 0 {
+                    sheared.push(a.pos);
+                    a.wool_cd = WOOL_INTERVAL;
+                }
+            }
             if let Some(g) = a.gestation {
                 let g = g.saturating_sub(TICKS_PER_DAY);
                 if g == 0 {
@@ -1846,6 +1874,9 @@ impl Sim {
         for (kind, pos) in newborns {
             self.add_animal(kind, pos, false);
             self.log_event(format!("A {} is born in the pasture.", kind.name()));
+        }
+        for pos in sheared {
+            self.spawn_item(ItemKind::Wool, 0, pos);
         }
 
         if self.alive_animals() >= HERD_CAP {
@@ -2516,7 +2547,7 @@ impl Sim {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
                     Some(CraftKind::Stonecraft) => pending_crafts += 1,
-                    None => {}
+                    Some(CraftKind::Weave) | None => {}
                 }
             }
         }
@@ -2654,6 +2685,11 @@ impl Sim {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::Stonecraft }, &mut best);
             }
+        }
+        // Weaving: any wool on hand becomes cloth at the loom.
+        if let Some((shop, input)) = self.craft_wool_pair(dwarf_pos, my_region) {
+            let d = self.items[input].pos.manhattan(dwarf_pos);
+            consider(d, Cand::Craft { shop, input, kind: CraftKind::Weave }, &mut best);
         }
 
         // Butchering: marked animals reachable from here.
@@ -2854,6 +2890,27 @@ impl Sim {
             .enumerate()
             .filter(|(_, it)| {
                 it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// Nearest (loom, wool) pair for weaving cloth.
+    fn craft_wool_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Loom && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Wool
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
             })
@@ -3222,7 +3279,7 @@ impl Sim {
                         let skill = match kind {
                             CraftKind::Brew => Skill::Brewing,
                             CraftKind::Cook => Skill::Cooking,
-                            CraftKind::Stonecraft => Skill::Crafting,
+                            CraftKind::Stonecraft | CraftKind::Weave => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -3256,6 +3313,11 @@ impl Sim {
                                     self.spawn_item(ItemKind::Craft, stuff, shop);
                                 }
                                 self.push_thought(i, ThoughtKind::CookedMeal); // a job well done
+                            }
+                            CraftKind::Weave => {
+                                self.stats.cloth_woven += 1;
+                                self.spawn_item(ItemKind::Cloth, 0, shop);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
                         self.add_xp(i, skill, 30);
@@ -4031,7 +4093,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 17;
+const SAVE_VERSION: u32 = 18;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -4102,7 +4164,8 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             ItemKind::Boulder | ItemKind::Artifact | ItemKind::Craft => {
                 remap_one(&mat_remap, item.stuff, "material")?
             }
-            ItemKind::Corpse => item.stuff, // holds a dwarf index, not raws
+            // These carry no raws index (dwarf index, or nothing).
+            ItemKind::Corpse | ItemKind::Wool | ItemKind::Cloth => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
         Ok(())
