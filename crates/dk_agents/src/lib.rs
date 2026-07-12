@@ -3463,10 +3463,14 @@ impl Sim {
                 let here = self.dwarves[i].pos;
                 let mut drank = drank;
                 if !drank {
+                    // A mug within reach of THIS tavern seat — not one across
+                    // the map in some other tavern.
                     let drink = self.items.iter().position(|it| {
                         it.kind == ItemKind::Drink
                             && self.item_takeable(it)
                             && self.tavern_at(it.pos)
+                            && it.pos.z == here.z
+                            && it.pos.manhattan(here) <= 4
                     });
                     if let Some(idx) = drink {
                         self.items[idx].consumed = true;
