@@ -963,6 +963,16 @@ fn handle_input(
         }
         dirty.0 = true;
     }
+    // 'i': enlist/dismiss the fort dwarf under the cursor as a soldier.
+    if keys.just_pressed(KeyCode::KeyI) {
+        let here = cursor.pos(view_z.0);
+        match sim.0.toggle_soldier(here) {
+            Some(true) => info!("enlisted a soldier"),
+            Some(false) => info!("dismissed a soldier"),
+            None => warn!("no citizen at the cursor to enlist"),
+        }
+        dirty.0 = true;
+    }
     // 'u': cull — mark the animal nearest the cursor for slaughter.
     if keys.just_pressed(KeyCode::KeyU) {
         let here = cursor.pos(view_z.0);
@@ -1561,6 +1571,8 @@ fn sync_agent_sprites(
                         // Traders wear the road's gold dust; beasts loom dark.
                         sprite.color = if d.beast {
                             Color::srgb(0.5, 0.1, 0.15)
+                        } else if d.soldier {
+                            Color::srgb(0.7, 0.8, 1.0) // steel sheen
                         } else {
                             match d.faction {
                                 Faction::Visitor => Color::srgb(1.0, 0.85, 0.55),
@@ -1917,6 +1929,7 @@ fn update_hud(
         .find(|d| d.alive && d.pos == here)
         .map(|d| {
             let wounds = if d.is_wounded() { " · WOUNDED" } else { "" };
+            let role = if d.soldier { " · SOLDIER" } else { "" };
             let mut s = format!(
                 "\n{} — {} · happiness {:.0} stress {:.0} · hunger {:.0} thirst {:.0} · blood {:.0}{}",
                 d.name,
@@ -1928,6 +1941,7 @@ fn update_hud(
                 d.blood,
                 wounds
             );
+            s.push_str(role);
             let idx = sim
                 .0
                 .dwarves
@@ -1993,7 +2007,7 @@ fn update_hud(
              Year {}, {} {}   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull v:still k:kitchen m:crafts j:loom b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

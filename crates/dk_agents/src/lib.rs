@@ -591,6 +591,9 @@ pub struct Dwarf {
     pub ghost: bool,
     /// A forgotten beast from the deep — vastly tougher, hits far harder.
     pub beast: bool,
+    /// Enlisted: proactively hunts hostiles instead of only defending when
+    /// one walks adjacent.
+    pub soldier: bool,
 }
 
 impl Dwarf {
@@ -1022,6 +1025,30 @@ impl Sim {
 
     pub fn fishery_at(&self, p: Pos) -> bool {
         self.fisheries.iter().any(|f| f.contains(p))
+    }
+
+    /// Enlist or dismiss the fort dwarf at `p` as a soldier. Returns the
+    /// new soldier state, or None if there's no citizen there.
+    pub fn toggle_soldier(&mut self, p: Pos) -> Option<bool> {
+        let i = self
+            .dwarves
+            .iter()
+            .position(|d| d.alive && d.faction == Faction::Fort && d.pos == p)?;
+        self.dwarves[i].soldier = !self.dwarves[i].soldier;
+        let (name, now) = (self.dwarves[i].name.clone(), self.dwarves[i].soldier);
+        self.log_event(if now {
+            format!("{name} takes up arms as a soldier.")
+        } else {
+            format!("{name} lays down their arms.")
+        });
+        Some(now)
+    }
+
+    pub fn soldier_count(&self) -> usize {
+        self.dwarves
+            .iter()
+            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+            .count()
     }
 
     /// A walkable tile bordering water inside a fishery — where a dwarf can
@@ -3086,6 +3113,42 @@ impl Sim {
             return;
         }
 
+        // Soldiers proactively hunt: march on the nearest reachable hostile
+        // instead of standing at their post.
+        if self.dwarves[i].soldier {
+            let my_pos = self.dwarves[i].pos;
+            let my_region = self.regions.id(my_pos);
+            let quarry = self
+                .dwarves
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| {
+                    d.alive
+                        && d.faction == Faction::Hostile
+                        && self.regions.id(d.pos) == my_region
+                })
+                .min_by_key(|(_, d)| d.pos.manhattan(my_pos))
+                .map(|(j, _)| j);
+            if let Some(q) = quarry {
+                // Drop whatever they were doing and close the distance.
+                if !matches!(self.dwarves[i].task, Task::Fight { .. }) {
+                    self.abandon_task(i);
+                }
+                if self.dwarves[i].move_cd == 0 {
+                    let goal = self.dwarves[q].pos;
+                    if let Some(mut path) = path::astar(&self.map, my_pos, goal, MAX_ASTAR_NODES) {
+                        if !path.is_empty() {
+                            self.step_along(i, &mut path);
+                        }
+                    }
+                    self.dwarves[i].task = Task::Fight { target: q, path: Vec::new(), repath_cd: 0 };
+                } else {
+                    self.dwarves[i].move_cd -= 1;
+                }
+                return;
+            }
+        }
+
         // Stress boils over into an episode (never interrupts a mood).
         if self.dwarves[i].stress >= 100.0
             && !matches!(
@@ -4266,13 +4329,14 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         died_at: None,
         ghost: false,
         beast: false,
+        soldier: false,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 20;
+const SAVE_VERSION: u32 = 21;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
