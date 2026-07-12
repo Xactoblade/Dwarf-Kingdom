@@ -1635,7 +1635,7 @@ fn tradeable_items(sim: &Sim) -> Vec<usize> {
 }
 
 fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
-    match it.kind {
+    let base = match it.kind {
         ItemKind::Boulder => format!("{} boulder", raws.materials.get(it.stuff).name),
         ItemKind::Seed => format!("{} seeds", raws.plants.get(it.stuff).name),
         ItemKind::Crop => raws.plants.get(it.stuff).name.clone(),
@@ -1649,6 +1649,12 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
         ItemKind::CutGem => format!("cut {}", dk_agents::gem_name(it.stuff)),
         ItemKind::Weapon => format!("{} weapon", raws.materials.get(it.stuff).name),
+    };
+    // A crafted good wears its quality; an artifact's name already says it.
+    if it.quality > 0 && it.kind != ItemKind::Artifact {
+        format!("{} {base}", dk_agents::quality_name(it.quality))
+    } else {
+        base
     }
 }
 
@@ -2164,6 +2170,11 @@ fn update_hud(
             ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
             ItemKind::CutGem => format!("cut {} (trade good)", dk_agents::gem_name(it.stuff)),
             ItemKind::Weapon => format!("{} weapon", reg.0.materials.get(it.stuff).name),
+        };
+        let what = if it.quality > 0 && it.kind != ItemKind::Artifact {
+            format!("{} {what}", dk_agents::quality_name(it.quality))
+        } else {
+            what
         };
         under = format!("{under} · {what}");
     }

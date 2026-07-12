@@ -199,6 +199,21 @@ pub struct Item {
     /// Consumed items stay in the vec (indices are load-bearing) but are
     /// invisible to every query. Arena/slotmap refactor is planned Phase 3.
     pub consumed: bool,
+    /// Craftsdwarfship: 0 = ordinary, up to 5 = a masterwork. Set from the
+    /// maker's skill; raises the item's worth.
+    pub quality: u8,
+}
+
+/// The adjective for a quality tier (0..=5), for describing crafted goods.
+pub fn quality_name(q: u8) -> &'static str {
+    match q {
+        0 => "ordinary",
+        1 => "well-crafted",
+        2 => "fine",
+        3 => "superior",
+        4 => "exceptional",
+        _ => "masterful",
+    }
 }
 
 impl Item {
@@ -842,7 +857,7 @@ pub struct Caravan {
 
 /// Trade value of an item, in a common coin.
 pub fn item_value(item: &Item, raws: &Raws) -> u32 {
-    match item.kind {
+    let base = match item.kind {
         ItemKind::Boulder => raws.materials.get(item.stuff).value * 3,
         ItemKind::Seed => 3,
         ItemKind::Crop => 5,
@@ -862,7 +877,9 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::CutGem => 70,
         // A forged weapon: worth several times its metal, and it arms a soldier.
         ItemKind::Weapon => raws.materials.get(item.stuff).value * 10 + 20,
-    }
+    };
+    // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
+    base + base * item.quality as u32 / 2
 }
 
 // ---------------------------------------------------------------- sieges
@@ -1474,6 +1491,7 @@ impl Sim {
                             state: ItemState::OnGround,
                             reserved_by: None,
                             consumed: false,
+                            quality: 0,
                         });
                         placed += 1;
                     }
@@ -2915,6 +2933,7 @@ impl Sim {
                     state: ItemState::OnGround,
                     reserved_by: None,
                     consumed: false,
+                    quality: 0,
                 });
             }
         }
@@ -2933,6 +2952,7 @@ impl Sim {
                 state: ItemState::OnGround,
                 reserved_by: None,
                 consumed: false,
+                quality: 0,
             });
         }
 
@@ -4239,6 +4259,9 @@ impl Sim {
                         let stuff = self.items[input].stuff;
                         self.items[input].consumed = true;
                         self.items[input].reserved_by = None;
+                        // The maker's skill (0..=6) becomes the good's quality
+                        // tier (0..=5): a master turns out finer, dearer work.
+                        let q = (self.dwarves[i].skill_level(skill) as u8).min(5);
                         match kind {
                             CraftKind::Brew => {
                                 self.stats.drinks_brewed += BATCH as u32;
@@ -4258,25 +4281,25 @@ impl Sim {
                                 // One boulder yields a couple of trade goods.
                                 self.stats.crafts_made += 2;
                                 for _ in 0..2 {
-                                    self.spawn_item(ItemKind::Craft, stuff, shop);
+                                    self.spawn_quality_item(ItemKind::Craft, stuff, shop, q);
                                 }
                                 self.push_thought(i, ThoughtKind::CookedMeal); // a job well done
                             }
                             CraftKind::Weave => {
                                 self.stats.cloth_woven += 1;
-                                self.spawn_item(ItemKind::Cloth, 0, shop);
+                                self.spawn_quality_item(ItemKind::Cloth, 0, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::CutGem => {
                                 // The gem's variety carries through the cut.
                                 self.stats.gems_cut += 1;
-                                self.spawn_item(ItemKind::CutGem, stuff, shop);
+                                self.spawn_quality_item(ItemKind::CutGem, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::ForgeWeapon => {
                                 // The boulder's material carries into the blade.
                                 self.stats.weapons_forged += 1;
-                                self.spawn_item(ItemKind::Weapon, stuff, shop);
+                                self.spawn_quality_item(ItemKind::Weapon, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -4589,6 +4612,10 @@ impl Sim {
                             shop,
                             Some(full.clone()),
                         );
+                        // An artifact is a masterwork by its very nature.
+                        if let Some(it) = self.items.last_mut() {
+                            it.quality = 5;
+                        }
                         self.dwarves[i].artifacts_made += 1;
                         self.dwarves[i].stress = 0.0;
                         let name = self.dwarves[i].name.clone();
@@ -5007,6 +5034,14 @@ impl Sim {
         self.spawn_named_item(kind, stuff, pos, None);
     }
 
+    /// Spawn a crafted good bearing a quality tier (0..=5).
+    fn spawn_quality_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos, quality: u8) {
+        self.spawn_named_item(kind, stuff, pos, None);
+        if let Some(it) = self.items.last_mut() {
+            it.quality = quality;
+        }
+    }
+
     fn spawn_named_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos, name: Option<String>) {
         self.items.push(Item {
             kind,
@@ -5016,6 +5051,7 @@ impl Sim {
             state: ItemState::OnGround,
             reserved_by: None,
             consumed: false,
+            quality: 0,
         });
     }
 
@@ -5386,7 +5422,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 33;
+const SAVE_VERSION: u32 = 34;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
