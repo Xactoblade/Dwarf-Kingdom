@@ -45,6 +45,40 @@ const HISTORY_YEARS: u32 = 80;
 /// Lines per page in the Legends viewer.
 const LEGENDS_PAGE: usize = 30;
 
+/// The controls reference shown on the Help overlay (F1). Uses `::` rather
+/// than em-dashes, which the HUD font renders as a box.
+const HELP_TEXT: &str = "\
+Dwarf Kingdom :: Controls   (F1 or Esc to close)\n\
+\n\
+CAMERA & VIEW\n\
+  W A S D / drag ... pan      mouse wheel ... zoom      [ ] ... change z-level\n\
+  space ... pause      1 2 3 ... game speed\n\
+\n\
+DIG & BUILD (cursor = arrow keys or click)\n\
+  d ... mine        x ... stairs      h ... channel     Shift+D ... engrave a wall\n\
+  Shift+B ... build a wall (masons haul stone and raise it)\n\
+  v ... still   k ... kitchen   m ... craftsdwarf   j ... loom   ; ... jeweler\n\
+  Shift+F ... forge      Shift+T ... weapon trap      b ... tomb\n\
+  g ... floodgate   l ... lever   t ... pull lever\n\
+\n\
+ZONES & LABOR\n\
+  f ... farm     p ... stockpile    n ... pasture    o ... tavern    ' ... temple\n\
+  z ... fishery      u ... cull an animal      Shift+U ... war-train a dog\n\
+  i ... enlist/dismiss a soldier      c ... cancel designations\n\
+\n\
+FORTRESS\n\
+  r ... trade with a caravan     y ... Legends & your fort's poetry\n\
+  F5 ... save     F9 ... load     F8 ... retire the fortress     Q ... quit\n\
+\n\
+ADVENTURE MODE (found a lone hero with 'a' on the embark map)\n\
+  arrows ... move / attack      [ ] ... climb stairs      . ... wait\n\
+  p ... pick up a fallen foe's weapon      c ... recruit a companion\n\
+  g ... journey to the next land      y ... Legends      Esc ... abandon the quest\n\
+\n\
+The world only moves when you do in adventure mode. In the fortress, your\n\
+dwarves decide how to do the jobs you designate. Put the cursor on a dwarf,\n\
+an item, or an engraved wall to read about it in the status bar.";
+
 // ---------------------------------------------------------------- resources
 
 #[derive(Resource)]
@@ -57,6 +91,7 @@ enum Screen {
     Adventure,
     Legends,
     Trade,
+    Help,
 }
 
 #[derive(Resource)]
@@ -715,6 +750,23 @@ fn handle_input(
 ) {
     if screen.0 == Screen::Trade {
         return; // handle_trade_input owns this screen
+    }
+    // ---- Help overlay: a controls reference, openable from any screen.
+    if screen.0 == Screen::Help {
+        if keys.just_pressed(KeyCode::F1) || keys.just_pressed(KeyCode::Escape) {
+            screen.0 = legends.from;
+            dirty.0 = true;
+        }
+        if keys.just_pressed(KeyCode::KeyQ) {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::F1) {
+        legends.from = screen.0;
+        screen.0 = Screen::Help;
+        dirty.0 = true;
+        return;
     }
     // ---- Legends screen: scroll and close.
     if screen.0 == Screen::Legends {
@@ -2022,6 +2074,15 @@ fn update_hud(
             }
             return;
         }
+        Screen::Help => {
+            if !screen.is_changed() {
+                return;
+            }
+            for mut text in &mut q {
+                text.0 = HELP_TEXT.to_string();
+            }
+            return;
+        }
         Screen::Adventure => {
             let Some(sim) = sim.0.as_ref() else { return };
             let Some(hero) = sim.player else { return };
@@ -2293,7 +2354,7 @@ fn update_hud(
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
              d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
-             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
+             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
