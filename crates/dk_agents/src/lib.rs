@@ -119,6 +119,28 @@ pub enum ItemKind {
     Wool,
     /// Woven cloth — a trade good. `stuff` unused.
     Cloth,
+    /// A rough gem struck while mining. `stuff` = gem-type index.
+    RoughGem,
+    /// A cut gem — a premium trade good. `stuff` = gem-type index.
+    CutGem,
+}
+
+/// Gem varieties, indexed by `Item::stuff` for RoughGem/CutGem.
+pub const GEM_KINDS: [(&str, [u8; 3]); 6] = [
+    ("ruby", [200, 40, 60]),
+    ("emerald", [40, 190, 90]),
+    ("sapphire", [50, 90, 210]),
+    ("amethyst", [160, 80, 200]),
+    ("topaz", [220, 180, 60]),
+    ("opal", [210, 220, 230]),
+];
+
+pub fn gem_name(idx: u16) -> &'static str {
+    GEM_KINDS.get(idx as usize).map(|(n, _)| *n).unwrap_or("gem")
+}
+
+pub fn gem_color(idx: u16) -> [u8; 3] {
+    GEM_KINDS.get(idx as usize).map(|(_, c)| *c).unwrap_or([180, 180, 200])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +182,8 @@ pub enum BuildingKind {
     Craftsdwarf,
     /// Weaves raw wool into cloth.
     Loom,
+    /// Cuts rough gems into brilliant, valuable cut gems.
+    Jeweler,
     /// A resting place. Burying a corpse here lays its ghost to rest.
     Tomb,
     /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
@@ -175,6 +199,7 @@ impl BuildingKind {
             BuildingKind::Kitchen => "Kitchen",
             BuildingKind::Craftsdwarf => "Craftsdwarf's Workshop",
             BuildingKind::Loom => "Loom",
+            BuildingKind::Jeweler => "Jeweler's Workshop",
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
@@ -523,6 +548,8 @@ pub enum CraftKind {
     Stonecraft,
     /// Weave raw wool into cloth.
     Weave,
+    /// Cut a rough gem into a brilliant one.
+    CutGem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,6 +646,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Cook, .. } => "cooking",
             Task::Craft { kind: CraftKind::Stonecraft, .. } => "crafting",
             Task::Craft { kind: CraftKind::Weave, .. } => "weaving",
+            Task::Craft { kind: CraftKind::CutGem, .. } => "cutting gems",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
@@ -654,6 +682,8 @@ pub struct SimStats {
     pub crafts_made: u32,
     pub cloth_woven: u32,
     pub fish_caught: u32,
+    pub gems_found: u32,
+    pub gems_cut: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -737,6 +767,9 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Wool => 4,
         // Cloth is a fine, renewable trade good.
         ItemKind::Cloth => 18,
+        ItemKind::RoughGem => 12,
+        // A cut gem is the fort's finest legitimate trade good.
+        ItemKind::CutGem => 70,
     }
 }
 
@@ -2698,7 +2731,7 @@ impl Sim {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
                     Some(CraftKind::Stonecraft) => pending_crafts += 1,
-                    Some(CraftKind::Weave) | None => {}
+                    Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
         }
@@ -2842,6 +2875,11 @@ impl Sim {
         if let Some((shop, input)) = self.craft_wool_pair(dwarf_pos, my_region) {
             let d = self.items[input].pos.manhattan(dwarf_pos);
             consider(d, Cand::Craft { shop, input, kind: CraftKind::Weave }, &mut best);
+        }
+        // Gem cutting: any rough gem becomes a brilliant one at the jeweler.
+        if let Some((shop, input)) = self.craft_gem_pair(dwarf_pos, my_region) {
+            let d = self.items[input].pos.manhattan(dwarf_pos);
+            consider(d, Cand::Craft { shop, input, kind: CraftKind::CutGem }, &mut best);
         }
         // Fishing: when the larder runs low, cast a line from a fishery bank.
         if want_meals && !self.fisheries.is_empty() {
@@ -3074,6 +3112,27 @@ impl Sim {
             .enumerate()
             .filter(|(_, it)| {
                 it.kind == ItemKind::Wool
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// Nearest (jeweler, rough gem) pair for cutting gems.
+    fn craft_gem_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Jeweler && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::RoughGem
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
             })
@@ -3478,7 +3537,9 @@ impl Sim {
                         let skill = match kind {
                             CraftKind::Brew => Skill::Brewing,
                             CraftKind::Cook => Skill::Cooking,
-                            CraftKind::Stonecraft | CraftKind::Weave => Skill::Crafting,
+                            CraftKind::Stonecraft | CraftKind::Weave | CraftKind::CutGem => {
+                                Skill::Crafting
+                            }
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -3516,6 +3577,12 @@ impl Sim {
                             CraftKind::Weave => {
                                 self.stats.cloth_woven += 1;
                                 self.spawn_item(ItemKind::Cloth, 0, shop);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::CutGem => {
+                                // The gem's variety carries through the cut.
+                                self.stats.gems_cut += 1;
+                                self.spawn_item(ItemKind::CutGem, stuff, shop);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -4226,6 +4293,14 @@ impl Sim {
             };
             self.spawn_item(ItemKind::Boulder, boulder_from.material, drop_at);
             self.stats.boulders_mined += 1;
+            // A glint in the stone: rarely, the pick strikes a gem.
+            if self.rng.gen_ratio(1, 22) {
+                let gem = self.rng.gen_range(0..GEM_KINDS.len()) as u16;
+                self.spawn_item(ItemKind::RoughGem, gem, drop_at);
+                self.stats.gems_found += 1;
+                let name = self.dwarves[i].name.clone();
+                self.log_event(format!("{name} strikes a rough {}!", gem_name(gem)));
+            }
         }
         self.add_xp(i, Skill::Mining, 20);
         self.dwarves[i].task = Task::Idle { wander_cd: 2 };
@@ -4336,7 +4411,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 21;
+const SAVE_VERSION: u32 = 22;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -4407,8 +4482,12 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             ItemKind::Boulder | ItemKind::Artifact | ItemKind::Craft => {
                 remap_one(&mat_remap, item.stuff, "material")?
             }
-            // These carry no raws index (dwarf index, or nothing).
-            ItemKind::Corpse | ItemKind::Wool | ItemKind::Cloth => item.stuff,
+            // These carry no raws index (dwarf index, gem type, or nothing).
+            ItemKind::Corpse
+            | ItemKind::Wool
+            | ItemKind::Cloth
+            | ItemKind::RoughGem
+            | ItemKind::CutGem => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
         Ok(())

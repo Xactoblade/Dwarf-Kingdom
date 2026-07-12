@@ -440,6 +440,7 @@ fn demo_scenario(sim: &mut Sim, raws: &Raws) {
         sim.add_building(BuildingKind::Kitchen, Pos::new(wa.x + 1, wa.y, wa.z));
         sim.add_building(BuildingKind::Craftsdwarf, Pos::new(wa.x + 2, wa.y, wa.z));
         sim.add_building(BuildingKind::Loom, Pos::new(wa.x + 3, wa.y, wa.z));
+        sim.add_building(BuildingKind::Jeweler, Pos::new(wa.x + 4, wa.y, wa.z));
     }
     // A tavern with a few drinks so the demo shows the social hub.
     if let Some((va, vb)) = sim.find_flat_patch(cx, cy) {
@@ -942,6 +943,7 @@ fn handle_input(
         (KeyCode::KeyK, BuildingKind::Kitchen),
         (KeyCode::KeyM, BuildingKind::Craftsdwarf),
         (KeyCode::KeyJ, BuildingKind::Loom),
+        (KeyCode::Semicolon, BuildingKind::Jeweler),
         (KeyCode::KeyG, BuildingKind::Floodgate),
         (KeyCode::KeyB, BuildingKind::Tomb),
     ] {
@@ -1300,6 +1302,7 @@ fn tile_visual(
             BuildingKind::Tomb => [0.6, 0.55, 0.75],
             BuildingKind::Craftsdwarf => [0.7, 0.6, 0.35],
             BuildingKind::Loom => [0.55, 0.7, 0.72],
+            BuildingKind::Jeweler => [0.75, 0.55, 0.85],
         };
         rgb = mix(rgb, tint, 0.6);
         glyph = match b.kind {
@@ -1310,6 +1313,7 @@ fn tile_visual(
             BuildingKind::Tomb => "tomb",
             BuildingKind::Craftsdwarf => "artifact",
             BuildingKind::Loom => "still",
+            BuildingKind::Jeweler => "artifact",
         };
     }
     let water = sim.map.water_at(here);
@@ -1439,6 +1443,8 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Craft => format!("{} craft", raws.materials.get(it.stuff).name),
         ItemKind::Wool => "raw wool".to_string(),
         ItemKind::Cloth => "bolt of cloth".to_string(),
+        ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
+        ItemKind::CutGem => format!("cut {}", dk_agents::gem_name(it.stuff)),
     }
 }
 
@@ -1457,6 +1463,11 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Craft => item_material_color(raws, stuff),
         ItemKind::Wool => Color::srgb(0.92, 0.9, 0.82),
         ItemKind::Cloth => Color::srgb(0.6, 0.55, 0.85),
+        ItemKind::RoughGem | ItemKind::CutGem => {
+            let [r, g, b] = dk_agents::gem_color(stuff);
+            let l = |v: u8| (v as f32 / 255.0).min(1.0);
+            Color::srgb(l(r), l(g), l(b))
+        }
     }
 }
 
@@ -1616,6 +1627,7 @@ fn sync_agent_sprites(
                             ItemKind::Craft => "artifact",
                             ItemKind::Wool => "crop",
                             ItemKind::Cloth => "artifact",
+                            ItemKind::RoughGem | ItemKind::CutGem => "artifact",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
@@ -1624,6 +1636,8 @@ fn sync_agent_sprites(
                             Color::srgba(0.75, 0.8, 0.9, 0.8) // the pale dead
                         } else if it.kind == ItemKind::Craft {
                             item_material_color(&reg.0, it.stuff) // stone-tinted goods
+                        } else if matches!(it.kind, ItemKind::RoughGem | ItemKind::CutGem) {
+                            item_color(&reg.0, it.kind, it.stuff) // gem-colored
                         } else if ts.is_tinted(glyph) {
                             item_color(&reg.0, it.kind, it.stuff)
                         } else {
@@ -1917,6 +1931,8 @@ fn update_hud(
             ItemKind::Craft => format!("{} craft (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Wool => "raw wool".to_string(),
             ItemKind::Cloth => "bolt of cloth (trade good)".to_string(),
+            ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
+            ItemKind::CutGem => format!("cut {} (trade good)", dk_agents::gem_name(it.stuff)),
         };
         under = format!("{under} · {what}");
     }
@@ -2006,8 +2022,8 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom b:tomb g:gate l:lever t:pull c:cancel\n\
+             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
@@ -2032,6 +2048,8 @@ fn update_hud(
             sim.0.stats.crops_harvested,
             sim.0.stats.meals_cooked,
             sim.0.stats.drinks_brewed,
+            sim.0.stats.gems_found,
+            sim.0.stats.gems_cut,
             sim.0.stats.migrants_arrived,
             sim.0.alive_hostiles(),
             sim.0.stats.raiders_slain,
