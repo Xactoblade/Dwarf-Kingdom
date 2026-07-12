@@ -1133,6 +1133,16 @@ fn handle_input(
         }
         dirty.0 = true;
     }
+    // Shift+T: lay a weapon trap on the floor for raiders to blunder into.
+    if shift && keys.just_pressed(KeyCode::KeyT) {
+        let here = cursor.pos(view_z.0);
+        if sim.0.add_building(BuildingKind::Trap, here) {
+            info!("laid a weapon trap at {:?}", here);
+        } else {
+            warn!("can't lay a trap there (needs open floor)");
+        }
+        dirty.0 = true;
+    }
     if keys.just_pressed(KeyCode::KeyL) {
         let here = cursor.pos(view_z.0);
         match sim.0.add_lever(here) {
@@ -1165,7 +1175,7 @@ fn handle_input(
         }
         dirty.0 = true;
     }
-    if keys.just_pressed(KeyCode::KeyT) {
+    if !shift && keys.just_pressed(KeyCode::KeyT) {
         let here = cursor.pos(view_z.0);
         if sim.0.pull_lever(here) {
             info!("lever pulled");
@@ -1492,6 +1502,7 @@ fn tile_visual(
             BuildingKind::Loom => [0.55, 0.7, 0.72],
             BuildingKind::Jeweler => [0.75, 0.55, 0.85],
             BuildingKind::Forge => [0.95, 0.45, 0.2],
+            BuildingKind::Trap => [0.85, 0.2, 0.2],
         };
         rgb = mix(rgb, tint, 0.6);
         glyph = match b.kind {
@@ -1504,6 +1515,7 @@ fn tile_visual(
             BuildingKind::Loom => "still",
             BuildingKind::Jeweler => "artifact",
             BuildingKind::Forge => "weapon",
+            BuildingKind::Trap => "weapon",
         };
     }
     let water = sim.map.water_at(here);
@@ -2265,7 +2277,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler F:forge b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

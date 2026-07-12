@@ -236,6 +236,8 @@ pub enum BuildingKind {
     Jeweler,
     /// Forges stone/ore boulders into weapons that arm the fort's soldiers.
     Forge,
+    /// A weapon trap: a raider that steps onto it is struck by hidden blades.
+    Trap,
     /// A resting place. Burying a corpse here lays its ghost to rest.
     Tomb,
     /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
@@ -253,6 +255,7 @@ impl BuildingKind {
             BuildingKind::Loom => "Loom",
             BuildingKind::Jeweler => "Jeweler's Workshop",
             BuildingKind::Forge => "Forge",
+            BuildingKind::Trap => "Weapon Trap",
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
@@ -2547,6 +2550,46 @@ impl Sim {
         }
     }
 
+    /// Is there an armed weapon trap on this tile?
+    fn trap_at(&self, p: Pos) -> bool {
+        self.buildings
+            .iter()
+            .any(|b| b.pos == p && b.kind == BuildingKind::Trap)
+    }
+
+    /// Hidden blades tear into a raider that stepped onto a weapon trap.
+    fn spring_trap(&mut self, i: usize) {
+        let roll = self.rng.gen_range(0..8usize);
+        let part_kind = match roll {
+            0 => PartKind::Head,
+            1 | 2 | 3 => PartKind::Torso,
+            4 => PartKind::LeftArm,
+            5 => PartKind::RightArm,
+            6 => PartKind::LeftLeg,
+            _ => PartKind::RightLeg,
+        };
+        let dmg = self.rng.gen_range(15..=35) as i16;
+        let bleed = self.rng.gen_range(2..=4) as u8;
+        let name = self.dwarves[i].name.clone();
+        let d = &mut self.dwarves[i];
+        let Some(part) = d.body.iter_mut().find(|pt| pt.kind == part_kind) else { return };
+        part.hp -= dmg;
+        part.bleeding = part.bleeding.saturating_add(bleed);
+        let destroyed = part.hp <= 0;
+        let vital = part.kind.vital();
+        self.log_event(format!("A weapon trap tears into {name}!"));
+        if destroyed && vital {
+            self.log_event(format!("{name} falls dead!"));
+            let was_beast = self.dwarves[i].beast;
+            self.kill_dwarf(i);
+            if was_beast {
+                self.stats.beasts_slain += 1;
+            } else {
+                self.stats.raiders_slain += 1;
+            }
+        }
+    }
+
     /// An alive war dog standing next to dwarf `i`, on the same level.
     fn adjacent_war_dog(&self, i: usize) -> Option<usize> {
         let me = self.dwarves[i].pos;
@@ -4761,6 +4804,12 @@ impl Sim {
             self.dwarves[i].move_cd -= 1;
         }
         self.dwarves[i].task = Task::Fight { target, path, repath_cd };
+
+        // Stepping onto a weapon trap springs it — hidden blades bite deep.
+        let now = self.dwarves[i].pos;
+        if now != my_pos && self.trap_at(now) {
+            self.spring_trap(i);
+        }
     }
 
     fn adjacent_enemy(&self, i: usize) -> Option<usize> {
@@ -5422,7 +5471,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 34;
+const SAVE_VERSION: u32 = 35;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
