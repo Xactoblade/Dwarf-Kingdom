@@ -5457,7 +5457,13 @@ impl Sim {
         } else {
             d.blood = (d.blood + 0.002).min(100.0);
         }
-        let resting = matches!(d.task, Task::Sleep { .. } | Task::Recover { .. });
+        // Sleeping, a hospital stay, or huddling in a burrow all count as rest
+        // for the purpose of mending (a sheltered dwarf shouldn't be sent into
+        // a raid to heal, but they still recover slowly where they hide).
+        let resting = matches!(
+            d.task,
+            Task::Sleep { .. } | Task::Recover { .. } | Task::Shelter { .. }
+        );
         // The ward stanches bleeding and knits wounds several times faster.
         let decay_every = if in_hospital { 40 } else if resting { 100 } else { 400 };
         if tick % decay_every == 0 {
