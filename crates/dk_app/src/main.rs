@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
-    item_value, PlayerAction,
+    item_value, AnimalKind, PlayerAction,
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
     SiegeLeader, SiegeRoster, Sim,
 };
@@ -161,6 +161,7 @@ enum UiKind {
     Channel,
     Stockpile,
     Farm,
+    Pasture,
     Cancel,
 }
 
@@ -172,6 +173,7 @@ impl UiKind {
             UiKind::Channel => "CHANNEL",
             UiKind::Stockpile => "STOCKPILE",
             UiKind::Farm => "FARM",
+            UiKind::Pasture => "PASTURE",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -197,6 +199,7 @@ struct ShotState {
 struct SpritePools {
     dwarves: Vec<Entity>,
     items: Vec<Entity>,
+    animals: Vec<Entity>,
 }
 
 // ---------------------------------------------------------------- components
@@ -431,6 +434,14 @@ fn demo_scenario(sim: &mut Sim, raws: &Raws) {
     if let Some((wa, _)) = sim.find_flat_patch(cx, cy) {
         sim.add_building(BuildingKind::Still, wa);
         sim.add_building(BuildingKind::Kitchen, Pos::new(wa.x + 1, wa.y, wa.z));
+    }
+    // A pasture with a small herd so the demo shows livestock.
+    if let Some((pa, pb)) = sim.find_flat_patch(cx, cy) {
+        sim.add_pasture(pa, pb);
+        let c = pa;
+        sim.add_animal(AnimalKind::Cow, c, true);
+        sim.add_animal(AnimalKind::Sheep, Pos::new(c.x + 1, c.y, c.z), true);
+        sim.add_animal(AnimalKind::Sheep, Pos::new(c.x, c.y + 1, c.z), false);
     }
     sim.place_flat_stockpiles(cx, cy, 36);
 }
@@ -869,6 +880,7 @@ fn handle_input(
         (KeyCode::KeyX, UiKind::Stairs),
         (KeyCode::KeyP, UiKind::Stockpile),
         (KeyCode::KeyF, UiKind::Farm),
+        (KeyCode::KeyN, UiKind::Pasture),
         (KeyCode::KeyH, UiKind::Channel),
         (KeyCode::KeyC, UiKind::Cancel),
     ] {
@@ -892,6 +904,7 @@ fn handle_input(
                     UiKind::Farm => {
                         sim.0.add_farm(anchor, here, 0);
                     }
+                    UiKind::Pasture => sim.0.add_pasture(anchor, here),
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -931,6 +944,14 @@ fn handle_input(
         match sim.0.add_lever(here) {
             Some(gate) => info!("lever placed, linked to floodgate at {:?}", gate),
             None => warn!("no floodgate to link (build one with 'g' first)"),
+        }
+        dirty.0 = true;
+    }
+    // 'u': cull — mark the animal nearest the cursor for slaughter.
+    if keys.just_pressed(KeyCode::KeyU) {
+        let here = cursor.pos(view_z.0);
+        if sim.0.mark_nearest_animal(here).is_none() {
+            warn!("no animal to slaughter");
         }
         dirty.0 = true;
     }
@@ -1277,6 +1298,9 @@ fn tile_visual(
     if sim.stockpile_at(here).is_some() {
         rgb = mix(rgb, [0.25, 0.45, 0.9], 0.35);
     }
+    if sim.pastures.iter().any(|p| p.contains(here)) {
+        rgb = mix(rgb, [0.35, 0.6, 0.25], 0.3);
+    }
     if let Some((a, b)) = selection {
         if view_z == a.z
             && x >= a.x.min(b.x)
@@ -1452,6 +1476,21 @@ fn sync_agent_sprites(
                 .id(),
         );
     }
+    while pools.animals.len() < sim.0.animals.len() {
+        let sprite = match &tileset.0 {
+            Some(ts) => ts.sprite("cow"),
+            None => Sprite {
+                color: Color::srgb(0.8, 0.7, 0.55),
+                custom_size: Some(Vec2::splat(TILE * 0.7)),
+                ..default()
+            },
+        };
+        pools.animals.push(
+            commands
+                .spawn((sprite, Transform::from_xyz(0.0, 0.0, 1.8), Visibility::Hidden))
+                .id(),
+        );
+    }
 
     for (i, &e) in pools.dwarves.iter().enumerate() {
         let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
@@ -1534,6 +1573,34 @@ fn sync_agent_sprites(
                         sprite.color = item_color(&reg.0, it.kind, it.stuff);
                     }
                 }
+                *vis = Visibility::Visible;
+            }
+            _ => *vis = Visibility::Hidden,
+        }
+    }
+    for (i, &e) in pools.animals.iter().enumerate() {
+        let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
+        match sim.0.animals.get(i) {
+            Some(a) if a.alive && a.pos.z == view_z.0 => {
+                tf.translation.x = a.pos.x as f32 * TILE;
+                tf.translation.y = a.pos.y as f32 * TILE;
+                let glyph = match a.kind {
+                    AnimalKind::Cow => "cow",
+                    AnimalKind::Sheep => "sheep",
+                };
+                if let Some(ts) = &tileset.0 {
+                    if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                        atlas.index = ts.index(glyph);
+                    }
+                }
+                // Calves are smaller; the marked flash red.
+                let scale = if a.is_adult() { 1.0 } else { 0.6 };
+                tf.scale = Vec3::splat(scale);
+                sprite.color = if a.marked {
+                    Color::srgb(1.0, 0.5, 0.5)
+                } else {
+                    Color::WHITE
+                };
                 *vis = Visibility::Visible;
             }
             _ => *vis = Visibility::Hidden,
@@ -1761,6 +1828,11 @@ fn update_hud(
     if magma > 0 {
         under = format!("{under} · MAGMA {magma}/7");
     }
+    if let Some(a) = sim.0.animal_at(here) {
+        let stage = if a.is_adult() { "" } else { " (calf)" };
+        let mark = if a.marked { " [marked to cull]" } else { "" };
+        under = format!("{under} · {}{}{}", a.kind.name(), stage, mark);
+    }
     if let Some(it) = sim
         .0
         .items
@@ -1864,13 +1936,13 @@ fn update_hud(
 
     for mut text in &mut q {
         text.0 = format!(
-            "Dwarf Kingdom :: Phase 3 :: Blood & Water\n\
+            "Dwarf Kingdom\n\
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   {}   {:.0} fps\n\
-             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   jobs {}\n\
+             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)\n\
-             d:mine x:stairs h:channel f:farm p:stockpile v:still k:kitchen g:floodgate l:lever t:pull c:cancel\n\
-             space:pause 1/2/3:speed   [ ]:z   F5/F9:save/load   Q:quit{}{}{}",
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture u:cull v:still k:kitchen b:tomb g:gate l:lever t:pull c:cancel\n\
+             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
@@ -1887,6 +1959,7 @@ fn update_hud(
             sim.0.count_kind(ItemKind::Meal),
             sim.0.count_kind(ItemKind::Drink),
             sim.0.count_kind(ItemKind::Crop),
+            sim.0.alive_animals(),
             sim.0.pending_designations(),
             sim.0.stats.crops_harvested,
             sim.0.stats.meals_cooked,

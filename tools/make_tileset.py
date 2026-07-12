@@ -412,13 +412,57 @@ def t_tomb():
     outline(t)
     return t
 
+def t_cow():
+    t = Tile(221)
+    HIDE = (196, 168, 132, 255)
+    HIDE_D = (150, 124, 92, 255)
+    SPOT = (78, 60, 44, 255)
+    # A stocky quadruped, side view.
+    t.fill(6, 24, 9, 30, HIDE_D)   # legs
+    t.fill(12, 24, 15, 30, HIDE_D)
+    t.fill(18, 24, 21, 30, HIDE_D)
+    t.fill(23, 24, 26, 30, HIDE_D)
+    t.fill(5, 12, 27, 25, HIDE)    # broad body
+    t.fill(5, 12, 27, 14, HIDE_D)  # back shadow
+    # Head at the right
+    t.fill(24, 14, 30, 22, HIDE)
+    t.fill(28, 16, 30, 20, (60, 48, 36, 255))  # muzzle
+    t.fill(25, 11, 27, 14, HIDE_D)  # horn/ear
+    # Spots
+    t.disc(11, 18, 3, SPOT)
+    t.disc(18, 20, 2, SPOT)
+    t.set(29, 30, HIDE_D)  # tail hint
+    t.fill(4, 15, 6, 25, HIDE_D)   # rump/tail
+    outline(t)
+    return t
+
+def t_sheep():
+    t = Tile(232)
+    WOOL = (232, 228, 220, 255)
+    WOOL_D = (188, 184, 176, 255)
+    FACE = (72, 66, 60, 255)
+    t.fill(8, 25, 11, 30, FACE)    # legs
+    t.fill(13, 25, 16, 30, FACE)
+    t.fill(19, 25, 22, 30, FACE)
+    # Fluffy body: overlapping discs
+    for cx, cy in ((11, 18), (16, 16), (21, 18), (14, 21), (19, 21)):
+        t.disc(cx, cy, 5, WOOL)
+    for cx, cy in ((12, 21), (18, 22)):
+        t.disc(cx, cy, 3, WOOL_D)
+    # Head
+    t.fill(22, 16, 28, 23, FACE)
+    t.set(24, 18, WOOL); t.set(26, 18, WOOL)  # eyes
+    t.fill(23, 14, 25, 16, FACE)  # ear
+    outline(t)
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
     ("seed", t_seed), ("crop", t_crop), ("dwarf", t_dwarf), ("raider", t_raider),
     ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
     ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
-    ("tomb", t_tomb),
+    ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder", "seed", "crop"]
 

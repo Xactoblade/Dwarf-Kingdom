@@ -54,6 +54,16 @@ pub const EPISODE_TICKS: u16 = 800;
 pub const FRIEND_AT: i32 = 30;
 /// Days an unburied fort corpse waits before its ghost rises.
 pub const GHOST_AFTER_DAYS: u64 = 8;
+/// Ticks for an animal to reach adulthood (breeding & butchering age).
+pub const ADULT_TICKS: u64 = 30 * TICKS_PER_DAY;
+/// Gestation once bred.
+pub const GESTATION_TICKS: u64 = 20 * TICKS_PER_DAY;
+/// Cooldown after birth before an adult can breed again.
+pub const BREED_COOLDOWN: u64 = 15 * TICKS_PER_DAY;
+/// Ticks of work to butcher a marked animal.
+pub const BUTCHER_WORK: u16 = 80;
+/// A pasture won't overbreed past this many head.
+pub const HERD_CAP: usize = 12;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -178,8 +188,10 @@ pub struct FarmTile {
 
 // -------------------------------------------------------------- stockpiles
 
+/// An axis-aligned rectangle of tiles on one z-level. Used for stockpiles
+/// and pastures alike.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Stockpile {
+pub struct Rect {
     pub z: i32,
     pub x0: i32,
     pub y0: i32,
@@ -187,7 +199,7 @@ pub struct Stockpile {
     pub y1: i32,
 }
 
-impl Stockpile {
+impl Rect {
     pub fn contains(&self, p: Pos) -> bool {
         p.z == self.z && p.x >= self.x0 && p.x <= self.x1 && p.y >= self.y0 && p.y <= self.y1
     }
@@ -195,6 +207,64 @@ impl Stockpile {
     pub fn cells(&self) -> impl Iterator<Item = Pos> + '_ {
         let (x0, x1, y0, y1, z) = (self.x0, self.x1, self.y0, self.y1, self.z);
         (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| Pos::new(x, y, z)))
+    }
+
+    /// A deterministic "center" cell for herding animals toward.
+    pub fn center(&self) -> Pos {
+        Pos::new((self.x0 + self.x1) / 2, (self.y0 + self.y1) / 2, self.z)
+    }
+}
+
+/// Kept for API stability; stockpiles are `Rect`s.
+pub type Stockpile = Rect;
+
+// ----------------------------------------------------------------- animals
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnimalKind {
+    Cow,
+    Sheep,
+}
+
+impl AnimalKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            AnimalKind::Cow => "cow",
+            AnimalKind::Sheep => "sheep",
+        }
+    }
+
+    /// Meals yielded when butchered as an adult.
+    pub fn meat_yield(self) -> usize {
+        match self {
+            AnimalKind::Cow => 5,
+            AnimalKind::Sheep => 3,
+        }
+    }
+}
+
+/// A grazing beast. Simpler than a dwarf: it wanders its pasture, matures,
+/// breeds, and is eventually butchered for meat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Animal {
+    pub kind: AnimalKind,
+    pub pos: Pos,
+    pub alive: bool,
+    /// Ticks lived; adulthood (and breeding/butchering eligibility) at
+    /// `ADULT_TICKS`.
+    pub age: u64,
+    /// Set after breeding; a calf is born when it reaches 0.
+    pub gestation: Option<u64>,
+    /// A herder has been told to slaughter this animal.
+    pub marked: bool,
+    /// Dwarf index that has claimed this animal for butchering.
+    pub reserved_by: Option<usize>,
+    move_cd: u8,
+}
+
+impl Animal {
+    pub fn is_adult(&self) -> bool {
+        self.age >= ADULT_TICKS
     }
 }
 
@@ -429,6 +499,8 @@ pub enum Task {
     Sulk { remaining: u16 },
     /// Possessed by inspiration: fetch a boulder, claim a workshop, create.
     StrangeMood { shop: Pos, input: usize, path: Vec<Pos>, stage: FetchStage, progress: u16 },
+    /// Walk to a marked animal and slaughter it for meat.
+    Butcher { animal: usize, path: Vec<Pos>, progress: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +567,7 @@ impl Dwarf {
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
             Task::StrangeMood { .. } => "in a strange mood!",
+            Task::Butcher { .. } => "butchering",
         }
     }
 
@@ -518,6 +591,7 @@ pub struct SimStats {
     pub boulders_mined: u32,
     pub mandates_met: u32,
     pub mandates_failed: u32,
+    pub animals_butchered: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -623,6 +697,8 @@ pub struct Sim {
     pub dwarves: Vec<Dwarf>,
     pub items: Vec<Item>,
     pub stockpiles: Vec<Stockpile>,
+    pub pastures: Vec<Rect>,
+    pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
     pub farms: BTreeMap<Pos, FarmTile>,
     pub designations: BTreeMap<Pos, Designation>,
@@ -722,6 +798,8 @@ impl Sim {
             dwarves,
             items: Vec::new(),
             stockpiles: Vec::new(),
+            pastures: Vec::new(),
+            animals: Vec::new(),
             buildings: Vec::new(),
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
@@ -832,6 +910,57 @@ impl Sim {
             x1: a.x.max(b.x),
             y1: a.y.max(b.y),
         });
+    }
+
+    /// Fence off a pasture where livestock graze and breed.
+    pub fn add_pasture(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.pastures.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    /// Place an animal (embark stock, a caravan purchase, or a test).
+    pub fn add_animal(&mut self, kind: AnimalKind, pos: Pos, adult: bool) -> usize {
+        self.animals.push(Animal {
+            kind,
+            pos,
+            alive: true,
+            age: if adult { ADULT_TICKS } else { 0 },
+            gestation: None,
+            marked: false,
+            reserved_by: None,
+            move_cd: 0,
+        });
+        self.animals.len() - 1
+    }
+
+    /// Mark the nearest living adult animal to `p` for slaughter. Returns
+    /// its index if one was marked.
+    pub fn mark_nearest_animal(&mut self, p: Pos) -> Option<usize> {
+        let idx = self
+            .animals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.alive && !a.marked)
+            .min_by_key(|(_, a)| a.pos.manhattan(p))
+            .map(|(i, _)| i)?;
+        self.animals[idx].marked = true;
+        let kind = self.animals[idx].kind.name();
+        self.log_event(format!("A {kind} is marked for slaughter."));
+        Some(idx)
+    }
+
+    pub fn animal_at(&self, p: Pos) -> Option<&Animal> {
+        self.animals.iter().find(|a| a.alive && a.pos == p)
+    }
+
+    pub fn alive_animals(&self) -> usize {
+        self.animals.iter().filter(|a| a.alive).count()
     }
 
     /// Turn every walkable tile in the rect into a fallow farm tile.
@@ -965,6 +1094,18 @@ impl Sim {
     pub fn add_embark_supplies(&mut self, raws: &Raws) {
         let cx = self.map.width as i32 / 2;
         let cy = self.map.height as i32 / 2;
+
+        // A breeding pair of each beast, dropped on nearby walkable ground.
+        for (n, kind) in [AnimalKind::Cow, AnimalKind::Sheep].into_iter().enumerate() {
+            for pair in 0..2 {
+                let ox = cx - 3 + n as i32 * 2 + pair;
+                if let Some(z) = self.map.walk_surface_z(ox.max(0) as usize, (cy + 4).max(0) as usize)
+                {
+                    self.add_animal(kind, Pos::new(ox, cy + 4, z as i32), true);
+                }
+            }
+        }
+
         let mut supplies: Vec<(ItemKind, u16)> = Vec::new();
         for _ in 0..25 {
             supplies.push((ItemKind::Meal, 0));
@@ -1432,6 +1573,11 @@ impl Sim {
         if self.clock.tick % (2 * TICKS_PER_DAY) == 0 && self.clock.tick > 0 {
             self.tick_ghosts();
         }
+        // Livestock wander a little each tick; herd bookkeeping is daily.
+        self.tick_animals_movement();
+        if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
+            self.tick_animals_husbandry();
+        }
 
         // Season boundary: migrants, moods, and (later years) raiders.
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
@@ -1589,6 +1735,107 @@ impl Sim {
     }
 
     /// The unquiet dead: unburied citizens rise as ghosts and torment the
+    /// Livestock drift within (or toward) their pasture and age a tick.
+    fn tick_animals_movement(&mut self) {
+        for idx in 0..self.animals.len() {
+            if !self.animals[idx].alive {
+                continue;
+            }
+            self.animals[idx].age = self.animals[idx].age.saturating_add(1);
+            if self.animals[idx].move_cd > 0 {
+                self.animals[idx].move_cd -= 1;
+                continue;
+            }
+            if !self.rng.gen_ratio(1, 30) {
+                continue;
+            }
+            let pos = self.animals[idx].pos;
+            // Which pasture, if any, is this beast assigned to (the one it
+            // stands in)? If it has strayed, herd it back toward a center.
+            let goal = self
+                .pastures
+                .iter()
+                .find(|p| p.contains(pos))
+                .or_else(|| self.pastures.first())
+                .map(|p| p.center());
+            let mut opts = Vec::with_capacity(8);
+            path::neighbors(&self.map, pos, &mut opts);
+            if opts.is_empty() {
+                continue;
+            }
+            let next = match goal {
+                Some(g) if !self.pastures.iter().any(|p| p.contains(pos)) => {
+                    // Stray: step toward the pasture center.
+                    *opts.iter().min_by_key(|q| q.manhattan(g)).unwrap()
+                }
+                _ => opts[self.rng.gen_range(0..opts.len())],
+            };
+            self.animals[idx].pos = next;
+            self.animals[idx].move_cd = WALK_COOLDOWN * 2;
+        }
+    }
+
+    /// Daily husbandry: gestation, birth, and breeding among pastured adults.
+    fn tick_animals_husbandry(&mut self) {
+        // Births first.
+        let mut newborns: Vec<(AnimalKind, Pos)> = Vec::new();
+        for a in &mut self.animals {
+            if !a.alive {
+                continue;
+            }
+            if let Some(g) = a.gestation {
+                let g = g.saturating_sub(TICKS_PER_DAY);
+                if g == 0 {
+                    a.gestation = None;
+                    newborns.push((a.kind, a.pos));
+                } else {
+                    a.gestation = Some(g);
+                }
+            }
+        }
+        for (kind, pos) in newborns {
+            self.add_animal(kind, pos, false);
+            self.log_event(format!("A {} is born in the pasture.", kind.name()));
+        }
+
+        if self.alive_animals() >= HERD_CAP {
+            return; // a full pasture stops breeding
+        }
+        // Breeding: two adults of the same kind sharing a pasture, neither
+        // already gestating, start a new one.
+        let n = self.animals.len();
+        for i in 0..n {
+            if !self.animals[i].alive
+                || !self.animals[i].is_adult()
+                || self.animals[i].gestation.is_some()
+            {
+                continue;
+            }
+            let (kind_i, pos_i) = (self.animals[i].kind, self.animals[i].pos);
+            let in_pasture = self.pastures.iter().any(|p| p.contains(pos_i));
+            if !in_pasture {
+                continue;
+            }
+            let mate = (0..n).find(|&j| {
+                j != i
+                    && self.animals[j].alive
+                    && self.animals[j].is_adult()
+                    && self.animals[j].kind == kind_i
+                    && self.animals[j].gestation.is_none()
+                    && self.animals[j].pos.manhattan(pos_i) <= 6
+                    && self.pastures.iter().any(|p| p.contains(self.animals[j].pos))
+            });
+            if mate.is_some() {
+                self.animals[i].gestation = Some(GESTATION_TICKS);
+                // The mate rests a while before its own next breeding.
+                if let Some(j) = mate {
+                    self.animals[j].gestation = Some(GESTATION_TICKS + BREED_COOLDOWN);
+                }
+                break; // one conception per day keeps growth gentle
+            }
+        }
+    }
+
     /// living until someone builds them a tomb.
     fn tick_ghosts(&mut self) {
         let tick = self.clock.tick;
@@ -2252,6 +2499,7 @@ impl Sim {
             Harvest { tile: Pos },
             Craft { shop: Pos, input: usize, kind: CraftKind },
             Haul { item: usize, dest: Pos },
+            Butcher { animal: usize },
         }
         let mut best: Option<(u32, Cand)> = None;
         let consider = |dist: u32, c: Cand, best: &mut Option<(u32, Cand)>| {
@@ -2316,6 +2564,17 @@ impl Sim {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::Cook }, &mut best);
             }
+        }
+
+        // Butchering: marked animals reachable from here.
+        for (idx, animal) in self.animals.iter().enumerate() {
+            if !animal.alive || !animal.marked || animal.reserved_by.is_some() {
+                continue;
+            }
+            if self.regions.id(animal.pos) != my_region {
+                continue;
+            }
+            consider(animal.pos.manhattan(dwarf_pos), Cand::Butcher { animal: idx }, &mut best);
         }
 
         // Hauling loose items: corpses go to open tombs, goods to stockpiles.
@@ -2407,6 +2666,13 @@ impl Sim {
                     None => {
                         self.haul_retry.insert(item, tick + RETRY_DELAY);
                     }
+                }
+            }
+            Cand::Butcher { animal } => {
+                let animal_pos = self.animals[animal].pos;
+                if let Some(p) = path::astar(&self.map, dwarf_pos, animal_pos, MAX_ASTAR_NODES) {
+                    self.animals[animal].reserved_by = Some(i);
+                    self.dwarves[i].task = Task::Butcher { animal, path: p, progress: 0 };
                 }
             }
         }
@@ -2879,6 +3145,58 @@ impl Sim {
             // clear it if it somehow appears.
             Task::Fight { .. } => {
                 self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+            }
+            Task::Butcher { animal, mut path, progress } => {
+                // The quarry may have died, been un-marked, or wandered off.
+                let valid = self
+                    .animals
+                    .get(animal)
+                    .is_some_and(|a| a.alive && a.marked && a.reserved_by == Some(i));
+                if !valid {
+                    self.abandon_task(i);
+                    return;
+                }
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Butcher { animal, path, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // Arrived where the animal was. If it drifted, chase it.
+                let here = self.dwarves[i].pos;
+                let apos = self.animals[animal].pos;
+                if here.manhattan(apos) > 1 {
+                    match path::astar(&self.map, here, apos, MAX_ASTAR_NODES) {
+                        Some(p) if !p.is_empty() => {
+                            self.dwarves[i].task = Task::Butcher { animal, path: p, progress };
+                        }
+                        _ => self.abandon_task(i),
+                    }
+                    return;
+                }
+                let progress = progress + 1;
+                if progress < BUTCHER_WORK {
+                    self.dwarves[i].task = Task::Butcher { animal, path, progress };
+                    return;
+                }
+                // Slaughter: meat for the larder, hides tanned another day.
+                let kind = self.animals[animal].kind;
+                let adult = self.animals[animal].is_adult();
+                self.animals[animal].alive = false;
+                self.animals[animal].reserved_by = None;
+                let meat = if adult { kind.meat_yield() } else { kind.meat_yield() / 2 + 1 };
+                for _ in 0..meat {
+                    self.spawn_item(ItemKind::Meal, 0, apos);
+                }
+                self.stats.animals_butchered += 1;
+                self.add_xp(i, Skill::Cooking, 15);
+                self.log_event(format!(
+                    "A {} is butchered — {meat} servings of meat.",
+                    kind.name()
+                ));
+                self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
@@ -3464,6 +3782,13 @@ impl Sim {
                     self.items[input].reserved_by = None;
                 }
             }
+            Task::Butcher { animal, .. } => {
+                if let Some(a) = self.animals.get_mut(animal) {
+                    if a.reserved_by == Some(i) {
+                        a.reserved_by = None;
+                    }
+                }
+            }
             Task::Idle { .. }
             | Task::Sleep { .. }
             | Task::Fight { .. }
@@ -3520,7 +3845,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 13;
+const SAVE_VERSION: u32 = 14;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
