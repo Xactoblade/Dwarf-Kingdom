@@ -87,4 +87,19 @@ fn a_mason_engraves_the_fortress_history_into_a_wall() {
         sim.log.iter().any(|(_, m)| m.contains("engraves a wall")),
         "the engraving is recorded in the annals"
     );
+
+    // Now dig that very wall away: the engraving must not linger on the open
+    // space it leaves behind (no stale gold tiles / phantom descriptions).
+    assert_eq!(sim.designate_rect(DesignationKind::Mine, wall, wall), 1);
+    for _ in 0..40_000 {
+        sim.step(&raws);
+        if !sim.map.tile_at(wall).unwrap().is_solid() {
+            break;
+        }
+    }
+    assert!(!sim.map.tile_at(wall).unwrap().is_solid(), "the wall was mined out");
+    assert!(
+        !sim.engravings.contains_key(&wall),
+        "mining an engraved wall erases its engraving"
+    );
 }

@@ -5109,6 +5109,12 @@ impl Sim {
         let tile = self.map.tile_at(target).expect("designated tile in bounds");
         // Smoothing leaves the wall standing but carves a scene into its face.
         if des.kind == DesignationKind::Smooth {
+            // The wall may have been dug away before the mason arrived; never
+            // engrave open space.
+            if !tile.is_solid() {
+                self.dwarves[i].task = Task::Idle { wander_cd: 2 };
+                return;
+            }
             let scene = self.compose_engraving();
             self.engravings.insert(target, scene.clone());
             self.add_xp(i, Skill::Crafting, 15);
@@ -5152,6 +5158,8 @@ impl Sim {
             }
             DesignationKind::Smooth => unreachable!("smoothing handled above"),
         }
+        // Digging the wall away destroys any scene engraved on it.
+        self.engravings.remove(&target);
         self.regions.dirty = true;
         self.map_changed = true;
         self.water.wake(target);
