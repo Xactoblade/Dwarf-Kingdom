@@ -1838,6 +1838,8 @@ impl Sim {
         self.buildings.clear();
         self.farms.clear();
         self.designations.clear();
+        self.engravings.clear();
+        self.constructions.clear();
         self.caravan = None;
         self.water = WaterSim::default();
         if let Some(spring) = natural_spring(&self.map) {
@@ -3902,6 +3904,23 @@ impl Sim {
         Some((shop.pos, input))
     }
 
+    /// A tile a mason can stand on to raise the wall at `site`: adjacent,
+    /// walkable, same region as `from`, and NEVER the site itself or another
+    /// planned wall (else the builder walls itself in, or two adjacent plans
+    /// deadlock standing on each other's sites).
+    fn build_work_position(&self, site: Pos, from: Pos) -> Option<Pos> {
+        let region = self.regions.id(from);
+        let mut work = Vec::with_capacity(6);
+        path::work_positions(&self.map, site, &mut work);
+        work.into_iter()
+            .filter(|&w| {
+                w != site
+                    && !self.constructions.contains_key(&w)
+                    && self.regions.id(w) == region
+            })
+            .min_by_key(|w| w.manhattan(from))
+    }
+
     /// Nearest (construction site, boulder) pair for raising a wall: an
     /// unclaimed plan reachable in this region, and a boulder to build it with.
     fn build_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
@@ -4481,14 +4500,7 @@ impl Sim {
                         // Head for a tile beside the site — never onto it, or
                         // the wall would rise around the builder.
                         let here = self.dwarves[i].pos;
-                        let region = self.regions.id(here);
-                        let mut work = Vec::with_capacity(6);
-                        path::work_positions(&self.map, site, &mut work);
-                        let dest = work
-                            .iter()
-                            .filter(|w| self.regions.id(**w) == region)
-                            .min_by_key(|w| w.manhattan(here))
-                            .copied();
+                        let dest = self.build_work_position(site, here);
                         match dest.and_then(|d| path::astar(&self.map, here, d, MAX_ASTAR_NODES)) {
                             Some(p) => {
                                 self.dwarves[i].task = Task::Build {
@@ -4508,14 +4520,7 @@ impl Sim {
                         if here.x.abs_diff(site.x) + here.y.abs_diff(site.y) != 1
                             || here.z != site.z
                         {
-                            let region = self.regions.id(here);
-                            let mut work = Vec::with_capacity(6);
-                            path::work_positions(&self.map, site, &mut work);
-                            let dest = work
-                                .iter()
-                                .filter(|w| self.regions.id(**w) == region)
-                                .min_by_key(|w| w.manhattan(here))
-                                .copied();
+                            let dest = self.build_work_position(site, here);
                             match dest.and_then(|d| path::astar(&self.map, here, d, MAX_ASTAR_NODES))
                             {
                                 Some(p) if !p.is_empty() => {
@@ -4532,17 +4537,19 @@ impl Sim {
                                 Task::Build { site, input, path, stage, progress };
                             return;
                         }
-                        // Never wall in a creature standing on the site: wait.
+                        // Never wall in a creature standing on the site: wait
+                        // for it to clear — but give up after a while so a
+                        // permanently blocked plan never locks the mason and
+                        // their stone forever.
                         let occupied = self.dwarves.iter().any(|d| d.alive && d.pos == site)
                             || self.animals.iter().any(|a| a.alive && a.pos == site);
                         if occupied {
-                            self.dwarves[i].task = Task::Build {
-                                site,
-                                input,
-                                path,
-                                stage,
-                                progress: BUILD_WORK - 1,
-                            };
+                            if progress > BUILD_WORK + 600 {
+                                self.abandon_task(i);
+                            } else {
+                                self.dwarves[i].task =
+                                    Task::Build { site, input, path, stage, progress };
+                            }
                             return;
                         }
                         // Raise the wall from the carried stone.
