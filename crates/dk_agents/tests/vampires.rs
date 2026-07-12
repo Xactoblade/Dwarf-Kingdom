@@ -110,3 +110,25 @@ fn cursing_plants_exactly_one_vampire() {
     let count = sim.dwarves.iter().filter(|d| d.vampire).count();
     assert_eq!(count, 1, "exactly one of the founders carries the curse");
 }
+
+#[test]
+fn a_vampire_is_a_rare_curse_not_a_guarantee() {
+    // Across many foundings, the maybe-curse (~1 in 10) sometimes plants a
+    // vampire and usually doesn't — it must be neither always nor never. With
+    // 150 seeds at p=0.1 both extremes are astronomically unlikely, so this is
+    // deterministic in practice, not flaky.
+    let mut with = 0;
+    let n = 150;
+    for seed in 0..n {
+        let raws = common::test_raws();
+        let mut rng = dk_core::rng_from_seed(seed);
+        let map = dk_world::generate(&raws.materials, &mut rng, 24, 24, 12, seed);
+        let mut sim = Sim::new(map, &raws, rng, 5);
+        sim.maybe_curse_a_vampire();
+        if sim.dwarves.iter().any(|d| d.vampire) {
+            with += 1;
+        }
+    }
+    assert!(with > 0, "at least some forts should harbour a vampire");
+    assert!(with < n, "most forts should be free of the curse");
+}

@@ -431,9 +431,10 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
-    // One of the founding seven keeps a dark secret — a vampire, indistinguishable
-    // from any other dwarf until fort-mates start turning up drained of blood.
-    sim.curse_a_vampire();
+    // Rarely (about one fort in ten), one of the founding seven keeps a dark
+    // secret — a vampire, indistinguishable from any other dwarf until
+    // fort-mates start turning up drained of blood.
+    sim.maybe_curse_a_vampire();
     // Caravans come from the nearest friendly neighbors.
     sim.trade_partner = world
         .nearest_friendly_civ(region.0, region.1)

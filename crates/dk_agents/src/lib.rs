@@ -1707,6 +1707,15 @@ impl Sim {
         self.dwarves[pick].last_fed = self.clock.tick;
     }
 
+    /// App/embark only: a vampire is a RARE curse. Roughly one fort in ten is
+    /// founded with one hidden among the seven; most forts never see one, so
+    /// finding drained corpses is a genuine (and unwelcome) surprise.
+    pub fn maybe_curse_a_vampire(&mut self) {
+        if self.rng.gen_ratio(1, 10) {
+            self.curse_a_vampire();
+        }
+    }
+
     /// A vampire feeds on the blood of an adjacent sleeping fort-mate. This
     /// draws no rng and changes nothing unless a *living fort vampire* exists,
     /// so a fort without one steps byte-for-byte identically — the whole
