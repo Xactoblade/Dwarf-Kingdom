@@ -359,19 +359,36 @@ fn surface_style(biome: dk_history::Biome) -> dk_world::SurfaceStyle {
     }
 }
 
+/// Whether a region's biome is wet enough to run a river across its map.
+fn has_river(biome: dk_history::Biome) -> bool {
+    use dk_history::Biome;
+    matches!(biome, Biome::Grassland | Biome::Forest | Biome::Swamp)
+}
+
 fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::Map {
     let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
-    let style = surface_style(world.overworld.get(region.0, region.1).biome);
-    dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style)
+    let biome = world.overworld.get(region.0, region.1).biome;
+    let style = surface_style(biome);
+    let mut map = dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style);
+    if has_river(biome) {
+        dk_world::carve_river(&mut map, seed);
+    }
+    map
 }
 
 fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Each region is its own deterministic local map.
     let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
-    let style = surface_style(world.overworld.get(region.0, region.1).biome);
-    let map = dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style);
+    let biome = world.overworld.get(region.0, region.1).biome;
+    let style = surface_style(biome);
+    let mut map = dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style);
+    // A river runs through wetter lands — carved after gen; it draws no RNG,
+    // so the dwarves rolled below are unchanged.
+    if has_river(biome) {
+        dk_world::carve_river(&mut map, seed);
+    }
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);

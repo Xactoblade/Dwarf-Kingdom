@@ -258,6 +258,62 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
     generate_styled(reg, rng, width, height, depth, seed, SurfaceStyle::Default)
 }
 
+/// Cut a winding river across an already-generated map: a flat-bottomed
+/// channel filled with water, sunk just below the surrounding ground so its
+/// banks contain it. A pure map mutation deterministic in `seed` — it draws no
+/// RNG, so callers that don't want a river are unaffected. The water sim keeps
+/// the (already-level) river settled.
+pub fn carve_river(map: &mut Map, seed: u64) {
+    use std::f32::consts::TAU;
+    let (w, h) = (map.width, map.height);
+    // A gently meandering course from the west edge to the east, two tiles wide.
+    let phase = (seed % 997) as f32 / 997.0 * TAU;
+    let amp = (h as f32 / 6.0).max(2.0);
+    let mid = h as f32 / 2.0;
+    let mut path: Vec<(usize, usize)> = Vec::new();
+    for x in 0..w {
+        let fy = mid + amp * ((x as f32 / w.max(1) as f32 * TAU * 1.5) + phase).sin();
+        let cy = (fy.round() as i64).clamp(1, h as i64 - 3) as usize;
+        path.push((x, cy));
+        path.push((x, cy + 1));
+    }
+    // The flat bed sits one below the LOWEST solid surface over the channel AND
+    // its banks, so every bank tile is solid at the bed level (water can't
+    // leak sideways into lower ground beside the river).
+    let mut min_surface = usize::MAX;
+    for &(x, y) in &path {
+        for (nx, ny) in [(x, y), (x.saturating_sub(1), y), (x + 1, y), (x, y.saturating_sub(1)), (x, y + 1)] {
+            if nx < w && ny < h {
+                if let Some(s) = map.surface_z(nx, ny) {
+                    min_surface = min_surface.min(s);
+                }
+            }
+        }
+    }
+    if min_surface == usize::MAX || min_surface < 2 {
+        return;
+    }
+    let bed_z = min_surface - 1;
+    for &(x, y) in &path {
+        let Some(st) = map.surface_z(x, y) else { continue };
+        let mat = map.get(x, y, bed_z).material;
+        // Open the channel: clear everything from just above the bed up to the
+        // old ground floor.
+        let top = (st + 1).min(map.depth - 1);
+        for z in (bed_z + 1)..=top {
+            map.set_at(
+                Pos::new(x as i32, y as i32, z as i32),
+                Tile { material: NO_MATERIAL, shape: TileShape::Empty, water: 0, magma: 0 },
+            );
+        }
+        // The bed: a stone floor brimming with water.
+        map.set_at(
+            Pos::new(x as i32, y as i32, bed_z as i32),
+            Tile { material: mat, shape: TileShape::Floor, water: 7, magma: 0 },
+        );
+    }
+}
+
 pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(
