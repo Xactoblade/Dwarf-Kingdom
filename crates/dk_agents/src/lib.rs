@@ -46,6 +46,9 @@ pub const ATTACK_COOLDOWN: u8 = 40;
 pub const WAR_DOG_ENGAGE: u32 = 18;
 /// Extra damage a soldier deals when wielding a forged weapon.
 pub const WEAPON_DAMAGE: i16 = 10;
+/// Damage a suit of armor turns aside from each blow that lands on its wearer
+/// (a struck blow always does at least 1, so armor never fully negates a hit).
+pub const ARMOR_REDUCTION: i16 = 7;
 /// Ticks fully submerged before drowning kills.
 pub const BREATH_TICKS: f32 = 240.0;
 /// Region rebuilds are throttled to once per this many ticks.
@@ -158,6 +161,9 @@ pub enum ItemKind {
     /// `stuff` = material index it was smelted from. A trade good in its own
     /// right, and the first step of the fort's metal industry.
     Bar,
+    /// Forged plate — worn by a soldier, it turns aside blows that would maim
+    /// an unarmored dwarf. `stuff` = material index it was forged from.
+    Armor,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -672,6 +678,8 @@ pub enum CraftKind {
     ForgeWeapon,
     /// Smelt a stone/ore boulder down into a refined metal bar.
     Smelt,
+    /// Forge a metal bar into a suit of armor.
+    ForgeArmor,
     /// Melt a boulder into a piece of blown glass.
     MakeGlass,
 }
@@ -796,6 +804,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::CutGem, .. } => "cutting gems",
             Task::Craft { kind: CraftKind::ForgeWeapon, .. } => "forging a weapon",
             Task::Craft { kind: CraftKind::Smelt, .. } => "smelting",
+            Task::Craft { kind: CraftKind::ForgeArmor, .. } => "forging armor",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
@@ -846,6 +855,8 @@ pub struct SimStats {
     pub drained: u32,
     /// Metal bars smelted from ore at the smelter.
     pub bars_smelted: u32,
+    /// Suits of armor forged for the fort's soldiers.
+    pub armor_forged: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -940,6 +951,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Glass => 85,
         // A metal bar: refined stock, worth several times its raw ore.
         ItemKind::Bar => raws.materials.get(item.stuff).value * 8 + 10,
+        // A suit of armor: costly plate, dearer than a weapon of the same metal.
+        ItemKind::Armor => raws.materials.get(item.stuff).value * 10 + 30,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -2335,6 +2348,12 @@ impl Sim {
         self.spawn_item(ItemKind::Drink, 0, pos);
     }
 
+    /// Drop a suit of armor on the ground (scenarios/tests). The armory issues
+    /// it to enlisted soldiers by index, so this armors the fort's soldiers.
+    pub fn debug_spawn_armor(&mut self, material: u16, pos: Pos) {
+        self.spawn_item(ItemKind::Armor, material, pos);
+    }
+
     /// A short life story assembled from everything the sim knows about a
     /// dwarf — the "tell me about them" answer the blueprint asks for.
     pub fn biography(&self, i: usize, raws: &Raws) -> String {
@@ -3599,6 +3618,7 @@ impl Sim {
         let mut pending_weapons = 0usize;
         let mut pending_glass = 0usize;
         let mut pending_bars = 0usize;
+        let mut pending_armor = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -3608,6 +3628,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::ForgeWeapon, .. } => pending_weapons += 1,
                     Task::Craft { kind: CraftKind::MakeGlass, .. } => pending_glass += 1,
                     Task::Craft { kind: CraftKind::Smelt, .. } => pending_bars += 1,
+                    Task::Craft { kind: CraftKind::ForgeArmor, .. } => pending_armor += 1,
                     _ => {}
                 }
             }
@@ -3652,17 +3673,24 @@ impl Sim {
                 let want_crafts = has_craftsdwarf
                     && boulders > 4 + pending_crafts
                     && crafts + pending_crafts < 20;
-                // Arm the soldiers: forge weapons from smelted bars until every
-                // enlistee has one. The forge works refined bars, not raw stone.
+                // Arm and armor the soldiers: the forge works smelted bars into
+                // weapons and plate until every enlistee has both. Bars feed both
+                // lines, so each checks there's a bar free of the other's claims.
                 let bars = self.count_kind(ItemKind::Bar);
+                let armor_on_hand = self.count_kind(ItemKind::Armor);
+                let claimed_bars = pending_weapons + pending_armor;
                 let want_weapons = has_forge
-                    && bars > pending_weapons
+                    && bars > claimed_bars
                     && weapons_on_hand + pending_weapons < soldiers;
+                let want_armor = has_forge
+                    && bars > claimed_bars
+                    && armor_on_hand + pending_armor < soldiers;
                 // Smelt ore down into bars — the forge's stock — while stone is
-                // surplus, keeping enough to arm every soldier plus a few to trade.
+                // surplus, keeping enough to arm AND armor every soldier plus a
+                // few bars over to trade.
                 let want_bars = has_smelter
                     && boulders > 4 + pending_crafts + pending_bars
-                    && bars + pending_bars < soldiers + 4;
+                    && bars + pending_bars < soldiers * 2 + 4;
                 // Blow glass — the finest trade good — when stone is plentiful.
                 let glass = self.count_kind(ItemKind::Glass);
                 let want_glass = has_glassworks
@@ -3670,7 +3698,7 @@ impl Sim {
                     && glass + pending_glass < 20;
                 match self.assign_one(
                     i, raws, want_drinks, want_meals, want_crafts, want_weapons, want_glass,
-                    want_bars,
+                    want_bars, want_armor,
                 ) {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
@@ -3678,6 +3706,7 @@ impl Sim {
                     Some(CraftKind::ForgeWeapon) => pending_weapons += 1,
                     Some(CraftKind::MakeGlass) => pending_glass += 1,
                     Some(CraftKind::Smelt) => pending_bars += 1,
+                    Some(CraftKind::ForgeArmor) => pending_armor += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -3694,6 +3723,7 @@ impl Sim {
         want_weapons: bool,
         want_glass: bool,
         want_bars: bool,
+        want_armor: bool,
     ) -> Option<CraftKind> {
         let dwarf_pos = self.dwarves[i].pos;
         let my_region = self.regions.id(dwarf_pos);
@@ -3902,6 +3932,14 @@ impl Sim {
             if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeWeapon }, &mut best);
+            }
+        }
+        // Armoring: forge a metal bar into plate to protect the soldiers. Shares
+        // the forge and its bar stock with weaponsmithing.
+        if want_armor {
+            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeArmor }, &mut best);
             }
         }
         // Glassblowing: melt a boulder into fine glass at the furnace.
@@ -4353,6 +4391,44 @@ impl Sim {
             .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
             .count();
         rank < weapons
+    }
+
+    /// How many soldiers are armored: the armory issues its forged suits to
+    /// enlistees in index order, just like weapons.
+    pub fn armored_soldiers(&self) -> usize {
+        let soldiers = self
+            .dwarves
+            .iter()
+            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+            .count();
+        let armor = self
+            .items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Armor)
+            .count();
+        soldiers.min(armor)
+    }
+
+    /// Whether soldier `i` is wearing one of the fort's forged suits of armor.
+    fn is_armored(&self, i: usize) -> bool {
+        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
+            return false;
+        }
+        let armor = self
+            .items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Armor)
+            .count();
+        if armor == 0 {
+            return false;
+        }
+        let rank = self
+            .dwarves
+            .iter()
+            .take(i)
+            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+            .count();
+        rank < armor
     }
 
     /// Is this creature carrying a forged weapon in hand? (Used for the lone
@@ -4823,7 +4899,8 @@ impl Sim {
                             | CraftKind::CutGem
                             | CraftKind::ForgeWeapon
                             | CraftKind::MakeGlass
-                            | CraftKind::Smelt => Skill::Crafting,
+                            | CraftKind::Smelt
+                            | CraftKind::ForgeArmor => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -4887,6 +4964,12 @@ impl Sim {
                                 // The boulder's material carries into the bar.
                                 self.stats.bars_smelted += 1;
                                 self.spawn_quality_item(ItemKind::Bar, stuff, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::ForgeArmor => {
+                                // The bar's metal carries into the plate.
+                                self.stats.armor_forged += 1;
+                                self.spawn_quality_item(ItemKind::Armor, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -5554,9 +5637,14 @@ impl Sim {
         // the armory; a lone adventurer wields whatever blade they carry.
         let armed = self.is_armed(attacker)
             || (self.player == Some(attacker) && self.carries_weapon(attacker));
-        let dmg = base
+        // A soldier in forged plate turns aside much of the blow — but a hit
+        // that lands always draws at least a little blood.
+        let armored = self.is_armored(defender);
+        let dmg = (base
             + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting))
-            + if armed { WEAPON_DAMAGE } else { 0 };
+            + if armed { WEAPON_DAMAGE } else { 0 }
+            - if armored { ARMOR_REDUCTION } else { 0 })
+        .max(1);
         let bleed = self.rng.gen_range(1..=3) as u8;
         // Drawing blood teaches the trade: every landed blow hones prowess.
         self.add_xp(attacker, Skill::Fighting, 6);
@@ -6253,7 +6341,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 43;
+const SAVE_VERSION: u32 = 44;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6326,7 +6414,8 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Craft
             | ItemKind::Weapon
             | ItemKind::Glass
-            | ItemKind::Bar => remap_one(&mat_remap, item.stuff, "material")?,
+            | ItemKind::Bar
+            | ItemKind::Armor => remap_one(&mat_remap, item.stuff, "material")?,
             // These carry no raws index (dwarf index, gem type, or nothing).
             ItemKind::Corpse
             | ItemKind::Wool

@@ -1946,6 +1946,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Weapon => format!("{} weapon", raws.materials.get(it.stuff).name),
         ItemKind::Glass => "blown glass".to_string(),
         ItemKind::Bar => format!("{} bar", raws.materials.get(it.stuff).name),
+        ItemKind::Armor => format!("{} armor", raws.materials.get(it.stuff).name),
     };
     // A crafted good wears its quality; an artifact's name already says it.
     if it.quality > 0 && it.kind != ItemKind::Artifact {
@@ -1978,6 +1979,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Weapon => Color::srgb(0.8, 0.82, 0.88),
         ItemKind::Glass => Color::srgb(0.6, 0.9, 0.88),
         ItemKind::Bar => Color::srgb(0.72, 0.74, 0.8),
+        ItemKind::Armor => Color::srgb(0.62, 0.66, 0.78),
     }
 }
 
@@ -2141,6 +2143,7 @@ fn sync_agent_sprites(
                             ItemKind::Weapon => "weapon",
                             ItemKind::Glass => "artifact",
                             ItemKind::Bar => "boulder",
+                            ItemKind::Armor => "weapon",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
@@ -2483,6 +2486,7 @@ fn update_hud(
             ItemKind::Weapon => format!("{} weapon", reg.0.materials.get(it.stuff).name),
             ItemKind::Glass => "blown glass (trade good)".to_string(),
             ItemKind::Bar => format!("{} bar (trade good)", reg.0.materials.get(it.stuff).name),
+            ItemKind::Armor => format!("{} armor", reg.0.materials.get(it.stuff).name),
         };
         let what = if it.quality > 0 && it.kind != ItemKind::Artifact {
             format!("{} {what}", dk_agents::quality_name(it.quality))
@@ -2583,7 +2587,7 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}{}\n\
+             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}{}\n\
              d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow L:library u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler M:smelter F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
@@ -2619,6 +2623,7 @@ fn update_hud(
             sim.0.stats.beasts_slain,
             sim.0.veterans(),
             sim.0.armed_soldiers(),
+            sim.0.armored_soldiers(),
             sim.0.poems.len(),
             vampire_txt,
             alarm_txt,
