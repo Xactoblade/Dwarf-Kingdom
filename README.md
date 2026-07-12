@@ -6,7 +6,7 @@ and physics-driven stories of triumph and collapse.
 
 Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 
-## Status: Phase 6 — Adventure Mode (first slice)
+## Status: Phase 7 — Depth & Culture (in progress)
 
 - [x] Phase 0: workspace, data-driven raws, world gen, z-level renderer, sim clock
 - [x] Phase 1: agents, mine/stairs designations, A* + region-gated jobs,
@@ -51,6 +51,42 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
       them down, and the deed is recorded in your saga
 - [x] Headless exit tests: time is turn-based, the nemesis falls to a
       played hunt, stairs climb, the deed is logged
+
+### The living fortress (industry, society, and the deep)
+
+- [x] Caverns & magma: deep caverns, a magma sea, obsidian where water meets
+      fire; forgotten beasts rise from the depths once you dig too greedily
+- [x] Nobles & justice: a baron is appointed, issues mandates, and metes out
+      punishment when they go unmet
+- [x] Ghosts & burial: the unquiet unburied dead walk until laid to rest in a
+      tomb; their friends find peace when they are
+- [x] Trade: caravans arrive from friendly civs; a trade screen to barter your
+      crafts, cloth, cut gems, and weapons for their goods
+- [x] Industries: craftsdwarf's workshop, loom & textiles, jeweler & cut gems,
+      fishing, animal husbandry (pastures, breeding, culling), and a **forge**
+      that arms your soldiers with weapons
+- [x] Temples & taverns: dwarves worship for solace and drink to shed stress;
+      weather turns with the seasons and rain speeds the crops
+- [x] Military: enlist soldiers who hunt raiders; **combat veterancy** makes a
+      fighter deadlier the more blood they draw; forged weapons hit harder
+- [x] **Animal training**: war dogs that charge raiders and guard the gates,
+      trained by a handler and rendered as their own sprite
+- [x] The fortress can fall: when the last citizen dies it leaves an epitaph
+
+### Adventure, culture, and the wider world
+
+- [x] Region travel ('g'): walk your hero from one land into the next, body,
+      skills, deeds, gear, and pursuing nemesis all carried along
+- [x] Companions ('c'): recruit townsfolk who fight at your side and journey on
+- [x] Deeds → Legends: an adventurer's feats are inscribed into world history
+- [x] Retire & reclaim fortresses (F8): a fort endures in the world and can be
+      re-entered exactly as it was
+- [x] **Procedural engravings** (Shift+D): masons smooth walls and carve into
+      them scenes from the fortress's own history
+- [x] **Procedural poetry**: a fort with a tavern grows an anthology of titled
+      works — its own living culture
+- [x] Biome-influenced surfaces: deserts of sand, swamps of clay, greens of loam
+- [x] Sound: event-driven audio cues for combat, sieges, moods, and mourning
 
 ## Run
 
