@@ -288,9 +288,11 @@ impl FluidSim {
                 continue;
             }
             let mut rem = (total as usize).saturating_sub(base as usize * body.len());
-            // Remainder goes to the currently wettest tiles (then position,
-            // for determinism) so water stays where it was poured.
-            body.sort_by_key(|&p| (std::cmp::Reverse(map.water_at(p)), p));
+            // Remainder goes to the currently deepest tiles of THIS fluid
+            // (then position, for determinism) so the body stays where it is
+            // instead of creeping toward (0,0). Must use self.depth, not
+            // water_at, or magma leveling would always pack toward the origin.
+            body.sort_by_key(|&p| (std::cmp::Reverse(self.depth(map, p)), p));
             for &p in &body {
                 let target = if rem > 0 && base < MAX_WATER {
                     rem -= 1;
@@ -456,6 +458,37 @@ mod leveling_tests {
             m.water_at(Pos::new(6, 6, 1)),
             1,
             "a lone unit of water must stay where it was poured"
+        );
+    }
+
+    /// Regression: magma leveling must use the magma depth, not water_at,
+    /// or a symmetric magma lump drifts toward the map origin each step.
+    #[test]
+    fn magma_body_stays_centered() {
+        let mut m = Map::new_air(21, 1, 3, 0);
+        for x in 0..21 {
+            m.set(x, 0, 0, Tile::solid(0));
+            m.set(x, 0, 1, Tile::floor(0));
+        }
+        // A symmetric lump: 5 tiles of depth 7 centered at x=10.
+        for x in 8..=12 {
+            m.set_magma(Pos::new(x, 0, 1), 7);
+        }
+        let mut sim = FluidSim::magma();
+        sim.wake_all(&m);
+        for _ in 0..2000 {
+            sim.step(&mut m);
+        }
+        let total: u32 = (0..21).map(|x| m.magma_at(Pos::new(x, 0, 1)) as u32).sum();
+        assert_eq!(total, 35, "magma is conserved");
+        // Center of mass should stay near the middle (10), not drift to 0.
+        let com: f32 = (0..21)
+            .map(|x| x as f32 * m.magma_at(Pos::new(x, 0, 1)) as f32)
+            .sum::<f32>()
+            / total as f32;
+        assert!(
+            (com - 10.0).abs() < 2.0,
+            "magma should pool where it emerged (center of mass {com:.1}, expected ~10)"
         );
     }
 

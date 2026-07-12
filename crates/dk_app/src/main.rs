@@ -434,6 +434,7 @@ fn demo_scenario(sim: &mut Sim, raws: &Raws) {
     if let Some((wa, _)) = sim.find_flat_patch(cx, cy) {
         sim.add_building(BuildingKind::Still, wa);
         sim.add_building(BuildingKind::Kitchen, Pos::new(wa.x + 1, wa.y, wa.z));
+        sim.add_building(BuildingKind::Craftsdwarf, Pos::new(wa.x + 2, wa.y, wa.z));
     }
     // A pasture with a small herd so the demo shows livestock.
     if let Some((pa, pb)) = sim.find_flat_patch(cx, cy) {
@@ -926,6 +927,7 @@ fn handle_input(
     for (key, kind) in [
         (KeyCode::KeyV, BuildingKind::Still),
         (KeyCode::KeyK, BuildingKind::Kitchen),
+        (KeyCode::KeyM, BuildingKind::Craftsdwarf),
         (KeyCode::KeyG, BuildingKind::Floodgate),
         (KeyCode::KeyB, BuildingKind::Tomb),
     ] {
@@ -1272,6 +1274,7 @@ fn tile_visual(
             BuildingKind::Floodgate => [0.55, 0.55, 0.6],
             BuildingKind::Lever { .. } => [0.9, 0.85, 0.3],
             BuildingKind::Tomb => [0.6, 0.55, 0.75],
+            BuildingKind::Craftsdwarf => [0.7, 0.6, 0.35],
         };
         rgb = mix(rgb, tint, 0.6);
         glyph = match b.kind {
@@ -1280,6 +1283,7 @@ fn tile_visual(
             BuildingKind::Floodgate => "gate",
             BuildingKind::Lever { .. } => "lever",
             BuildingKind::Tomb => "tomb",
+            BuildingKind::Craftsdwarf => "artifact",
         };
     }
     let water = sim.map.water_at(here);
@@ -1400,6 +1404,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Drink => "mug of drink".to_string(),
         ItemKind::Artifact => it.name.clone().unwrap_or_else(|| "artifact".to_string()),
         ItemKind::Corpse => it.name.clone().unwrap_or_else(|| "remains".to_string()),
+        ItemKind::Craft => format!("{} craft", raws.materials.get(it.stuff).name),
     }
 }
 
@@ -1415,7 +1420,15 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
         ItemKind::Artifact => Color::srgb(1.0, 0.85, 0.25),
         ItemKind::Corpse => Color::srgb(0.75, 0.8, 0.9),
+        ItemKind::Craft => item_material_color(raws, stuff),
     }
+}
+
+/// A lightened material color, for crafts and boulders.
+fn item_material_color(raws: &Raws, stuff: u16) -> Color {
+    let [r, g, b] = raws.materials.get(stuff).color;
+    let l = |v: u8| (v as f32 / 255.0 * 1.3).min(1.0);
+    Color::srgb(l(r), l(g), l(b))
 }
 
 fn sync_agent_sprites(
@@ -1557,12 +1570,15 @@ fn sync_agent_sprites(
                             ItemKind::Drink => "drink",
                             ItemKind::Artifact => "artifact",
                             ItemKind::Corpse => "dwarf",
+                            ItemKind::Craft => "artifact",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
                         }
                         sprite.color = if it.kind == ItemKind::Corpse {
                             Color::srgba(0.75, 0.8, 0.9, 0.8) // the pale dead
+                        } else if it.kind == ItemKind::Craft {
+                            item_material_color(&reg.0, it.stuff) // stone-tinted goods
                         } else if ts.is_tinted(glyph) {
                             item_color(&reg.0, it.kind, it.stuff)
                         } else {
@@ -1853,6 +1869,7 @@ fn update_hud(
                 .name
                 .clone()
                 .unwrap_or_else(|| "remains".to_string()),
+            ItemKind::Craft => format!("{} craft (trade good)", reg.0.materials.get(it.stuff).name),
         };
         under = format!("{under} · {what}");
     }
@@ -1939,9 +1956,9 @@ fn update_hud(
             "Dwarf Kingdom\n\
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   {}   {:.0} fps\n\
-             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   livestock {}   jobs {}\n\
+             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture u:cull v:still k:kitchen b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture u:cull v:still k:kitchen m:crafts b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
@@ -1959,6 +1976,7 @@ fn update_hud(
             sim.0.count_kind(ItemKind::Meal),
             sim.0.count_kind(ItemKind::Drink),
             sim.0.count_kind(ItemKind::Crop),
+            sim.0.count_kind(ItemKind::Craft),
             sim.0.alive_animals(),
             sim.0.pending_designations(),
             sim.0.stats.crops_harvested,

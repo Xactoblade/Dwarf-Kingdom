@@ -105,6 +105,8 @@ pub enum ItemKind {
     Artifact,
     /// A dead citizen, awaiting burial. `stuff` unused; `name` names them.
     Corpse,
+    /// A decorative stone craft — a trade good. `stuff` = material index.
+    Craft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +144,8 @@ impl Item {
 pub enum BuildingKind {
     Still,
     Kitchen,
+    /// Turns stone boulders into decorative trade goods.
+    Craftsdwarf,
     /// A resting place. Burying a corpse here lays its ghost to rest.
     Tomb,
     /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
@@ -155,6 +159,7 @@ impl BuildingKind {
         match self {
             BuildingKind::Still => "Still",
             BuildingKind::Kitchen => "Kitchen",
+            BuildingKind::Craftsdwarf => "Craftsdwarf's Workshop",
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
@@ -253,8 +258,10 @@ pub struct Animal {
     /// Ticks lived; adulthood (and breeding/butchering eligibility) at
     /// `ADULT_TICKS`.
     pub age: u64,
-    /// Set after breeding; a calf is born when it reaches 0.
+    /// Set on the pregnant parent only; a calf is born when it reaches 0.
     pub gestation: Option<u64>,
+    /// Ticks until this animal can breed again (no birth — just a rest).
+    pub breed_cd: u64,
     /// A herder has been told to slaughter this animal.
     pub marked: bool,
     /// Dwarf index that has claimed this animal for butchering.
@@ -464,6 +471,7 @@ pub enum Skill {
     Farming,
     Brewing,
     Cooking,
+    Crafting,
 }
 
 // ------------------------------------------------------------------- tasks
@@ -478,6 +486,8 @@ pub enum FetchStage {
 pub enum CraftKind {
     Brew,
     Cook,
+    /// Turn a stone boulder into a decorative trade good.
+    Stonecraft,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -563,6 +573,7 @@ impl Dwarf {
             Task::Harvest { .. } => "harvesting",
             Task::Craft { kind: CraftKind::Brew, .. } => "brewing",
             Task::Craft { kind: CraftKind::Cook, .. } => "cooking",
+            Task::Craft { kind: CraftKind::Stonecraft, .. } => "crafting",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
@@ -592,6 +603,7 @@ pub struct SimStats {
     pub mandates_met: u32,
     pub mandates_failed: u32,
     pub animals_butchered: u32,
+    pub crafts_made: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -670,6 +682,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Artifact => 50 + raws.materials.get(item.stuff).value * 5,
         // The dead are not for sale.
         ItemKind::Corpse => 0,
+        // A worked craft is worth several times its raw stone.
+        ItemKind::Craft => raws.materials.get(item.stuff).value * 12 + 4,
     }
 }
 
@@ -932,6 +946,7 @@ impl Sim {
             alive: true,
             age: if adult { ADULT_TICKS } else { 0 },
             gestation: None,
+            breed_cd: 0,
             marked: false,
             reserved_by: None,
             move_cd: 0,
@@ -1777,12 +1792,14 @@ impl Sim {
 
     /// Daily husbandry: gestation, birth, and breeding among pastured adults.
     fn tick_animals_husbandry(&mut self) {
-        // Births first.
+        // Births first — ONLY the pregnant parent (gestation set) gives
+        // birth; the mate merely carries a breed cooldown.
         let mut newborns: Vec<(AnimalKind, Pos)> = Vec::new();
         for a in &mut self.animals {
             if !a.alive {
                 continue;
             }
+            a.breed_cd = a.breed_cd.saturating_sub(TICKS_PER_DAY);
             if let Some(g) = a.gestation {
                 let g = g.saturating_sub(TICKS_PER_DAY);
                 if g == 0 {
@@ -1801,36 +1818,33 @@ impl Sim {
         if self.alive_animals() >= HERD_CAP {
             return; // a full pasture stops breeding
         }
-        // Breeding: two adults of the same kind sharing a pasture, neither
-        // already gestating, start a new one.
+        // Breeding: two adults of the same kind sharing a pasture, both free
+        // to breed (not pregnant, not on cooldown). Exactly ONE conception.
+        let ready = |a: &Animal| {
+            a.alive && a.is_adult() && a.gestation.is_none() && a.breed_cd == 0
+        };
         let n = self.animals.len();
         for i in 0..n {
-            if !self.animals[i].alive
-                || !self.animals[i].is_adult()
-                || self.animals[i].gestation.is_some()
-            {
+            if !ready(&self.animals[i]) {
                 continue;
             }
             let (kind_i, pos_i) = (self.animals[i].kind, self.animals[i].pos);
-            let in_pasture = self.pastures.iter().any(|p| p.contains(pos_i));
-            if !in_pasture {
+            if !self.pastures.iter().any(|p| p.contains(pos_i)) {
                 continue;
             }
             let mate = (0..n).find(|&j| {
                 j != i
-                    && self.animals[j].alive
-                    && self.animals[j].is_adult()
+                    && ready(&self.animals[j])
                     && self.animals[j].kind == kind_i
-                    && self.animals[j].gestation.is_none()
                     && self.animals[j].pos.manhattan(pos_i) <= 6
                     && self.pastures.iter().any(|p| p.contains(self.animals[j].pos))
             });
-            if mate.is_some() {
+            if let Some(j) = mate {
+                // Only the dam becomes pregnant; both rest before breeding
+                // again so the herd grows one calf at a time.
                 self.animals[i].gestation = Some(GESTATION_TICKS);
-                // The mate rests a while before its own next breeding.
-                if let Some(j) = mate {
-                    self.animals[j].gestation = Some(GESTATION_TICKS + BREED_COOLDOWN);
-                }
+                self.animals[i].breed_cd = GESTATION_TICKS + BREED_COOLDOWN;
+                self.animals[j].breed_cd = GESTATION_TICKS + BREED_COOLDOWN;
                 break; // one conception per day keeps growth gentle
             }
         }
@@ -2433,15 +2447,21 @@ impl Sim {
         // every idle dwarf to the workshops at once.
         let mut pending_brews = 0usize;
         let mut pending_cooks = 0usize;
+        let mut pending_crafts = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
                     Task::Craft { kind: CraftKind::Brew, .. } => pending_brews += 1,
                     Task::Craft { kind: CraftKind::Cook, .. } => pending_cooks += 1,
+                    Task::Craft { kind: CraftKind::Stonecraft, .. } => pending_crafts += 1,
                     _ => {}
                 }
             }
         }
+        let has_craftsdwarf = self
+            .buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::Craftsdwarf);
         for i in 0..self.dwarves.len() {
             if self.player == Some(i) {
                 continue; // the player follows no job board
@@ -2452,9 +2472,17 @@ impl Sim {
                     self.count_kind(ItemKind::Drink) + pending_brews * BATCH < alive * 3;
                 let want_meals =
                     self.count_kind(ItemKind::Meal) + pending_cooks * BATCH < alive * 3;
-                match self.assign_one(i, raws, want_drinks, want_meals) {
+                // Craft trade goods when boulders are surplus (keep a
+                // reserve for building) and the craft stock isn't huge.
+                let boulders = self.count_kind(ItemKind::Boulder);
+                let crafts = self.count_kind(ItemKind::Craft);
+                let want_crafts = has_craftsdwarf
+                    && boulders > 4 + pending_crafts
+                    && crafts + pending_crafts < 20;
+                match self.assign_one(i, raws, want_drinks, want_meals, want_crafts) {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
+                    Some(CraftKind::Stonecraft) => pending_crafts += 1,
                     None => {}
                 }
             }
@@ -2467,6 +2495,7 @@ impl Sim {
         raws: &Raws,
         want_drinks: bool,
         want_meals: bool,
+        want_crafts: bool,
     ) -> Option<CraftKind> {
         let dwarf_pos = self.dwarves[i].pos;
         let my_region = self.regions.id(dwarf_pos);
@@ -2563,6 +2592,14 @@ impl Sim {
             {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::Cook }, &mut best);
+            }
+        }
+        // Stone crafts for trade — only when boulders are plentiful, so the
+        // fort keeps stone for building.
+        if want_crafts {
+            if let Some((shop, input)) = self.craft_stone_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::Stonecraft }, &mut best);
             }
         }
 
@@ -2745,6 +2782,27 @@ impl Sim {
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
                     && (!brewable || raws.plants.get(it.stuff).brewable)
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// Nearest (craftsdwarf workshop, boulder) pair for making trade goods.
+    fn craft_stone_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Craftsdwarf && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
             })
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(i, _)| i)?;
@@ -3111,6 +3169,7 @@ impl Sim {
                         let skill = match kind {
                             CraftKind::Brew => Skill::Brewing,
                             CraftKind::Cook => Skill::Cooking,
+                            CraftKind::Stonecraft => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -3122,21 +3181,31 @@ impl Sim {
                         let stuff = self.items[input].stuff;
                         self.items[input].consumed = true;
                         self.items[input].reserved_by = None;
-                        let (out_kind, thought) = match kind {
+                        match kind {
                             CraftKind::Brew => {
                                 self.stats.drinks_brewed += BATCH as u32;
-                                (ItemKind::Drink, ThoughtKind::BrewedDrink)
+                                for _ in 0..BATCH {
+                                    self.spawn_item(ItemKind::Drink, stuff, shop);
+                                }
+                                self.push_thought(i, ThoughtKind::BrewedDrink);
                             }
                             CraftKind::Cook => {
                                 self.stats.meals_cooked += BATCH as u32;
-                                (ItemKind::Meal, ThoughtKind::CookedMeal)
+                                for _ in 0..BATCH {
+                                    self.spawn_item(ItemKind::Meal, stuff, shop);
+                                }
+                                self.push_thought(i, ThoughtKind::CookedMeal);
                             }
-                        };
-                        for _ in 0..BATCH {
-                            self.spawn_item(out_kind, stuff, shop);
+                            CraftKind::Stonecraft => {
+                                // One boulder yields a couple of trade goods.
+                                self.stats.crafts_made += 2;
+                                for _ in 0..2 {
+                                    self.spawn_item(ItemKind::Craft, stuff, shop);
+                                }
+                                self.push_thought(i, ThoughtKind::CookedMeal); // a job well done
+                            }
                         }
                         self.add_xp(i, skill, 30);
-                        self.push_thought(i, thought);
                         self.dwarves[i].task = Task::Idle { wander_cd: 3 };
                     }
                 }
@@ -3571,7 +3640,10 @@ impl Sim {
         if self.dwarves[i].faction == Faction::Fort {
             // The body remains, and it wants burying. `stuff` holds the dead
             // dwarf's index so burial/haunting never confuse two dwarves who
-            // happen to share a generated name.
+            // happen to share a generated name. (The dwarves vec is never
+            // pruned; a fort would need 65k+ lifetime spawns to overflow u16,
+            // which no real game reaches — but assert it in debug builds.)
+            debug_assert!(i <= u16::MAX as usize, "dwarf index overflows corpse id");
             let name = self.dwarves[i].name.clone();
             let pos = self.dwarves[i].pos;
             self.spawn_named_item(
@@ -3845,7 +3917,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 14;
+const SAVE_VERSION: u32 = 16;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -3913,10 +3985,10 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
     // plant-based. Caravan wagon goods are items too and must be remapped.
     let remap_item = |item: &mut Item| -> Result<()> {
         item.stuff = match item.kind {
-            ItemKind::Boulder | ItemKind::Artifact => {
+            ItemKind::Boulder | ItemKind::Artifact | ItemKind::Craft => {
                 remap_one(&mat_remap, item.stuff, "material")?
             }
-            ItemKind::Corpse => item.stuff, // no raws index to remap
+            ItemKind::Corpse => item.stuff, // holds a dwarf index, not raws
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
         Ok(())

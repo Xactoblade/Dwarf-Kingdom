@@ -49,6 +49,25 @@ fn pastured_livestock_breed() {
 }
 
 #[test]
+fn one_conception_yields_exactly_one_calf() {
+    // Regression: the mate must not also give birth (double-birth bug).
+    let (mut sim, raws, rect) = pasture_fort(1105);
+    let c = rect.center();
+    sim.add_animal(AnimalKind::Cow, c, true);
+    sim.add_animal(AnimalKind::Cow, Pos::new(c.x + 1, c.y, c.z), true);
+
+    // Run just past one gestation (20 days) plus slack, but stop before a
+    // second conception could complete, and count births from the log.
+    let horizon = TICKS_PER_DAY * 26;
+    for _ in 0..horizon {
+        sim.step(&raws);
+    }
+    let births = sim.log.iter().filter(|(_, m)| m.contains("is born")).count();
+    assert_eq!(births, 1, "one conception must produce exactly one calf, not two");
+    assert_eq!(sim.alive_animals(), 3, "two adults plus one calf");
+}
+
+#[test]
 fn a_lone_animal_does_not_breed() {
     let (mut sim, raws, rect) = pasture_fort(1102);
     sim.add_animal(AnimalKind::Cow, rect.center(), true);
