@@ -456,13 +456,38 @@ def t_sheep():
     outline(t)
     return t
 
+def t_dog():
+    t = Tile(94)
+    FUR = (150, 116, 80, 255)
+    FUR_D = (110, 82, 54, 255)
+    FUR_L = (186, 152, 112, 255)
+    NOSE = (40, 32, 26, 255)
+    # A lean side-view hound: four legs, a low body, a raised tail.
+    t.fill(7, 23, 9, 29, FUR_D)    # legs
+    t.fill(11, 23, 13, 29, FUR_D)
+    t.fill(18, 23, 20, 29, FUR_D)
+    t.fill(22, 23, 24, 29, FUR_D)
+    t.fill(6, 15, 25, 24, FUR)     # body
+    t.fill(6, 15, 25, 17, FUR_L)   # back highlight
+    # Chest and head at the right
+    t.fill(23, 12, 29, 21, FUR)    # head
+    t.fill(27, 15, 30, 19, FUR_D)  # muzzle
+    t.set(29, 16, NOSE); t.set(29, 17, NOSE)
+    t.set(25, 14, NOSE)            # eye
+    t.fill(22, 9, 25, 13, FUR_D)   # pointed ear
+    # Tail sweeping up from the left rump
+    t.fill(3, 12, 6, 15, FUR)
+    t.fill(2, 10, 4, 13, FUR_L)
+    outline(t)
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
     ("seed", t_seed), ("crop", t_crop), ("dwarf", t_dwarf), ("raider", t_raider),
     ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
     ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
-    ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep),
+    ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep), ("dog", t_dog),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder", "seed", "crop"]
 

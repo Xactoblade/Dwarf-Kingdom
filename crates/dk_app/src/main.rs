@@ -290,6 +290,7 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
+    sim.add_starting_dogs();
     // Caravans come from the nearest friendly neighbors.
     sim.trade_partner = world
         .nearest_friendly_civ(region.0, region.1)
@@ -472,6 +473,9 @@ fn demo_scenario(sim: &mut Sim, raws: &Raws) {
         sim.add_animal(AnimalKind::Cow, c, true);
         sim.add_animal(AnimalKind::Sheep, Pos::new(c.x + 1, c.y, c.z), true);
         sim.add_animal(AnimalKind::Sheep, Pos::new(c.x, c.y + 1, c.z), false);
+        // A guard dog, already war-trained, to show off the sprite.
+        let dog = sim.add_animal(AnimalKind::Dog, Pos::new(c.x + 2, c.y, c.z), true);
+        sim.animals[dog].war = true;
     }
     sim.place_flat_stockpiles(cx, cy, 36);
 }
@@ -530,10 +534,12 @@ fn setup(
     }
     commands.insert_resource(Tileset(tileset));
 
-    // Event sounds are optional: no directory, no sound, no errors.
+    // Event sounds are optional: no directory, no sound, no errors. The
+    // automated screenshot/CI harness has no audio output device, where
+    // bevy_audio panics decoding the first queued sound — so stay silent there.
     let mut bank = std::collections::HashMap::new();
     let sound_dir = std::path::Path::new(&assets_dir()).join("sounds");
-    if sound_dir.is_dir() {
+    if sound_dir.is_dir() && !screenshot_mode_on() {
         for name in ["hit", "horn", "chime", "bell", "toll", "hiss", "doom", "fanfare"] {
             if sound_dir.join(format!("{name}.wav")).is_file() {
                 bank.insert(name, asset_server.load(format!("sounds/{name}.wav")));
@@ -1090,10 +1096,16 @@ fn handle_input(
         }
         dirty.0 = true;
     }
-    // 'u': cull — mark the animal nearest the cursor for slaughter.
+    // 'u': cull the nearest animal for slaughter. Shift+U instead war-trains
+    // the nearest dog into a fortress guardian.
     if keys.just_pressed(KeyCode::KeyU) {
         let here = cursor.pos(view_z.0);
-        if sim.0.mark_nearest_animal(here).is_none() {
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        if shift {
+            if sim.0.mark_nearest_for_war(here).is_none() {
+                warn!("no untrained dog to war-train");
+            }
+        } else if sim.0.mark_nearest_animal(here).is_none() {
             warn!("no animal to slaughter");
         }
         dirty.0 = true;
@@ -1290,6 +1302,7 @@ fn play_event_sounds(
     mut commands: Commands,
     sim: Res<SimRes>,
     bank: Res<SoundBank>,
+    sources: Res<Assets<AudioSource>>,
     mut cursor: ResMut<LogCursor>,
 ) {
     let Some(sim) = sim.0.as_ref() else {
@@ -1333,12 +1346,17 @@ fn play_event_sounds(
         } else {
             None
         };
+        // Only play a sound whose asset has finished loading — decoding a
+        // not-yet-loaded AudioSource panics deep inside bevy_audio (rodio's
+        // Decoder::new(..).unwrap()). Skipping silently is the safe choice.
         if let Some(handle) = key.and_then(|k| bank.0.get(k)) {
-            commands.spawn((
-                AudioPlayer::new(handle.clone()),
-                PlaybackSettings::DESPAWN,
-            ));
-            played += 1;
+            if sources.get(handle).is_some() {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::DESPAWN,
+                ));
+                played += 1;
+            }
         }
     }
     cursor.0 = len;
@@ -1786,17 +1804,20 @@ fn sync_agent_sprites(
                 let glyph = match a.kind {
                     AnimalKind::Cow => "cow",
                     AnimalKind::Sheep => "sheep",
+                    AnimalKind::Dog => "dog",
                 };
                 if let Some(ts) = &tileset.0 {
                     if let Some(atlas) = sprite.texture_atlas.as_mut() {
                         atlas.index = ts.index(glyph);
                     }
                 }
-                // Calves are smaller; the marked flash red.
+                // Calves are smaller; the marked flash red, war dogs steel-blue.
                 let scale = if a.is_adult() { 1.0 } else { 0.6 };
                 tf.scale = Vec3::splat(scale);
-                sprite.color = if a.marked {
+                sprite.color = if a.marked || a.war_marked {
                     Color::srgb(1.0, 0.5, 0.5)
+                } else if a.war {
+                    Color::srgb(0.6, 0.75, 1.0)
                 } else {
                     Color::WHITE
                 };
@@ -2165,7 +2186,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

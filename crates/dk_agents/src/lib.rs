@@ -42,6 +42,8 @@ pub const POP_CAP: usize = 15;
 pub const BATCH: usize = 3;
 /// Ticks between melee swings.
 pub const ATTACK_COOLDOWN: u8 = 40;
+/// How close a raider must be before a war dog charges it.
+pub const WAR_DOG_ENGAGE: u32 = 18;
 /// Ticks fully submerged before drowning kills.
 pub const BREATH_TICKS: f32 = 240.0;
 /// Region rebuilds are throttled to once per this many ticks.
@@ -62,6 +64,8 @@ pub const GESTATION_TICKS: u64 = 20 * TICKS_PER_DAY;
 pub const BREED_COOLDOWN: u64 = 15 * TICKS_PER_DAY;
 /// Ticks of work to butcher a marked animal.
 pub const BUTCHER_WORK: u16 = 80;
+/// Ticks of work to war-train a dog.
+pub const TRAIN_WORK: u16 = 160;
 /// A pasture won't overbreed past this many head.
 pub const HERD_CAP: usize = 12;
 /// Days between an adult sheep growing a shearable coat.
@@ -292,6 +296,9 @@ pub type Stockpile = Rect;
 pub enum AnimalKind {
     Cow,
     Sheep,
+    /// A working dog: not raised for meat, but can be trained to guard the
+    /// fort and fight off raiders.
+    Dog,
 }
 
 impl AnimalKind {
@@ -299,6 +306,7 @@ impl AnimalKind {
         match self {
             AnimalKind::Cow => "cow",
             AnimalKind::Sheep => "sheep",
+            AnimalKind::Dog => "dog",
         }
     }
 
@@ -307,6 +315,20 @@ impl AnimalKind {
         match self {
             AnimalKind::Cow => 5,
             AnimalKind::Sheep => 3,
+            AnimalKind::Dog => 1,
+        }
+    }
+
+    /// Only dogs can be trained to war — livestock cannot.
+    pub fn trainable(self) -> bool {
+        matches!(self, AnimalKind::Dog)
+    }
+
+    /// Combat health when this animal fights (a war dog's hardiness).
+    pub fn war_hp(self) -> i16 {
+        match self {
+            AnimalKind::Dog => 45,
+            _ => 30,
         }
     }
 }
@@ -329,7 +351,15 @@ pub struct Animal {
     pub wool_cd: u64,
     /// A herder has been told to slaughter this animal.
     pub marked: bool,
-    /// Dwarf index that has claimed this animal for butchering.
+    /// A trainer has been told to war-train this animal (dogs only).
+    pub war_marked: bool,
+    /// A trained war animal: it guards the fort and fights raiders.
+    pub war: bool,
+    /// Combat health while fighting; when it hits 0 the animal falls.
+    pub hp: i16,
+    /// Attack cadence while fighting.
+    atk_cd: u8,
+    /// Dwarf index that has claimed this animal for butchering or training.
     pub reserved_by: Option<usize>,
     move_cd: u8,
 }
@@ -607,6 +637,8 @@ pub enum Task {
     StrangeMood { shop: Pos, input: usize, path: Vec<Pos>, stage: FetchStage, progress: u16 },
     /// Walk to a marked animal and slaughter it for meat.
     Butcher { animal: usize, path: Vec<Pos>, progress: u16 },
+    /// Walk to a marked dog and train it for war over time.
+    Train { animal: usize, path: Vec<Pos>, progress: u16 },
     /// Unwind at the tavern: walk there, drink, socialize, shed stress.
     Relax { spot: Pos, path: Vec<Pos>, remaining: u16, drank: bool },
     /// Fish at a bank tile beside water until something bites.
@@ -693,6 +725,7 @@ impl Dwarf {
             Task::Sulk { .. } => "sulking",
             Task::StrangeMood { .. } => "in a strange mood!",
             Task::Butcher { .. } => "butchering",
+            Task::Train { .. } => "training a war dog",
             Task::Relax { .. } => "relaxing at the tavern",
             Task::Fish { .. } => "fishing",
             Task::Pray { .. } => "praying at the temple",
@@ -1185,6 +1218,10 @@ impl Sim {
             breed_cd: 0,
             wool_cd: 0,
             marked: false,
+            war_marked: false,
+            war: false,
+            hp: kind.war_hp(),
+            atk_cd: 0,
             reserved_by: None,
             move_cd: 0,
         });
@@ -1198,12 +1235,30 @@ impl Sim {
             .animals
             .iter()
             .enumerate()
-            .filter(|(_, a)| a.alive && !a.marked)
+            // Dogs are companions, not livestock — never marked for the block.
+            .filter(|(_, a)| a.alive && !a.marked && a.kind != AnimalKind::Dog)
             .min_by_key(|(_, a)| a.pos.manhattan(p))
             .map(|(i, _)| i)?;
         self.animals[idx].marked = true;
         let kind = self.animals[idx].kind.name();
         self.log_event(format!("A {kind} is marked for slaughter."));
+        Some(idx)
+    }
+
+    /// Mark the nearest trainable animal (an untrained adult dog) near `p` for
+    /// war training. Returns its index if one was marked.
+    pub fn mark_nearest_for_war(&mut self, p: Pos) -> Option<usize> {
+        let idx = self
+            .animals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| {
+                a.alive && a.kind.trainable() && a.is_adult() && !a.war && !a.war_marked
+            })
+            .min_by_key(|(_, a)| a.pos.manhattan(p))
+            .map(|(i, _)| i)?;
+        self.animals[idx].war_marked = true;
+        self.log_event("A dog is marked for war training.".to_string());
         Some(idx)
     }
 
@@ -1357,7 +1412,6 @@ impl Sim {
                 }
             }
         }
-
         let mut supplies: Vec<(ItemKind, u16)> = Vec::new();
         for _ in 0..25 {
             supplies.push((ItemKind::Meal, 0));
@@ -1396,6 +1450,20 @@ impl Sim {
                         placed += 1;
                     }
                 }
+            }
+        }
+    }
+
+    /// Set a brace of dogs down near the wagon — pets at first, but any can be
+    /// war-trained into a fortress guardian. Kept separate from
+    /// `add_embark_supplies` so headless tests keep a stable RNG stream.
+    pub fn add_starting_dogs(&mut self) {
+        let cx = self.map.width as i32 / 2;
+        let cy = self.map.height as i32 / 2;
+        for pair in 0..2 {
+            let ox = cx + 3 + pair;
+            if let Some(z) = self.map.walk_surface_z(ox.max(0) as usize, (cy + 4).max(0) as usize) {
+                self.add_animal(AnimalKind::Dog, Pos::new(ox, cy + 4, z as i32), true);
             }
         }
     }
@@ -2027,6 +2095,7 @@ impl Sim {
         }
         // Livestock wander a little each tick; herd bookkeeping is daily.
         self.tick_animals_movement();
+        self.tick_war_animals();
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
         }
@@ -2315,6 +2384,11 @@ impl Sim {
                 self.animals[idx].move_cd -= 1;
                 continue;
             }
+            // War dogs don't graze — they patrol and charge, handled in
+            // tick_war_animals (and must not draw the wander RNG here).
+            if self.animals[idx].war {
+                continue;
+            }
             if !self.rng.gen_ratio(1, 30) {
                 continue;
             }
@@ -2341,6 +2415,120 @@ impl Sim {
             };
             self.animals[idx].pos = next;
             self.animals[idx].move_cd = WALK_COOLDOWN * 2;
+        }
+    }
+
+    /// War dogs guard the fort: each charges the nearest raider and savages
+    /// any it can reach. Runs only when trained guardians exist, so ordinary
+    /// fortress play draws no extra RNG.
+    fn tick_war_animals(&mut self) {
+        for idx in 0..self.animals.len() {
+            if !self.animals[idx].alive || !self.animals[idx].war {
+                continue;
+            }
+            if self.animals[idx].atk_cd > 0 {
+                self.animals[idx].atk_cd -= 1;
+            }
+            if self.animals[idx].move_cd > 0 {
+                self.animals[idx].move_cd -= 1;
+            }
+            let apos = self.animals[idx].pos;
+            // The nearest raider on this level is the quarry.
+            let target = self
+                .dwarves
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.alive && d.faction == Faction::Hostile && d.pos.z == apos.z)
+                .min_by_key(|(_, d)| d.pos.manhattan(apos))
+                .map(|(j, _)| j);
+            let Some(target) = target else { continue };
+            let tpos = self.dwarves[target].pos;
+            let adjacent = tpos.x.abs_diff(apos.x) + tpos.y.abs_diff(apos.y) <= 1;
+            if adjacent {
+                if self.animals[idx].atk_cd == 0 {
+                    self.animals[idx].atk_cd = ATTACK_COOLDOWN;
+                    self.dog_bite(idx, target);
+                }
+            } else if apos.manhattan(tpos) <= WAR_DOG_ENGAGE && self.animals[idx].move_cd == 0 {
+                let mut opts = Vec::with_capacity(8);
+                path::neighbors(&self.map, apos, &mut opts);
+                if let Some(&next) = opts.iter().min_by_key(|q| q.manhattan(tpos)) {
+                    if next.manhattan(tpos) < apos.manhattan(tpos) {
+                        self.animals[idx].pos = next;
+                        self.animals[idx].move_cd = WALK_COOLDOWN;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A war dog's bite: maul a random body part of the raider, and if a
+    /// vital gives way, the raider falls.
+    fn dog_bite(&mut self, dog: usize, defender: usize) {
+        let roll = self.rng.gen_range(0..8usize);
+        let part_kind = match roll {
+            0 => PartKind::Head,
+            1 | 2 | 3 => PartKind::Torso,
+            4 => PartKind::LeftArm,
+            5 => PartKind::RightArm,
+            6 => PartKind::LeftLeg,
+            _ => PartKind::RightLeg,
+        };
+        let dmg = self.rng.gen_range(6..=14) as i16;
+        let bleed = self.rng.gen_range(1..=2) as u8;
+        let kind = self.animals[dog].kind.name();
+        let def_name = self.dwarves[defender].name.clone();
+        let d = &mut self.dwarves[defender];
+        let Some(part) = d.body.iter_mut().find(|pt| pt.kind == part_kind) else { return };
+        part.hp -= dmg;
+        part.bleeding = part.bleeding.saturating_add(bleed);
+        let destroyed = part.hp <= 0;
+        let vital = part.kind.vital();
+        self.log_event(format!("A war {kind} savages {def_name}'s {}!", part_kind.name()));
+        if destroyed && vital {
+            self.log_event(format!("{def_name} falls dead!"));
+            let was_beast = self.dwarves[defender].beast;
+            let was_hostile = self.dwarves[defender].faction == Faction::Hostile;
+            self.kill_dwarf(defender);
+            if was_beast {
+                self.stats.beasts_slain += 1;
+            } else if was_hostile {
+                self.stats.raiders_slain += 1;
+            }
+        }
+    }
+
+    /// An alive war dog standing next to dwarf `i`, on the same level.
+    fn adjacent_war_dog(&self, i: usize) -> Option<usize> {
+        let me = self.dwarves[i].pos;
+        self.animals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.alive && a.war && a.pos.z == me.z)
+            .find(|(_, a)| a.pos.x.abs_diff(me.x) + a.pos.y.abs_diff(me.y) <= 1)
+            .map(|(j, _)| j)
+    }
+
+    /// A raider strikes back at a war dog blocking its way.
+    fn maul_dog(&mut self, attacker: usize, dog: usize) {
+        if self.dwarves[attacker].attack_cd > 0 {
+            self.dwarves[attacker].attack_cd -= 1;
+            return;
+        }
+        self.dwarves[attacker].attack_cd = ATTACK_COOLDOWN;
+        let base = if self.dwarves[attacker].beast {
+            self.rng.gen_range(20..=40) as i16
+        } else {
+            self.rng.gen_range(6..=16) as i16
+        };
+        let dmg = base + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting));
+        self.animals[dog].hp -= dmg;
+        let name = self.animals[dog].kind.name();
+        let att = self.dwarves[attacker].name.clone();
+        if self.animals[dog].hp <= 0 {
+            self.animals[dog].alive = false;
+            self.animals[dog].reserved_by = None;
+            self.log_event(format!("{att} cuts down a war {name}."));
         }
     }
 
@@ -3135,6 +3323,7 @@ impl Sim {
             Craft { shop: Pos, input: usize, kind: CraftKind },
             Haul { item: usize, dest: Pos },
             Butcher { animal: usize },
+            Train { animal: usize },
             Fish { spot: Pos },
         }
         let mut best: Option<(u32, Cand)> = None;
@@ -3237,6 +3426,17 @@ impl Sim {
             consider(animal.pos.manhattan(dwarf_pos), Cand::Butcher { animal: idx }, &mut best);
         }
 
+        // War training: dogs marked for training, reachable from here.
+        for (idx, animal) in self.animals.iter().enumerate() {
+            if !animal.alive || !animal.war_marked || animal.war || animal.reserved_by.is_some() {
+                continue;
+            }
+            if self.regions.id(animal.pos) != my_region {
+                continue;
+            }
+            consider(animal.pos.manhattan(dwarf_pos), Cand::Train { animal: idx }, &mut best);
+        }
+
         // Hauling loose items: corpses go to open tombs, goods to stockpiles.
         for (idx, item) in self.items.iter().enumerate() {
             if !item.active()
@@ -3333,6 +3533,13 @@ impl Sim {
                 if let Some(p) = path::astar(&self.map, dwarf_pos, animal_pos, MAX_ASTAR_NODES) {
                     self.animals[animal].reserved_by = Some(i);
                     self.dwarves[i].task = Task::Butcher { animal, path: p, progress: 0 };
+                }
+            }
+            Cand::Train { animal } => {
+                let animal_pos = self.animals[animal].pos;
+                if let Some(p) = path::astar(&self.map, dwarf_pos, animal_pos, MAX_ASTAR_NODES) {
+                    self.animals[animal].reserved_by = Some(i);
+                    self.dwarves[i].task = Task::Train { animal, path: p, progress: 0 };
                 }
             }
             Cand::Fish { spot } => {
@@ -4009,6 +4216,50 @@ impl Sim {
                 ));
                 self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
+            Task::Train { animal, mut path, progress } => {
+                // The pupil may have died, been un-marked, or wandered off.
+                let valid = self
+                    .animals
+                    .get(animal)
+                    .is_some_and(|a| a.alive && a.war_marked && !a.war && a.reserved_by == Some(i));
+                if !valid {
+                    self.abandon_task(i);
+                    return;
+                }
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Train { animal, path, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // Arrived where the dog was. If it drifted, follow it.
+                let here = self.dwarves[i].pos;
+                let apos = self.animals[animal].pos;
+                if here.manhattan(apos) > 1 {
+                    match path::astar(&self.map, here, apos, MAX_ASTAR_NODES) {
+                        Some(p) if !p.is_empty() => {
+                            self.dwarves[i].task = Task::Train { animal, path: p, progress };
+                        }
+                        _ => self.abandon_task(i),
+                    }
+                    return;
+                }
+                let progress = progress + 1;
+                if progress < TRAIN_WORK {
+                    self.dwarves[i].task = Task::Train { animal, path, progress };
+                    return;
+                }
+                // The dog is a trained guardian now.
+                self.animals[animal].war = true;
+                self.animals[animal].war_marked = false;
+                self.animals[animal].reserved_by = None;
+                self.animals[animal].hp = self.animals[animal].kind.war_hp();
+                self.add_xp(i, Skill::Fighting, 10);
+                self.log_event("A dog is trained for war — it will guard the fort.".to_string());
+                self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+            }
             Task::Relax { spot, mut path, remaining, drank } => {
                 if !path.is_empty() {
                     if self.step_along(i, &mut path) {
@@ -4299,6 +4550,11 @@ impl Sim {
         }
         if let Some(enemy) = self.adjacent_enemy(i) {
             self.melee(i, enemy);
+            return;
+        }
+        // A war dog barring the way is dealt with first.
+        if let Some(dog) = self.adjacent_war_dog(i) {
+            self.maul_dog(i, dog);
             return;
         }
         let my_pos = self.dwarves[i].pos;
@@ -4785,7 +5041,7 @@ impl Sim {
                     self.items[input].reserved_by = None;
                 }
             }
-            Task::Butcher { animal, .. } => {
+            Task::Butcher { animal, .. } | Task::Train { animal, .. } => {
                 if let Some(a) = self.animals.get_mut(animal) {
                     if a.reserved_by == Some(i) {
                         a.reserved_by = None;
@@ -4872,7 +5128,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 29;
+const SAVE_VERSION: u32 = 30;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
