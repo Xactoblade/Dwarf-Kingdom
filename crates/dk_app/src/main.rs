@@ -431,6 +431,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
+    // One of the founding seven keeps a dark secret — a vampire, indistinguishable
+    // from any other dwarf until fort-mates start turning up drained of blood.
+    sim.curse_a_vampire();
     // Caravans come from the nearest friendly neighbors.
     sim.trade_partner = world
         .nearest_friendly_civ(region.0, region.1)
@@ -2539,6 +2542,11 @@ fn update_hud(
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
     let alarm_txt = if sim.0.alarm { " [SOUNDED]" } else { "" };
+    let vampire_txt = if sim.0.stats.drained > 0 {
+        format!("   ** a vampire walks among us: {} drained **", sim.0.stats.drained)
+    } else {
+        String::new()
+    };
     let log_tail = sim
         .0
         .log
@@ -2557,7 +2565,7 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
+             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}{}\n\
              d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow L:library u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
@@ -2594,6 +2602,7 @@ fn update_hud(
             sim.0.veterans(),
             sim.0.armed_soldiers(),
             sim.0.poems.len(),
+            vampire_txt,
             alarm_txt,
             mode_txt,
             log_tail,

@@ -82,6 +82,12 @@ pub const RELAX_TICKS: u16 = 300;
 pub const FISH_WORK: u16 = 220;
 /// Ticks between a dwarf's visits to the temple to worship.
 pub const PRAYER_INTERVAL: u64 = 6 * TICKS_PER_DAY;
+/// Ticks a vampire waits between feedings — it hunts roughly nightly, so a
+/// single victim can recover between visits unless the vampire returns to it.
+pub const VAMPIRE_FEED_INTERVAL: u64 = 3 * TICKS_PER_DAY / 2;
+/// Blood a vampire drains in one feeding (of 100). Rarely lethal in a single
+/// bite, but repeated feeding on the same sleeper eventually bleeds them white.
+pub const VAMPIRE_DRAIN: f32 = 34.0;
 /// Ticks spent in prayer.
 pub const PRAY_TICKS: u16 = 200;
 /// Ticks a wounded dwarf lingers in the hospital before checking out.
@@ -747,6 +753,12 @@ pub struct Dwarf {
     /// Adventure mode: a recruited companion who shadows the hero, fights at
     /// their side, and journeys with them from land to land.
     pub follower: bool,
+    /// A secret night-creature. Looks and works like any other dwarf, but
+    /// never hungers or thirsts — it sustains itself on the blood of sleeping
+    /// fort-mates, and does not age or die of its needs.
+    pub vampire: bool,
+    /// Tick a vampire last fed, pacing its hunt for blood.
+    pub last_fed: u64,
 }
 
 impl Dwarf {
@@ -820,6 +832,8 @@ pub struct SimStats {
     pub gems_cut: u32,
     pub weapons_forged: u32,
     pub glass_blown: u32,
+    /// Fort-mates found drained of blood — the mark of a vampire.
+    pub drained: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -1672,6 +1686,78 @@ impl Sim {
         }
     }
 
+    /// App/embark only: curse one of the founding seven as a secret vampire.
+    /// Deliberately kept out of `add_embark_supplies` — the many headless tests
+    /// that build a fort by hand must stay byte-identical, so a fort only
+    /// harbours a vampire when the app chooses to plant one. No log line: the
+    /// whole point is that not even the player knows who it is.
+    pub fn curse_a_vampire(&mut self) {
+        let candidates: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.alive && d.faction == Faction::Fort)
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let pick = candidates[self.rng.gen_range(0..candidates.len())];
+        self.dwarves[pick].vampire = true;
+        self.dwarves[pick].last_fed = self.clock.tick;
+    }
+
+    /// A vampire feeds on the blood of an adjacent sleeping fort-mate. This
+    /// draws no rng and changes nothing unless a *living fort vampire* exists,
+    /// so a fort without one steps byte-for-byte identically — the whole
+    /// mechanic is gated behind the secret it keeps.
+    fn tick_vampires(&mut self) {
+        if !self
+            .dwarves
+            .iter()
+            .any(|d| d.alive && d.vampire && d.faction == Faction::Fort)
+        {
+            return;
+        }
+        let tick = self.clock.tick;
+        for vi in 0..self.dwarves.len() {
+            let v = &self.dwarves[vi];
+            if !(v.alive && v.vampire && v.faction == Faction::Fort) {
+                continue;
+            }
+            if tick.saturating_sub(v.last_fed) < VAMPIRE_FEED_INTERVAL {
+                continue;
+            }
+            let vpos = v.pos;
+            // The first adjacent sleeping fort-mate (never another vampire),
+            // chosen by index so the hunt is fully deterministic.
+            let victim = (0..self.dwarves.len()).find(|&j| {
+                let d = &self.dwarves[j];
+                j != vi
+                    && d.alive
+                    && d.faction == Faction::Fort
+                    && !d.vampire
+                    && matches!(d.task, Task::Sleep { .. })
+                    && d.pos.z == vpos.z
+                    && (d.pos.x - vpos.x).abs() <= 1
+                    && (d.pos.y - vpos.y).abs() <= 1
+            });
+            let Some(vic) = victim else { continue };
+            self.dwarves[vi].last_fed = tick;
+            let victim_name = self.dwarves[vic].name.clone();
+            self.dwarves[vic].blood = (self.dwarves[vic].blood - VAMPIRE_DRAIN).max(0.0);
+            if self.dwarves[vic].blood <= 0.0 {
+                // Drained white — the fort wakes to a bloodless corpse and the
+                // dark knowledge that one of their own is not what it seems.
+                self.stats.drained += 1;
+                self.log_event(format!(
+                    "{victim_name} was found in the morning pale and bloodless -- a vampire walks among us!"
+                ));
+                self.kill_dwarf(vic);
+            }
+        }
+    }
+
     /// Demo/test helper: tile flat 3x3 stockpile patches near (cx, cy),
     /// closest first, until combined capacity reaches `target_cells`.
     pub fn place_flat_stockpiles(&mut self, cx: i32, cy: i32, target_cells: usize) -> usize {
@@ -2336,6 +2422,7 @@ impl Sim {
         // Livestock wander a little each tick; herd bookkeeping is daily.
         self.tick_animals_movement();
         self.tick_war_animals();
+        self.tick_vampires();
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
         }
@@ -5521,8 +5608,12 @@ impl Sim {
         let d = &mut self.dwarves[i];
         let old_hunger = d.hunger;
         let old_thirst = d.thirst;
-        d.hunger = (d.hunger + HUNGER_RATE).min(100.0);
-        d.thirst = (d.thirst + THIRST_RATE).min(100.0);
+        // A vampire takes no food or drink — it feeds only on blood, and so
+        // never crosses the hunger/thirst thresholds or dies of its needs.
+        if !d.vampire {
+            d.hunger = (d.hunger + HUNGER_RATE).min(100.0);
+            d.thirst = (d.thirst + THIRST_RATE).min(100.0);
+        }
         d.fatigue = (d.fatigue + FATIGUE_RATE).min(100.0);
         // Happiness drifts back toward neutral.
         d.happiness += (50.0 - d.happiness).signum() * 0.0005;
@@ -6082,13 +6173,15 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         soldier: false,
         last_prayer: 0,
         follower: false,
+        vampire: false,
+        last_fed: 0,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 41;
+const SAVE_VERSION: u32 = 42;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
