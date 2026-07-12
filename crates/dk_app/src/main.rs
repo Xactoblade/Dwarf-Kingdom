@@ -2164,7 +2164,7 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
+             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}\n\
              d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
@@ -2198,6 +2198,7 @@ fn update_hud(
             sim.0.stats.raiders_slain,
             sim.0.stats.drownings,
             sim.0.stats.beasts_slain,
+            sim.0.veterans(),
             mode_txt,
             log_tail,
             dwarf_panel,

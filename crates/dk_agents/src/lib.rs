@@ -556,6 +556,14 @@ pub enum Skill {
     Brewing,
     Cooking,
     Crafting,
+    /// Prowess in melee, honed by drawing blood. Raises the force of a blow.
+    Fighting,
+}
+
+/// The extra damage a fighter of the given skill level (0..=6) adds to each
+/// blow. A seasoned veteran hits markedly harder than a green recruit.
+pub fn fighting_bonus(level: u32) -> i16 {
+    level as i16 * 2
 }
 
 // ------------------------------------------------------------------- tasks
@@ -1512,6 +1520,16 @@ impl Sim {
         self.dwarves
             .iter()
             .filter(|d| d.alive && d.faction == Faction::Hostile)
+            .count()
+    }
+
+    /// Living citizens who have grown into seasoned fighters (skill level 3+).
+    pub fn veterans(&self) -> usize {
+        self.dwarves
+            .iter()
+            .filter(|d| {
+                d.alive && d.faction == Faction::Fort && d.skill_level(Skill::Fighting) >= 3
+            })
             .count()
     }
 
@@ -4371,12 +4389,16 @@ impl Sim {
             _ => PartKind::RightLeg,
         };
         // A forgotten beast's blow lands with terrible force.
-        let dmg = if self.dwarves[attacker].beast {
+        let base = if self.dwarves[attacker].beast {
             self.rng.gen_range(25..=55) as i16
         } else {
             self.rng.gen_range(8..=20) as i16
         };
+        // A trained fighter puts more weight behind the blow.
+        let dmg = base + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting));
         let bleed = self.rng.gen_range(1..=3) as u8;
+        // Drawing blood teaches the trade: every landed blow hones prowess.
+        self.add_xp(attacker, Skill::Fighting, 6);
 
         let att_name = self.dwarves[attacker].name.clone();
         let def_name = self.dwarves[defender].name.clone();
@@ -4850,7 +4872,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 28;
+const SAVE_VERSION: u32 = 29;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
