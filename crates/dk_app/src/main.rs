@@ -58,7 +58,7 @@ DIG & BUILD (cursor = arrow keys or click)\n\
   d ... mine        x ... stairs      h ... channel     Shift+D ... engrave a wall\n\
   Shift+B ... build a wall (masons haul stone and raise it)\n\
   v ... still   k ... kitchen   m ... craftsdwarf   j ... loom   ; ... jeweler\n\
-  Shift+F ... forge      Shift+T ... weapon trap      b ... tomb\n\
+  Shift+F ... forge   Shift+G ... glass furnace   Shift+T ... weapon trap   b ... tomb\n\
   g ... floodgate   l ... lever   t ... pull lever\n\
 \n\
 ZONES & LABOR\n\
@@ -1238,6 +1238,16 @@ fn handle_input(
         }
         dirty.0 = true;
     }
+    // Shift+G: build a glass furnace (Shift keeps it clear of the floodgate).
+    if shift && keys.just_pressed(KeyCode::KeyG) {
+        let here = cursor.pos(view_z.0);
+        if sim.0.add_building(BuildingKind::GlassFurnace, here) {
+            info!("built a Glass Furnace at {:?}", here);
+        } else {
+            warn!("can't build a Glass Furnace there");
+        }
+        dirty.0 = true;
+    }
     // Shift+T: lay a weapon trap on the floor for raiders to blunder into.
     if shift && keys.just_pressed(KeyCode::KeyT) {
         let here = cursor.pos(view_z.0);
@@ -1619,6 +1629,7 @@ fn tile_visual(
             BuildingKind::Loom => [0.55, 0.7, 0.72],
             BuildingKind::Jeweler => [0.75, 0.55, 0.85],
             BuildingKind::Forge => [0.95, 0.45, 0.2],
+            BuildingKind::GlassFurnace => [0.5, 0.85, 0.85],
             BuildingKind::Trap => [0.85, 0.2, 0.2],
         };
         rgb = mix(rgb, tint, 0.6);
@@ -1632,6 +1643,7 @@ fn tile_visual(
             BuildingKind::Loom => "still",
             BuildingKind::Jeweler => "artifact",
             BuildingKind::Forge => "weapon",
+            BuildingKind::GlassFurnace => "still",
             BuildingKind::Trap => "weapon",
         };
     }
@@ -1791,6 +1803,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
         ItemKind::CutGem => format!("cut {}", dk_agents::gem_name(it.stuff)),
         ItemKind::Weapon => format!("{} weapon", raws.materials.get(it.stuff).name),
+        ItemKind::Glass => "blown glass".to_string(),
     };
     // A crafted good wears its quality; an artifact's name already says it.
     if it.quality > 0 && it.kind != ItemKind::Artifact {
@@ -1821,6 +1834,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
             Color::srgb(l(r), l(g), l(b))
         }
         ItemKind::Weapon => Color::srgb(0.8, 0.82, 0.88),
+        ItemKind::Glass => Color::srgb(0.6, 0.9, 0.88),
     }
 }
 
@@ -1982,6 +1996,7 @@ fn sync_agent_sprites(
                             ItemKind::Cloth => "artifact",
                             ItemKind::RoughGem | ItemKind::CutGem => "artifact",
                             ItemKind::Weapon => "weapon",
+                            ItemKind::Glass => "artifact",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
@@ -2321,6 +2336,7 @@ fn update_hud(
             ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
             ItemKind::CutGem => format!("cut {} (trade good)", dk_agents::gem_name(it.stuff)),
             ItemKind::Weapon => format!("{} weapon", reg.0.materials.get(it.stuff).name),
+            ItemKind::Glass => "blown glass (trade good)".to_string(),
         };
         let what = if it.quality > 0 && it.kind != ItemKind::Artifact {
             format!("{} {what}", dk_agents::quality_name(it.quality))
@@ -2417,7 +2433,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

@@ -145,6 +145,9 @@ pub enum ItemKind {
     /// A forged weapon. `stuff` = material index. Arms a soldier for battle
     /// and is a valuable trade good in its own right.
     Weapon,
+    /// Blown glass — the fort's finest trade good. `stuff` = material index it
+    /// was fluxed from.
+    Glass,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -242,6 +245,8 @@ pub enum BuildingKind {
     Jeweler,
     /// Forges stone/ore boulders into weapons that arm the fort's soldiers.
     Forge,
+    /// Melts stone into blown glass — the fort's finest trade goods.
+    GlassFurnace,
     /// A weapon trap: a raider that steps onto it is struck by hidden blades.
     Trap,
     /// A resting place. Burying a corpse here lays its ghost to rest.
@@ -261,6 +266,7 @@ impl BuildingKind {
             BuildingKind::Loom => "Loom",
             BuildingKind::Jeweler => "Jeweler's Workshop",
             BuildingKind::Forge => "Forge",
+            BuildingKind::GlassFurnace => "Glass Furnace",
             BuildingKind::Trap => "Weapon Trap",
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
@@ -651,6 +657,8 @@ pub enum CraftKind {
     CutGem,
     /// Forge a stone/ore boulder into a weapon.
     ForgeWeapon,
+    /// Melt a boulder into a piece of blown glass.
+    MakeGlass,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -766,6 +774,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Weave, .. } => "weaving",
             Task::Craft { kind: CraftKind::CutGem, .. } => "cutting gems",
             Task::Craft { kind: CraftKind::ForgeWeapon, .. } => "forging a weapon",
+            Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
@@ -810,6 +819,7 @@ pub struct SimStats {
     pub gems_found: u32,
     pub gems_cut: u32,
     pub weapons_forged: u32,
+    pub glass_blown: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -900,6 +910,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::CutGem => 70,
         // A forged weapon: worth several times its metal, and it arms a soldier.
         ItemKind::Weapon => raws.materials.get(item.stuff).value * 10 + 20,
+        // Blown glass: the fort's finest ordinary trade good.
+        ItemKind::Glass => 85,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -3439,6 +3451,7 @@ impl Sim {
         let mut pending_cooks = 0usize;
         let mut pending_crafts = 0usize;
         let mut pending_weapons = 0usize;
+        let mut pending_glass = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -3446,6 +3459,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::Cook, .. } => pending_cooks += 1,
                     Task::Craft { kind: CraftKind::Stonecraft, .. } => pending_crafts += 1,
                     Task::Craft { kind: CraftKind::ForgeWeapon, .. } => pending_weapons += 1,
+                    Task::Craft { kind: CraftKind::MakeGlass, .. } => pending_glass += 1,
                     _ => {}
                 }
             }
@@ -3455,6 +3469,10 @@ impl Sim {
             .iter()
             .any(|b| b.kind == BuildingKind::Craftsdwarf);
         let has_forge = self.buildings.iter().any(|b| b.kind == BuildingKind::Forge);
+        let has_glassworks = self
+            .buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::GlassFurnace);
         let soldiers = self
             .dwarves
             .iter()
@@ -3490,11 +3508,19 @@ impl Sim {
                 let want_weapons = has_forge
                     && boulders > 4 + pending_crafts + pending_weapons
                     && weapons_on_hand + pending_weapons < soldiers;
-                match self.assign_one(i, raws, want_drinks, want_meals, want_crafts, want_weapons) {
+                // Blow glass — the finest trade good — when stone is plentiful.
+                let glass = self.count_kind(ItemKind::Glass);
+                let want_glass = has_glassworks
+                    && boulders > 4 + pending_crafts + pending_glass
+                    && glass + pending_glass < 20;
+                match self.assign_one(
+                    i, raws, want_drinks, want_meals, want_crafts, want_weapons, want_glass,
+                ) {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
                     Some(CraftKind::Stonecraft) => pending_crafts += 1,
                     Some(CraftKind::ForgeWeapon) => pending_weapons += 1,
+                    Some(CraftKind::MakeGlass) => pending_glass += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -3509,6 +3535,7 @@ impl Sim {
         want_meals: bool,
         want_crafts: bool,
         want_weapons: bool,
+        want_glass: bool,
     ) -> Option<CraftKind> {
         let dwarf_pos = self.dwarves[i].pos;
         let my_region = self.regions.id(dwarf_pos);
@@ -3709,6 +3736,13 @@ impl Sim {
             if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeWeapon }, &mut best);
+            }
+        }
+        // Glassblowing: melt a boulder into fine glass at the furnace.
+        if want_glass {
+            if let Some((shop, input)) = self.craft_glass_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeGlass }, &mut best);
             }
         }
         // Construction: haul a boulder to a planned wall and raise it.
@@ -4069,6 +4103,27 @@ impl Sim {
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(i, _)| i)?;
         Some((site, input))
+    }
+
+    /// Nearest (glass furnace, boulder) pair for blowing glass.
+    fn craft_glass_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::GlassFurnace && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
     }
 
     /// How many soldiers the fort has enlisted, and how many forged weapons
@@ -4577,7 +4632,8 @@ impl Sim {
                             CraftKind::Stonecraft
                             | CraftKind::Weave
                             | CraftKind::CutGem
-                            | CraftKind::ForgeWeapon => Skill::Crafting,
+                            | CraftKind::ForgeWeapon
+                            | CraftKind::MakeGlass => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -4624,6 +4680,11 @@ impl Sim {
                                 // The gem's variety carries through the cut.
                                 self.stats.gems_cut += 1;
                                 self.spawn_quality_item(ItemKind::CutGem, stuff, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::MakeGlass => {
+                                self.stats.glass_blown += 1;
+                                self.spawn_quality_item(ItemKind::Glass, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::ForgeWeapon => {
@@ -5939,7 +6000,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 39;
+const SAVE_VERSION: u32 = 40;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6007,9 +6068,11 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
     // plant-based. Caravan wagon goods are items too and must be remapped.
     let remap_item = |item: &mut Item| -> Result<()> {
         item.stuff = match item.kind {
-            ItemKind::Boulder | ItemKind::Artifact | ItemKind::Craft | ItemKind::Weapon => {
-                remap_one(&mat_remap, item.stuff, "material")?
-            }
+            ItemKind::Boulder
+            | ItemKind::Artifact
+            | ItemKind::Craft
+            | ItemKind::Weapon
+            | ItemKind::Glass => remap_one(&mat_remap, item.stuff, "material")?,
             // These carry no raws index (dwarf index, gem type, or nothing).
             ItemKind::Corpse
             | ItemKind::Wool
