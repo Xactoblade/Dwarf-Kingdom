@@ -3189,21 +3189,44 @@ impl Sim {
                 .min_by_key(|(_, d)| d.pos.manhattan(my_pos))
                 .map(|(j, _)| j);
             if let Some(q) = quarry {
-                // Drop whatever they were doing and close the distance.
-                if !matches!(self.dwarves[i].task, Task::Fight { .. }) {
-                    self.abandon_task(i);
+                // Reuse the cached route unless we've retargeted or the
+                // repath timer expired — a full A* every tick is wasteful
+                // when a siege sends many soldiers at one distant beast.
+                let (mut path, mut repath_cd) = match self.dwarves[i].task.clone() {
+                    Task::Fight { target, path, repath_cd } if target == q => (path, repath_cd),
+                    Task::Fight { .. } => (Vec::new(), 0),
+                    _ => {
+                        // Answering the call: drop the current job first.
+                        self.abandon_task(i);
+                        (Vec::new(), 0)
+                    }
+                };
+                if repath_cd == 0 && path.is_empty() {
+                    path = path::astar(&self.map, my_pos, self.dwarves[q].pos, MAX_ASTAR_NODES)
+                        .unwrap_or_default();
+                    repath_cd = 60;
                 }
-                if self.dwarves[i].move_cd == 0 {
+                repath_cd = repath_cd.saturating_sub(1);
+                if !path.is_empty() {
+                    // step_along handles the walk cooldown itself.
+                    if !self.step_along(i, &mut path) {
+                        path.clear();
+                    }
+                } else if self.dwarves[i].move_cd == 0 {
+                    // No route (walls between us): press greedily.
                     let goal = self.dwarves[q].pos;
-                    if let Some(mut path) = path::astar(&self.map, my_pos, goal, MAX_ASTAR_NODES) {
-                        if !path.is_empty() {
-                            self.step_along(i, &mut path);
+                    let mut opts = Vec::with_capacity(8);
+                    path::neighbors(&self.map, my_pos, &mut opts);
+                    if let Some(&next) = opts.iter().min_by_key(|c| c.manhattan(goal)) {
+                        if next.manhattan(goal) < my_pos.manhattan(goal) {
+                            self.dwarves[i].pos = next;
+                            self.dwarves[i].move_cd = WALK_COOLDOWN;
                         }
                     }
-                    self.dwarves[i].task = Task::Fight { target: q, path: Vec::new(), repath_cd: 0 };
                 } else {
                     self.dwarves[i].move_cd -= 1;
                 }
+                self.dwarves[i].task = Task::Fight { target: q, path, repath_cd };
                 return;
             }
         }
