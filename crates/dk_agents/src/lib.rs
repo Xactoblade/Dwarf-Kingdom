@@ -96,6 +96,9 @@ pub enum DesignationKind {
     /// Dig out the floor: this tile becomes open space, the tile below
     /// becomes a floor. Water pours into the resulting trench.
     Channel,
+    /// Smooth and engrave a wall: the wall stays, but its face is carved with
+    /// a scene from the fortress's history.
+    Smooth,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -894,6 +897,9 @@ pub struct Sim {
     pub buildings: Vec<Building>,
     pub farms: BTreeMap<Pos, FarmTile>,
     pub designations: BTreeMap<Pos, Designation>,
+    /// Engraved wall faces: position -> the scene carved there. Grows as
+    /// dwarves smooth walls; read by the UI to describe and tint them.
+    pub engravings: BTreeMap<Pos, String>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -998,6 +1004,7 @@ impl Sim {
             buildings: Vec::new(),
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
+            engravings: BTreeMap::new(),
             stats: SimStats::default(),
             clock: Calendar::default(),
             weather: Weather::Clear,
@@ -1063,6 +1070,10 @@ impl Sim {
                     }
                     DesignationKind::Channel => {
                         tile.shape.is_walkable() && below_solid
+                    }
+                    // Engrave a solid wall that isn't already engraved.
+                    DesignationKind::Smooth => {
+                        tile.is_solid() && !self.engravings.contains_key(&p)
                     }
                 };
                 // Never dig away a tile that carries a building (an open
@@ -5047,12 +5058,65 @@ impl Sim {
         }
     }
 
+    /// Compose a scene for an engraving from the fortress's own history —
+    /// its fallen, its foes, its triumphs — so its walls remember its story.
+    fn compose_engraving(&mut self) -> String {
+        let mut subjects: Vec<String> = Vec::new();
+        // The fallen are memorialized.
+        for d in &self.dwarves {
+            if !d.alive && d.faction == Faction::Fort && !d.ghost {
+                subjects.push(format!("{}, a dwarf of the fortress, now passed", d.name));
+            }
+        }
+        // Named enemies from the world's history.
+        if let Some(roster) = &self.siege_roster {
+            if let Some(leader) = roster.leaders.first() {
+                subjects.push(format!(
+                    "{} of {}, who {}",
+                    leader.name, roster.civ_name, leader.grudge
+                ));
+            }
+        }
+        // Deeds of an adventuring hero, if any.
+        for deed in &self.deeds {
+            subjects.push(deed.clone());
+        }
+        // Triumphs recorded in the fort's tallies.
+        if self.stats.beasts_slain > 0 {
+            subjects.push("the slaying of a forgotten beast in the deeps".to_string());
+        }
+        if self.stats.raiders_slain > 0 {
+            subjects.push("the fortress guard driving raiders from the gates".to_string());
+        }
+        if self.dwarves.iter().any(|d| d.artifacts_made > 0) {
+            subjects.push("a masterwork born of a fey mood".to_string());
+        }
+        if self.stats.caravans_arrived > 0 {
+            subjects.push("a merchant caravan come to trade".to_string());
+        }
+        // There is always the founding to remember.
+        subjects.push("the founding of the fortress".to_string());
+
+        let pick = self.rng.gen_range(0..subjects.len());
+        format!("an engraving of {}", subjects[pick])
+    }
+
     fn complete_mine(&mut self, i: usize, target: Pos, raws: &Raws) {
         let Some(des) = self.designations.remove(&target) else {
             self.dwarves[i].task = Task::Idle { wander_cd: 5 };
             return;
         };
         let tile = self.map.tile_at(target).expect("designated tile in bounds");
+        // Smoothing leaves the wall standing but carves a scene into its face.
+        if des.kind == DesignationKind::Smooth {
+            let scene = self.compose_engraving();
+            self.engravings.insert(target, scene.clone());
+            self.add_xp(i, Skill::Crafting, 15);
+            let name = self.dwarves[i].name.clone();
+            self.log_event(format!("{name} engraves a wall: {scene}"));
+            self.dwarves[i].task = Task::Idle { wander_cd: 2 };
+            return;
+        }
         let mut boulder_from = tile;
         match des.kind {
             DesignationKind::Mine => {
@@ -5086,6 +5150,7 @@ impl Sim {
                 self.water.wake(below);
                 self.magma.wake(below);
             }
+            DesignationKind::Smooth => unreachable!("smoothing handled above"),
         }
         self.regions.dirty = true;
         self.map_changed = true;
@@ -5242,7 +5307,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 31;
+const SAVE_VERSION: u32 = 32;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

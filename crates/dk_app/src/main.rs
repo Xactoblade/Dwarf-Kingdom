@@ -1081,6 +1081,16 @@ fn handle_input(
             dirty.0 = true;
         }
     }
+    // Shift+D: smooth & engrave the wall at the cursor.
+    if shift && keys.just_pressed(KeyCode::KeyD) {
+        let here = cursor.pos(view_z.0);
+        if sim.0.designate_rect(DesignationKind::Smooth, here, here) > 0 {
+            info!("marked a wall for engraving");
+        } else {
+            warn!("can't engrave there (needs a bare wall)");
+        }
+        dirty.0 = true;
+    }
     // Shift+F: build a forge (Shift keeps it clear of the farm designation).
     if shift && keys.just_pressed(KeyCode::KeyF) {
         let here = cursor.pos(view_z.0);
@@ -1476,6 +1486,10 @@ fn tile_visual(
     }
     if sim.designations.contains_key(&here) {
         rgb = mix(rgb, [1.0, 0.62, 0.12], 0.45);
+    }
+    // An engraved wall catches a soft golden sheen.
+    if sim.engravings.contains_key(&here) {
+        rgb = mix(rgb, [0.95, 0.85, 0.5], 0.35);
     }
     if sim.stockpile_at(here).is_some() {
         rgb = mix(rgb, [0.25, 0.45, 0.9], 0.35);
@@ -2076,6 +2090,9 @@ fn update_hud(
     if let Some(b) = sim.0.building_at(here) {
         under = format!("{under} · {}", b.kind.name());
     }
+    if let Some(scene) = sim.0.engravings.get(&here) {
+        under = format!("{under} · {scene}");
+    }
     let water = sim.0.map.water_at(here);
     if water > 0 {
         under = format!("{under} · water {water}/7");
@@ -2205,7 +2222,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}\n\
-             d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler F:forge b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler F:forge b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
