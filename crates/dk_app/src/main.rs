@@ -1548,6 +1548,7 @@ fn sync_agent_sprites(
             Some(d) if d.alive && d.pos.z == view_z.0 => {
                 tf.translation.x = d.pos.x as f32 * TILE;
                 tf.translation.y = d.pos.y as f32 * TILE;
+                tf.scale = Vec3::splat(if d.beast { 1.6 } else { 1.0 });
                 match &tileset.0 {
                     Some(ts) => {
                         // Full-color figures; the glyph carries the faction.
@@ -1557,10 +1558,14 @@ fn sync_agent_sprites(
                                 Faction::Hostile => "raider",
                             });
                         }
-                        // Traders wear the road's gold dust.
-                        sprite.color = match d.faction {
-                            Faction::Visitor => Color::srgb(1.0, 0.85, 0.55),
-                            _ => Color::WHITE,
+                        // Traders wear the road's gold dust; beasts loom dark.
+                        sprite.color = if d.beast {
+                            Color::srgb(0.5, 0.1, 0.15)
+                        } else {
+                            match d.faction {
+                                Faction::Visitor => Color::srgb(1.0, 0.85, 0.55),
+                                _ => Color::WHITE,
+                            }
                         };
                     }
                     None => {
@@ -1987,7 +1992,7 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {}   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)\n\
+             harvested {}   cooked {}   brewed {}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
              d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull v:still k:kitchen m:crafts j:loom b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
             view_z.0,
@@ -2017,6 +2022,7 @@ fn update_hud(
             sim.0.alive_hostiles(),
             sim.0.stats.raiders_slain,
             sim.0.stats.drownings,
+            sim.0.stats.beasts_slain,
             mode_txt,
             log_tail,
             dwarf_panel,

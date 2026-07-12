@@ -357,6 +357,19 @@ fn default_body() -> Vec<BodyPart> {
     ]
 }
 
+/// A monstrous body: many times the toughness of a mortal frame.
+fn beast_body() -> Vec<BodyPart> {
+    let part = |kind: PartKind, hp: i16| BodyPart { kind, hp, max_hp: hp, bleeding: 0 };
+    vec![
+        part(PartKind::Head, 90),
+        part(PartKind::Torso, 180),
+        part(PartKind::LeftArm, 110),
+        part(PartKind::RightArm, 110),
+        part(PartKind::LeftLeg, 110),
+        part(PartKind::RightLeg, 110),
+    ]
+}
+
 // ------------------------------------------------------------- personality
 
 /// A dwarf's disposition, rolled at creation. All facets are 0-100.
@@ -576,6 +589,8 @@ pub struct Dwarf {
     /// When they died, and whether their unquiet spirit walks.
     pub died_at: Option<u64>,
     pub ghost: bool,
+    /// A forgotten beast from the deep — vastly tougher, hits far harder.
+    pub beast: bool,
 }
 
 impl Dwarf {
@@ -625,6 +640,7 @@ pub struct SimStats {
     pub deaths: u32,
     pub raiders_arrived: u32,
     pub raiders_slain: u32,
+    pub beasts_slain: u32,
     pub drownings: u32,
     pub caravans_arrived: u32,
     pub trades_completed: u32,
@@ -1714,6 +1730,48 @@ impl Sim {
                         self.push_thought(i, ThoughtKind::ScaredBySiege);
                     }
                 }
+                // Dig greedily and you may wake something older than any
+                // grudge. Rare, and never more than one at a time.
+                let deep = self.stats.boulders_mined > 40;
+                let a_beast_walks = self.dwarves.iter().any(|d| d.alive && d.beast);
+                if deep && !a_beast_walks && self.rng.gen_ratio(1, 4) {
+                    self.emerge_beast(raws);
+                }
+            }
+        }
+    }
+
+    /// A forgotten beast surfaces at a deep, fort-reachable spot (a mined
+    /// tile far below), or the map edge if none is found.
+    fn emerge_beast(&mut self, raws: &Raws) {
+        let Some(anchor) = self.dwarves.iter().find(|d| d.alive && d.faction == Faction::Fort).map(|d| d.pos) else {
+            return;
+        };
+        let anchor_region = self.regions.id(anchor);
+        // Prefer the deepest reachable floor away from the citizens.
+        let mut spot: Option<Pos> = None;
+        let mut best_z = i32::MAX;
+        for z in 0..(self.map.depth as i32).min(anchor.z) {
+            for y in (0..self.map.height).step_by(3) {
+                for x in (0..self.map.width).step_by(3) {
+                    let p = Pos::new(x as i32, y as i32, z);
+                    if self.map.walkable(p)
+                        && self.regions.id(p) == anchor_region
+                        && p.manhattan(anchor) > 15
+                        && z < best_z
+                    {
+                        best_z = z;
+                        spot = Some(p);
+                    }
+                }
+            }
+        }
+        if let Some(p) = spot {
+            self.spawn_forgotten_beast(p, raws);
+            for i in 0..self.dwarves.len() {
+                if self.dwarves[i].alive && self.dwarves[i].faction == Faction::Fort {
+                    self.push_thought(i, ThoughtKind::ScaredBySiege);
+                }
             }
         }
     }
@@ -1724,6 +1782,22 @@ impl Sim {
         r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
         self.dwarves.push(r);
         self.stats.raiders_arrived += 1;
+    }
+
+    /// A forgotten beast rises from the deep — a hostile of monstrous
+    /// toughness with a generated name and form. Returns its dwarf index.
+    pub fn spawn_forgotten_beast(&mut self, pos: Pos, raws: &Raws) -> usize {
+        let (name, form) = names::beast_name(&mut self.rng);
+        let mut b = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
+        b.name = name.clone();
+        b.beast = true;
+        b.body = beast_body();
+        self.dwarves.push(b);
+        let idx = self.dwarves.len() - 1;
+        self.log_event(format!(
+            "A forgotten beast has risen from the depths! {name}, {form}, stalks the caverns."
+        ));
+        idx
     }
 
     /// Spawn a raiding party at the map edge. Public for tests/scenarios.
@@ -3747,7 +3821,12 @@ impl Sim {
             6 => PartKind::LeftLeg,
             _ => PartKind::RightLeg,
         };
-        let dmg = self.rng.gen_range(8..=20) as i16;
+        // A forgotten beast's blow lands with terrible force.
+        let dmg = if self.dwarves[attacker].beast {
+            self.rng.gen_range(25..=55) as i16
+        } else {
+            self.rng.gen_range(8..=20) as i16
+        };
         let bleed = self.rng.gen_range(1..=3) as u8;
 
         let att_name = self.dwarves[attacker].name.clone();
@@ -3770,8 +3849,12 @@ impl Sim {
             {
                 self.trader_lost_to_raiders = true;
             }
+            let was_beast = self.dwarves[defender].beast;
+            let was_hostile = self.dwarves[defender].faction == Faction::Hostile;
             self.kill_dwarf(defender);
-            if self.dwarves[defender].faction == Faction::Hostile {
+            if was_beast {
+                self.stats.beasts_slain += 1;
+            } else if was_hostile {
                 self.stats.raiders_slain += 1;
             }
         }
@@ -3815,24 +3898,31 @@ impl Sim {
         }
         let bled_out = d.blood <= 0.0;
 
-        if incinerated {
-            if self.dwarves[i].faction == Faction::Hostile {
-                self.stats.raiders_slain += 1;
+        let hostile = self.dwarves[i].faction == Faction::Hostile;
+        let beast = self.dwarves[i].beast;
+        let credit_kill = |stats: &mut SimStats| {
+            if beast {
+                stats.beasts_slain += 1;
+            } else if hostile {
+                stats.raiders_slain += 1;
             }
+        };
+        if incinerated {
+            credit_kill(&mut self.stats);
             self.log_event(format!("{name} is incinerated by magma!"));
             self.kill_dwarf(i);
         } else if drowned {
-            // HUD semantics: drownings counts raiders killed by floods.
-            if self.dwarves[i].faction == Faction::Hostile {
+            // HUD semantics: drownings counts hostiles killed by floods.
+            if hostile {
                 self.stats.drownings += 1;
+            }
+            if beast {
+                self.stats.beasts_slain += 1;
             }
             self.log_event(format!("{name} has drowned."));
             self.kill_dwarf(i);
         } else if bled_out {
-            // Bleed-out is still a kill for the scoreboard.
-            if self.dwarves[i].faction == Faction::Hostile {
-                self.stats.raiders_slain += 1;
-            }
+            credit_kill(&mut self.stats);
             self.log_event(format!("{name} has bled out."));
             self.kill_dwarf(i);
         }
@@ -4175,13 +4265,14 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         dehydrated_since: None,
         died_at: None,
         ghost: false,
+        beast: false,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 19;
+const SAVE_VERSION: u32 = 20;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
