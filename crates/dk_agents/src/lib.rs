@@ -64,6 +64,10 @@ pub const BREED_COOLDOWN: u64 = 15 * TICKS_PER_DAY;
 pub const BUTCHER_WORK: u16 = 80;
 /// A pasture won't overbreed past this many head.
 pub const HERD_CAP: usize = 12;
+/// Stress at which a dwarf seeks the tavern to unwind.
+pub const TAVERN_STRESS_AT: f32 = 40.0;
+/// Ticks spent relaxing at the tavern.
+pub const RELAX_TICKS: u16 = 300;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -402,6 +406,7 @@ pub enum ThoughtKind {
     SawPunishment,
     Haunted,
     LaidToRest,
+    RelaxedAtTavern,
 }
 
 impl ThoughtKind {
@@ -429,6 +434,7 @@ impl ThoughtKind {
             ThoughtKind::SawPunishment => -6.0,
             ThoughtKind::Haunted => -8.0,
             ThoughtKind::LaidToRest => 8.0,
+            ThoughtKind::RelaxedAtTavern => 6.0,
         }
     }
 
@@ -459,6 +465,7 @@ impl ThoughtKind {
             ThoughtKind::SawPunishment => "watched a comrade being punished",
             ThoughtKind::Haunted => "was tormented by a restless ghost",
             ThoughtKind::LaidToRest => "took comfort in a proper burial",
+            ThoughtKind::RelaxedAtTavern => "unwound at the tavern",
         }
     }
 }
@@ -511,6 +518,8 @@ pub enum Task {
     StrangeMood { shop: Pos, input: usize, path: Vec<Pos>, stage: FetchStage, progress: u16 },
     /// Walk to a marked animal and slaughter it for meat.
     Butcher { animal: usize, path: Vec<Pos>, progress: u16 },
+    /// Unwind at the tavern: walk there, drink, socialize, shed stress.
+    Relax { spot: Pos, path: Vec<Pos>, remaining: u16, drank: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,6 +588,7 @@ impl Dwarf {
             Task::Sulk { .. } => "sulking",
             Task::StrangeMood { .. } => "in a strange mood!",
             Task::Butcher { .. } => "butchering",
+            Task::Relax { .. } => "relaxing at the tavern",
         }
     }
 
@@ -712,6 +722,7 @@ pub struct Sim {
     pub items: Vec<Item>,
     pub stockpiles: Vec<Stockpile>,
     pub pastures: Vec<Rect>,
+    pub taverns: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
     pub farms: BTreeMap<Pos, FarmTile>,
@@ -813,6 +824,7 @@ impl Sim {
             items: Vec::new(),
             stockpiles: Vec::new(),
             pastures: Vec::new(),
+            taverns: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
             farms: BTreeMap::new(),
@@ -936,6 +948,22 @@ impl Sim {
             x1: a.x.max(b.x),
             y1: a.y.max(b.y),
         });
+    }
+
+    /// Designate a tavern where dwarves gather to drink and shed stress.
+    pub fn add_tavern(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.taverns.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn tavern_at(&self, p: Pos) -> bool {
+        self.taverns.iter().any(|t| t.contains(p))
     }
 
     /// Place an animal (embark stock, a caravan purchase, or a test).
@@ -1485,6 +1513,11 @@ impl Sim {
     /// Drop a boulder on the ground (scenarios/tests).
     pub fn debug_spawn_boulder(&mut self, material: u16, pos: Pos) {
         self.spawn_item(ItemKind::Boulder, material, pos);
+    }
+
+    /// Drop a mug of drink on the ground (scenarios/tests).
+    pub fn debug_spawn_drink(&mut self, pos: Pos) {
+        self.spawn_item(ItemKind::Drink, 0, pos);
     }
 
     /// A short life story assembled from everything the sim knows about a
@@ -2520,6 +2553,26 @@ impl Sim {
                 }
             }
         }
+        // The weary of heart seek the tavern before returning to labor.
+        if self.dwarves[i].stress >= TAVERN_STRESS_AT && !self.taverns.is_empty() {
+            if let Some(spot) = self
+                .taverns
+                .iter()
+                .flat_map(|t| t.cells())
+                .filter(|&c| self.regions.id(c) == my_region && self.map.walkable(c))
+                .min_by_key(|&c| c.manhattan(dwarf_pos))
+            {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::Relax {
+                        spot,
+                        path: p,
+                        remaining: RELAX_TICKS,
+                        drank: false,
+                    };
+                    return None;
+                }
+            }
+        }
 
         // --- Work candidates, nearest wins (insertion order breaks ties).
         enum Cand {
@@ -3267,6 +3320,66 @@ impl Sim {
                 ));
                 self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
+            Task::Relax { spot, mut path, remaining, drank } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Relax { spot, path, remaining, drank };
+                    } else {
+                        // Path broke; if we're in a tavern anyway, stay.
+                        if self.tavern_at(self.dwarves[i].pos) {
+                            self.dwarves[i].task =
+                                Task::Relax { spot, path: Vec::new(), remaining, drank };
+                        } else {
+                            self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+                        }
+                    }
+                    return;
+                }
+                // At the tavern: have a drink if one's to hand, unwind, chat.
+                let here = self.dwarves[i].pos;
+                let mut drank = drank;
+                if !drank {
+                    let drink = self.items.iter().position(|it| {
+                        it.kind == ItemKind::Drink
+                            && self.item_takeable(it)
+                            && self.tavern_at(it.pos)
+                    });
+                    if let Some(idx) = drink {
+                        self.items[idx].consumed = true;
+                        self.dwarves[i].thirst = 0.0;
+                        drank = true;
+                    }
+                }
+                // Socialize with anyone else unwinding nearby.
+                if remaining % 100 == 0 {
+                    let companions: Vec<usize> = self
+                        .dwarves
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, d)| {
+                            *j != i
+                                && d.alive
+                                && d.faction == Faction::Fort
+                                && matches!(d.task, Task::Relax { .. })
+                                && d.pos.z == here.z
+                                && d.pos.manhattan(here) <= 3
+                        })
+                        .map(|(j, _)| j)
+                        .collect();
+                    for j in companions {
+                        *self.dwarves[i].relationships.entry(j).or_insert(0) += 2;
+                    }
+                }
+                // Unwinding steadily sheds stress.
+                self.dwarves[i].stress = (self.dwarves[i].stress - 0.1).max(0.0);
+                if remaining == 0 {
+                    self.push_thought(i, ThoughtKind::RelaxedAtTavern);
+                    self.dwarves[i].task = Task::Idle { wander_cd: 10 };
+                } else {
+                    self.dwarves[i].task =
+                        Task::Relax { spot, path, remaining: remaining - 1, drank };
+                }
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -3865,7 +3978,8 @@ impl Sim {
             | Task::Sleep { .. }
             | Task::Fight { .. }
             | Task::Tantrum { .. }
-            | Task::Sulk { .. } => {}
+            | Task::Sulk { .. }
+            | Task::Relax { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -3917,7 +4031,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 16;
+const SAVE_VERSION: u32 = 17;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
