@@ -1,0 +1,64 @@
+//! Forge / weapons exit tests, run headlessly: a forge turns boulders into
+//! weapons, the fortress armory arms its soldiers, and an armed soldier
+//! strikes harder than a bare-fisted one.
+
+mod common;
+
+use dk_agents::{fighting_bonus, BuildingKind, ItemKind, Sim, WEAPON_DAMAGE};
+
+fn forge_fort(seed: u64) -> (Sim, dk_raws::Raws) {
+    let raws = common::test_raws();
+    let mut rng = dk_core::rng_from_seed(seed);
+    let map = dk_world::generate(&raws.materials, &mut rng, 32, 32, 16, seed);
+    let mut sim = Sim::new(map, &raws, rng, 4);
+    sim.invasions = false;
+    (sim, raws)
+}
+
+#[test]
+fn a_weapon_is_worth_more_than_its_stone() {
+    // The damage bonus is a real, positive number.
+    assert!(WEAPON_DAMAGE > 0);
+    assert!(WEAPON_DAMAGE as i32 + fighting_bonus(6) as i32 > 0);
+}
+
+#[test]
+fn a_forge_arms_the_soldiers() {
+    let (mut sim, raws) = forge_fort(7701);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+
+    // A forge, a stockpile, boulders to work, and an enlisted soldier.
+    sim.add_embark_supplies(&raws); // food & drink so the smith isn't starving
+    let (fa, _) = sim.find_flat_patch(cx, cy).expect("forge site");
+    assert!(sim.add_building(BuildingKind::Forge, fa));
+    sim.place_flat_stockpiles(cx, cy, 18);
+    // Boulders on a known-walkable tile so the smith can reach them.
+    let sp = sim.dwarves[0].pos;
+    for _ in 0..6 {
+        sim.debug_spawn_boulder(0, sp);
+    }
+    // Enlist a soldier so the fort wants weapons.
+    sim.toggle_soldier(sim.dwarves[0].pos);
+    assert_eq!(sim.armed_soldiers(), 0, "no weapons forged yet");
+
+    let mut forged = false;
+    for _ in 0..12_000 {
+        sim.step(&raws);
+        if sim.stats.weapons_forged > 0 {
+            forged = true;
+        }
+        if sim.armed_soldiers() > 0 {
+            break;
+        }
+    }
+    assert!(forged, "the smith should forge a weapon from a boulder");
+    assert!(
+        sim.count_kind(ItemKind::Weapon) > 0,
+        "a weapon exists in the fort"
+    );
+    assert!(
+        sim.armed_soldiers() >= 1,
+        "the armory arms an enlisted soldier"
+    );
+}

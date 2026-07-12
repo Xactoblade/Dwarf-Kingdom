@@ -20,7 +20,7 @@ TilesetDef(
         "block": 6, "boulder": 7, "seed": 8, "crop": 9, "dwarf": 10,
         "raider": 11, "meal": 12, "drink": 13, "artifact": 14, "still": 15,
         "kitchen": 16, "lever": 17, "tomb": 18, "cow": 19, "sheep": 20,
-        "dog": 21,
+        "dog": 21, "weapon": 22,
     },
     tinted: ["wall", "floor", "stairs", "ramp", "gate", "farm", "block",
              "boulder", "seed", "crop"],

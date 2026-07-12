@@ -481,6 +481,28 @@ def t_dog():
     outline(t)
     return t
 
+def t_weapon():
+    t = Tile(151)
+    STEEL = (198, 204, 214, 255)
+    STEEL_L = (232, 236, 244, 255)
+    STEEL_D = (140, 146, 158, 255)
+    GUARD = (150, 120, 60, 255)
+    GRIP = (96, 66, 40, 255)
+    # A sword laid diagonally: hilt at lower-left, point at upper-right.
+    for i in range(20):
+        x = 7 + i
+        y = 24 - i
+        t.set(x, y, STEEL)
+        t.set(x, y - 1, STEEL_L)   # bright edge
+        t.set(x + 1, y, STEEL_D)   # shaded edge
+    t.set(27, 4, STEEL_L); t.set(26, 5, STEEL)  # point
+    for j in range(-3, 4):
+        t.set(9 + j, 22 + j, GUARD)  # crossguard
+    t.fill(5, 24, 8, 28, GRIP)       # grip
+    t.set(4, 28, GUARD); t.set(5, 28, GUARD)  # pommel
+    outline(t)
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
@@ -488,6 +510,7 @@ ORDER = [
     ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
     ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
     ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep), ("dog", t_dog),
+    ("weapon", t_weapon),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder", "seed", "crop"]
 

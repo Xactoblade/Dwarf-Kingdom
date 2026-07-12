@@ -44,6 +44,8 @@ pub const BATCH: usize = 3;
 pub const ATTACK_COOLDOWN: u8 = 40;
 /// How close a raider must be before a war dog charges it.
 pub const WAR_DOG_ENGAGE: u32 = 18;
+/// Extra damage a soldier deals when wielding a forged weapon.
+pub const WEAPON_DAMAGE: i16 = 10;
 /// Ticks fully submerged before drowning kills.
 pub const BREATH_TICKS: f32 = 240.0;
 /// Region rebuilds are throttled to once per this many ticks.
@@ -131,6 +133,9 @@ pub enum ItemKind {
     RoughGem,
     /// A cut gem — a premium trade good. `stuff` = gem-type index.
     CutGem,
+    /// A forged weapon. `stuff` = material index. Arms a soldier for battle
+    /// and is a valuable trade good in its own right.
+    Weapon,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -211,6 +216,8 @@ pub enum BuildingKind {
     Loom,
     /// Cuts rough gems into brilliant, valuable cut gems.
     Jeweler,
+    /// Forges stone/ore boulders into weapons that arm the fort's soldiers.
+    Forge,
     /// A resting place. Burying a corpse here lays its ghost to rest.
     Tomb,
     /// Starts closed (tile becomes a Gate). Toggled by a linked lever.
@@ -227,6 +234,7 @@ impl BuildingKind {
             BuildingKind::Craftsdwarf => "Craftsdwarf's Workshop",
             BuildingKind::Loom => "Loom",
             BuildingKind::Jeweler => "Jeweler's Workshop",
+            BuildingKind::Forge => "Forge",
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
@@ -614,6 +622,8 @@ pub enum CraftKind {
     Weave,
     /// Cut a rough gem into a brilliant one.
     CutGem,
+    /// Forge a stone/ore boulder into a weapon.
+    ForgeWeapon,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -720,6 +730,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Stonecraft, .. } => "crafting",
             Task::Craft { kind: CraftKind::Weave, .. } => "weaving",
             Task::Craft { kind: CraftKind::CutGem, .. } => "cutting gems",
+            Task::Craft { kind: CraftKind::ForgeWeapon, .. } => "forging a weapon",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
@@ -759,6 +770,7 @@ pub struct SimStats {
     pub fish_caught: u32,
     pub gems_found: u32,
     pub gems_cut: u32,
+    pub weapons_forged: u32,
 }
 
 // -------------------------------------------------------------- adventure
@@ -845,6 +857,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::RoughGem => 12,
         // A cut gem is the fort's finest legitimate trade good.
         ItemKind::CutGem => 70,
+        // A forged weapon: worth several times its metal, and it arms a soldier.
+        ItemKind::Weapon => raws.materials.get(item.stuff).value * 10 + 20,
     }
 }
 
@@ -2380,13 +2394,15 @@ impl Sim {
                 continue;
             }
             self.animals[idx].age = self.animals[idx].age.saturating_add(1);
-            if self.animals[idx].move_cd > 0 {
-                self.animals[idx].move_cd -= 1;
+            // War dogs don't graze — they patrol and charge, handled entirely
+            // in tick_war_animals, which also owns their move_cd. Skip them
+            // here so the cooldown isn't decremented twice (they'd charge
+            // faster than WALK_COOLDOWN intends) and no wander RNG is drawn.
+            if self.animals[idx].war {
                 continue;
             }
-            // War dogs don't graze — they patrol and charge, handled in
-            // tick_war_animals (and must not draw the wander RNG here).
-            if self.animals[idx].war {
+            if self.animals[idx].move_cd > 0 {
+                self.animals[idx].move_cd -= 1;
                 continue;
             }
             if !self.rng.gen_ratio(1, 30) {
@@ -3202,12 +3218,14 @@ impl Sim {
         let mut pending_brews = 0usize;
         let mut pending_cooks = 0usize;
         let mut pending_crafts = 0usize;
+        let mut pending_weapons = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
                     Task::Craft { kind: CraftKind::Brew, .. } => pending_brews += 1,
                     Task::Craft { kind: CraftKind::Cook, .. } => pending_cooks += 1,
                     Task::Craft { kind: CraftKind::Stonecraft, .. } => pending_crafts += 1,
+                    Task::Craft { kind: CraftKind::ForgeWeapon, .. } => pending_weapons += 1,
                     _ => {}
                 }
             }
@@ -3216,6 +3234,17 @@ impl Sim {
             .buildings
             .iter()
             .any(|b| b.kind == BuildingKind::Craftsdwarf);
+        let has_forge = self.buildings.iter().any(|b| b.kind == BuildingKind::Forge);
+        let soldiers = self
+            .dwarves
+            .iter()
+            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+            .count();
+        let weapons_on_hand = self
+            .items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Weapon)
+            .count();
         for i in 0..self.dwarves.len() {
             if self.player == Some(i) || self.dwarves[i].follower {
                 // The player and their sworn companions follow no job board —
@@ -3236,10 +3265,16 @@ impl Sim {
                 let want_crafts = has_craftsdwarf
                     && boulders > 4 + pending_crafts
                     && crafts + pending_crafts < 20;
-                match self.assign_one(i, raws, want_drinks, want_meals, want_crafts) {
+                // Arm the soldiers: forge weapons until every enlistee has one,
+                // spending only surplus stone.
+                let want_weapons = has_forge
+                    && boulders > 4 + pending_crafts + pending_weapons
+                    && weapons_on_hand + pending_weapons < soldiers;
+                match self.assign_one(i, raws, want_drinks, want_meals, want_crafts, want_weapons) {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
                     Some(CraftKind::Stonecraft) => pending_crafts += 1,
+                    Some(CraftKind::ForgeWeapon) => pending_weapons += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -3253,6 +3288,7 @@ impl Sim {
         want_drinks: bool,
         want_meals: bool,
         want_crafts: bool,
+        want_weapons: bool,
     ) -> Option<CraftKind> {
         let dwarf_pos = self.dwarves[i].pos;
         let my_region = self.regions.id(dwarf_pos);
@@ -3407,6 +3443,13 @@ impl Sim {
         if let Some((shop, input)) = self.craft_gem_pair(dwarf_pos, my_region) {
             let d = self.items[input].pos.manhattan(dwarf_pos);
             consider(d, Cand::Craft { shop, input, kind: CraftKind::CutGem }, &mut best);
+        }
+        // Weaponsmithing: forge a boulder into a weapon to arm the soldiers.
+        if want_weapons {
+            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeWeapon }, &mut best);
+            }
         }
         // Fishing: when the larder runs low, cast a line from a fishery bank.
         if want_meals && !self.fisheries.is_empty() {
@@ -3684,6 +3727,67 @@ impl Sim {
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(i, _)| i)?;
         Some((shop.pos, input))
+    }
+
+    /// Nearest (forge, boulder) pair for forging a weapon.
+    fn craft_forge_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Forge && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// How many soldiers the fort has enlisted, and how many forged weapons
+    /// are on hand — an armed soldier is one of the first `weapons` enlistees.
+    pub fn armed_soldiers(&self) -> usize {
+        let soldiers = self
+            .dwarves
+            .iter()
+            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+            .count();
+        let weapons = self
+            .items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Weapon)
+            .count();
+        soldiers.min(weapons)
+    }
+
+    /// Whether soldier `i` is drawing one of the fort's forged weapons: the
+    /// armory arms enlistees in index order, up to the number of weapons.
+    fn is_armed(&self, i: usize) -> bool {
+        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
+            return false;
+        }
+        let weapons = self
+            .items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Weapon)
+            .count();
+        if weapons == 0 {
+            return false;
+        }
+        // Rank among living soldiers by index; armed if within the weapon count.
+        let rank = self
+            .dwarves
+            .iter()
+            .take(i)
+            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+            .count();
+        rank < weapons
     }
 
     /// Reserve `item` and path toward it; returns false if unreachable.
@@ -4105,9 +4209,10 @@ impl Sim {
                         let skill = match kind {
                             CraftKind::Brew => Skill::Brewing,
                             CraftKind::Cook => Skill::Cooking,
-                            CraftKind::Stonecraft | CraftKind::Weave | CraftKind::CutGem => {
-                                Skill::Crafting
-                            }
+                            CraftKind::Stonecraft
+                            | CraftKind::Weave
+                            | CraftKind::CutGem
+                            | CraftKind::ForgeWeapon => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -4151,6 +4256,12 @@ impl Sim {
                                 // The gem's variety carries through the cut.
                                 self.stats.gems_cut += 1;
                                 self.spawn_item(ItemKind::CutGem, stuff, shop);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::ForgeWeapon => {
+                                // The boulder's material carries into the blade.
+                                self.stats.weapons_forged += 1;
+                                self.spawn_item(ItemKind::Weapon, stuff, shop);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -4650,8 +4761,11 @@ impl Sim {
         } else {
             self.rng.gen_range(8..=20) as i16
         };
-        // A trained fighter puts more weight behind the blow.
-        let dmg = base + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting));
+        // A trained fighter puts more weight behind the blow; a forged weapon
+        // in hand makes it far deadlier than bare fists.
+        let dmg = base
+            + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting))
+            + if self.is_armed(attacker) { WEAPON_DAMAGE } else { 0 };
         let bleed = self.rng.gen_range(1..=3) as u8;
         // Drawing blood teaches the trade: every landed blow hones prowess.
         self.add_xp(attacker, Skill::Fighting, 6);
@@ -5128,7 +5242,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 30;
+const SAVE_VERSION: u32 = 31;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -5196,7 +5310,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
     // plant-based. Caravan wagon goods are items too and must be remapped.
     let remap_item = |item: &mut Item| -> Result<()> {
         item.stuff = match item.kind {
-            ItemKind::Boulder | ItemKind::Artifact | ItemKind::Craft => {
+            ItemKind::Boulder | ItemKind::Artifact | ItemKind::Craft | ItemKind::Weapon => {
                 remap_one(&mat_remap, item.stuff, "material")?
             }
             // These carry no raws index (dwarf index, gem type, or nothing).
