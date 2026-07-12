@@ -923,6 +923,8 @@ pub struct Sim {
     pub quest_target: Option<usize>,
     /// Notable feats accomplished by the player.
     pub deeds: Vec<String>,
+    /// Named poetic works composed at the fort's taverns — its living culture.
+    pub poems: Vec<String>,
     /// Who attacks this fort and why — wired from world history at embark.
     pub siege_roster: Option<SiegeRoster>,
     /// Friendly civ that sends caravans — wired from world history at embark.
@@ -1017,6 +1019,7 @@ impl Sim {
             quest: None,
             quest_target: None,
             deeds: Vec::new(),
+            poems: Vec::new(),
             siege_roster: None,
             trade_partner: None,
             caravan: None,
@@ -2113,6 +2116,7 @@ impl Sim {
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_nobility();
             self.tick_weather();
+            self.tick_culture();
         }
         // The unquiet dead stir every other day.
         if self.clock.tick % (2 * TICKS_PER_DAY) == 0 && self.clock.tick > 0 {
@@ -5058,6 +5062,52 @@ impl Sim {
         }
     }
 
+    /// A daily flourish of culture: if the fort has a tavern and living folk,
+    /// a poet composes a named work. Deterministic (no RNG, no dwarf state
+    /// touched) so it never perturbs the simulation — pure fortress flavor.
+    fn tick_culture(&mut self) {
+        if self.taverns.is_empty() {
+            return;
+        }
+        let bards: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.alive && d.faction == Faction::Fort)
+            .map(|(i, _)| i)
+            .collect();
+        if bards.is_empty() {
+            return;
+        }
+        let day = self.clock.tick / TICKS_PER_DAY;
+        let poet = bards[(day as usize) % bards.len()];
+        let work = self.compose_poem(day, poet);
+        let name = self.dwarves[poet].name.clone();
+        self.log_event(format!("{name} composes {work} at the tavern."));
+        self.poems.push(work);
+        // Keep the anthology bounded so long games don't bloat the save.
+        if self.poems.len() > 100 {
+            self.poems.remove(0);
+        }
+    }
+
+    /// Compose a titled poetic work, spun deterministically from the day and
+    /// the poet, so a given fortress always sings the same songs.
+    fn compose_poem(&self, day: u64, poet: usize) -> String {
+        const FORMS: [&str; 5] = ["a poem", "a saga", "an ode", "a lament", "a ballad"];
+        const ADJS: [&str; 8] = [
+            "Silent", "Golden", "Bloodied", "Deep", "Endless", "Iron", "Frozen", "Forgotten",
+        ];
+        const NOUNS: [&str; 8] = [
+            "Depths", "Halls", "Axe", "Mountain", "Winter", "Hearth", "Dark", "Oath",
+        ];
+        let d = day as usize;
+        let form = FORMS[d % FORMS.len()];
+        let adj = ADJS[(d + poet) % ADJS.len()];
+        let noun = NOUNS[(d / 3 + poet * 2) % NOUNS.len()];
+        format!("{form}, \"The {adj} {noun}\"")
+    }
+
     /// Compose a scene for an engraving from the fortress's own history —
     /// its fallen, its foes, its triumphs — so its walls remember its story.
     fn compose_engraving(&mut self) -> String {
@@ -5315,7 +5365,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 32;
+const SAVE_VERSION: u32 = 33;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
