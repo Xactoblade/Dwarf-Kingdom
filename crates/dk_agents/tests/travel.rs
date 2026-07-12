@@ -4,7 +4,7 @@
 
 mod common;
 
-use dk_agents::{Faction, PlayerAction, SiegeLeader, SiegeRoster, Sim};
+use dk_agents::{Faction, ItemKind, ItemState, PlayerAction, SiegeLeader, SiegeRoster, Sim};
 use dk_history::World;
 
 fn adventure_sim(seed: u64) -> (Sim, dk_raws::Raws, String) {
@@ -73,6 +73,36 @@ fn the_hero_carries_their_life_into_a_new_land() {
         .find(|d| d.faction == Faction::Hostile && d.name == nemesis);
     assert!(follower.is_some(), "the quarry follows the hunt");
     assert!(sim.log.iter().any(|(_, m)| m.contains("followed you here")));
+}
+
+#[test]
+fn the_hero_carries_their_gear_into_a_new_land() {
+    let (mut sim, raws, _) = adventure_sim(2203);
+    let hero = sim.begin_adventure(&raws).unwrap();
+    let hero_pos = sim.dwarves[hero].pos;
+
+    // Put a boulder in the hero's hands, and drop another on the ground.
+    sim.debug_spawn_boulder(0, hero_pos);
+    let held = sim.items.len() - 1;
+    sim.items[held].state = ItemState::Carried { by: hero };
+    sim.debug_spawn_boulder(0, hero_pos);
+    assert!(sim.items.iter().filter(|i| i.active()).count() >= 2);
+
+    sim.relocate_player(another_land(&raws, 2203), &raws);
+
+    // Exactly the carried boulder survives; the grounded one is left behind.
+    let live: Vec<_> = sim.items.iter().filter(|i| i.active()).collect();
+    assert_eq!(live.len(), 1, "only the held item journeys on");
+    let carried = live[0];
+    assert!(matches!(carried.kind, ItemKind::Boulder));
+    let p = sim.player.unwrap();
+    match carried.state {
+        ItemState::Carried { by } => {
+            assert_eq!(by, p, "the item still belongs to the hero (now index 0)");
+            assert_eq!(carried.pos, sim.dwarves[p].pos, "it rests where the hero stands");
+        }
+        _ => panic!("the surviving item should still be carried"),
+    }
 }
 
 #[test]

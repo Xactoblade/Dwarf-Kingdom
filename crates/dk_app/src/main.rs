@@ -655,7 +655,7 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     reg: Res<Registry>,
-    world: Res<WorldRes>,
+    mut world: ResMut<WorldRes>,
     mut screen: ResMut<ScreenRes>,
     mut legends: ResMut<LegendsState>,
     mut repeat: ResMut<MoveRepeat>,
@@ -826,6 +826,14 @@ fn handle_input(
             }
             dirty.0 = true;
         }
+        // 'c': recruit an adjacent townsfolk as a travelling companion.
+        if keys.just_pressed(KeyCode::KeyC) {
+            if let Some(sim_inner) = sim.0.as_mut() {
+                sim_inner.recruit_companion();
+                dirty.0 = true;
+            }
+            return;
+        }
         // 'g': journey to the next land — the nearest embarkable region in
         // whichever direction the cursor was last nudged (default: east).
         if keys.just_pressed(KeyCode::KeyG) {
@@ -869,6 +877,14 @@ fn handle_input(
             return;
         }
         if keys.just_pressed(KeyCode::Escape) {
+            // The saga ends: inscribe the hero's deeds into the world's
+            // annals so they live on in Legends alongside the ancient feats.
+            if let Some(s) = sim.0.as_ref() {
+                let year = world.0.years_simulated + s.clock.year() as u32;
+                for deed in &s.deeds {
+                    world.0.record_deed(year, deed.clone());
+                }
+            }
             // Back to the world map; the adventure ends.
             sim.0 = None;
             screen.0 = Screen::Embark;
@@ -1862,7 +1878,7 @@ fn update_hud(
             for mut text in &mut q {
                 text.0 = format!(
                     "Dwarf Kingdom :: Adventure\n{status}\n{quest}\n\
-                     arrows: move/attack   [ ]: stairs   .: wait   g: journey on   y: Legends   Esc: abandon   Q: quit{log_tail}"
+                     arrows: move/attack   [ ]: stairs   .: wait   c: recruit   g: journey on   y: Legends   Esc: abandon   Q: quit{log_tail}"
                 );
             }
             return;

@@ -602,6 +602,12 @@ impl World {
     }
 
     /// All legends lines, oldest first, for the viewer.
+    /// Inscribe a fresh deed — an adventurer's feat — into the annals, so it
+    /// takes its place in Legends alongside the deeds of ages past.
+    pub fn record_deed(&mut self, year: u32, text: String) {
+        self.events.push(HistoricalEvent { year, text });
+    }
+
     pub fn legends_lines(&self) -> Vec<String> {
         self.events
             .iter()
@@ -637,6 +643,23 @@ mod tests {
         let biomes_a: Vec<Biome> = a.overworld.regions.iter().map(|r| r.biome).collect();
         let biomes_b: Vec<Biome> = b.overworld.regions.iter().map(|r| r.biome).collect();
         assert_ne!(biomes_a, biomes_b, "terrain must differ between seeds");
+    }
+
+    #[test]
+    fn an_adventurers_deed_is_written_into_legends() {
+        let mut w = World::generate(11, 48, 48, 80);
+        let before = w.events.len();
+        w.record_deed(81, "Urist slew the beast Gorlak in single combat".to_string());
+        assert_eq!(w.events.len(), before + 1, "the deed is recorded as an event");
+        let lines = w.legends_lines();
+        assert!(
+            lines.iter().any(|l| l.contains("slew the beast Gorlak")),
+            "the fresh deed reads back in Legends alongside ancient history"
+        );
+        assert!(
+            lines.last().unwrap().contains("Year  81"),
+            "the deed lands at the year it was done"
+        );
     }
 
     #[test]

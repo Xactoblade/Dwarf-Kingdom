@@ -651,6 +651,9 @@ pub struct Dwarf {
     pub soldier: bool,
     /// Tick of this dwarf's last prayer, for the worship cadence.
     pub last_prayer: u64,
+    /// Adventure mode: a recruited companion who shadows the hero, fights at
+    /// their side, and journeys with them from land to land.
+    pub follower: bool,
 }
 
 impl Dwarf {
@@ -920,18 +923,8 @@ impl Sim {
         // A natural spring rises at the lowest point of the surface,
         // slowly forming a pond dwarves can channel water from.
         let mut water = WaterSim::default();
-        let mut lowest: Option<(usize, i32, i32)> = None;
-        for y in 0..map.height {
-            for x in 0..map.width {
-                if let Some(z) = map.walk_surface_z(x, y) {
-                    if lowest.is_none_or(|(lz, _, _)| z < lz) {
-                        lowest = Some((z, x as i32, y as i32));
-                    }
-                }
-            }
-        }
-        if let Some((z, x, y)) = lowest {
-            water.springs.insert(Pos::new(x, y, z as i32));
+        if let Some(spring) = natural_spring(&map) {
+            water.springs.insert(spring);
         }
 
         Sim {
@@ -1583,6 +1576,33 @@ impl Sim {
         Some(hero)
     }
 
+    /// Adventure mode: ask a nearby townsfolk to join the hunt. Recruits the
+    /// nearest living, un-recruited fort-folk standing beside the hero and
+    /// returns their name, or None if nobody is at hand.
+    pub fn recruit_companion(&mut self) -> Option<String> {
+        let hero = self.player?;
+        let hero_pos = self.dwarves[hero].pos;
+        let cand = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|&(j, d)| {
+                j != hero
+                    && d.alive
+                    && d.faction == Faction::Fort
+                    && !d.follower
+                    && d.pos.z == hero_pos.z
+                    && d.pos.x.abs_diff(hero_pos.x) + d.pos.y.abs_diff(hero_pos.y) <= 1
+            })
+            .map(|(j, _)| j)
+            .next()?;
+        self.dwarves[cand].follower = true;
+        self.dwarves[cand].task = Task::Idle { wander_cd: 0 };
+        let name = self.dwarves[cand].name.clone();
+        self.log_event(format!("{name} joins your band."));
+        Some(name)
+    }
+
     /// Adventure travel: carry the hero into a fresh land. Their body,
     /// needs, skills, deeds, and quest come along; the old region's people
     /// and things are left behind. If the quest is unfinished, the nemesis
@@ -1590,6 +1610,45 @@ impl Sim {
     pub fn relocate_player(&mut self, new_map: Map, raws: &Raws) {
         let Some(hero) = self.player else { return };
         let mut wanderer = self.dwarves[hero].clone();
+        // Companions journey on with the hero; nobody else does.
+        let mut companions: Vec<Dwarf> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|&(j, d)| j != hero && d.alive && d.follower)
+            .map(|(_, d)| d.clone())
+            .collect();
+        // Old dwarf index -> new index for everyone who travels: the hero
+        // becomes 0, the companions follow in order. Used to keep carried
+        // gear tracking its owner across the journey.
+        let comp_old: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|&(j, d)| j != hero && d.alive && d.follower)
+            .map(|(j, _)| j)
+            .collect();
+        let mut remap: BTreeMap<usize, usize> = BTreeMap::new();
+        remap.insert(hero, 0);
+        for (k, &oj) in comp_old.iter().enumerate() {
+            remap.insert(oj, k + 1);
+        }
+        // Carry the travellers' held items with them; everything left on the
+        // ground or stored in the old land stays behind.
+        let mut carried: Vec<Item> = self
+            .items
+            .iter()
+            .filter(|it| it.active())
+            .filter_map(|it| match it.state {
+                ItemState::Carried { by } => remap.get(&by).map(|&nb| {
+                    let mut c = it.clone();
+                    c.state = ItemState::Carried { by: nb };
+                    c.reserved_by = None;
+                    c
+                }),
+                _ => None,
+            })
+            .collect();
 
         // A clean land: replace the map and clear everything of the old one.
         self.map = new_map;
@@ -1605,6 +1664,9 @@ impl Sim {
         self.designations.clear();
         self.caravan = None;
         self.water = WaterSim::default();
+        if let Some(spring) = natural_spring(&self.map) {
+            self.water.springs.insert(spring);
+        }
         self.magma = FluidSim::magma();
         self.rebuild_caches();
 
@@ -1628,6 +1690,44 @@ impl Sim {
         self.dwarves = vec![wanderer];
         self.player = Some(0);
         self.quest_target = None;
+
+        // Set the companions down on walkable ground beside the hero,
+        // fanning outward so they don't all stack on one tile.
+        let occupied = |dwarves: &[Dwarf], p: Pos| dwarves.iter().any(|d| d.alive && d.pos == p);
+        for mut comp in companions.drain(..) {
+            let spot = 'find: {
+                for r in 1..6i32 {
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            let (x, y) = (entry.x + dx, entry.y + dy);
+                            if x < 0 || y < 0 {
+                                continue;
+                            }
+                            if let Some(z) = self.map.walk_surface_z(x as usize, y as usize) {
+                                let p = Pos::new(x, y, z as i32);
+                                if !occupied(&self.dwarves, p) {
+                                    break 'find p;
+                                }
+                            }
+                        }
+                    }
+                }
+                entry
+            };
+            comp.pos = spot;
+            comp.task = Task::Idle { wander_cd: 0 };
+            self.dwarves.push(comp);
+        }
+        // The travellers' gear comes to rest wherever its owner now stands.
+        for mut it in carried.drain(..) {
+            if let ItemState::Carried { by } = it.state {
+                if let Some(d) = self.dwarves.get(by) {
+                    it.pos = d.pos;
+                }
+            }
+            self.items.push(it);
+        }
+
         let name = self.dwarves[0].name.clone();
         self.log_event(format!("{name} travels into a new land."));
 
@@ -1875,6 +1975,10 @@ impl Sim {
             if self.player == Some(i) {
                 // The player acts only on command; their body still lives.
                 self.tick_needs(i);
+                continue;
+            }
+            if self.dwarves[i].follower && self.player.is_some() {
+                self.follow_hero(i);
                 continue;
             }
             match self.dwarves[i].faction {
@@ -4108,6 +4212,61 @@ impl Sim {
 
     /// Raider AI: chase the nearest fort creature; swing when adjacent;
     /// approach greedily when no path exists (e.g. walls or moats).
+    /// A recruited companion in adventure mode: cut down any adjacent
+    /// enemy, otherwise shadow the hero, keeping a step or two behind.
+    fn follow_hero(&mut self, i: usize) {
+        self.tick_vitals(i);
+        if !self.dwarves[i].alive {
+            return;
+        }
+        // Strike first if an enemy is in reach.
+        if let Some(enemy) = self.adjacent_enemy(i) {
+            self.melee(i, enemy);
+            return;
+        }
+        let Some(hero) = self.player else {
+            self.dwarves[i].task = Task::Idle { wander_cd: 50 };
+            return;
+        };
+        let my_pos = self.dwarves[i].pos;
+        let hero_pos = self.dwarves[hero].pos;
+        // Close ranks, but don't jostle the hero when already at their heel.
+        if my_pos.manhattan(hero_pos) <= 2 {
+            self.dwarves[i].task = Task::Idle { wander_cd: 0 };
+            if self.dwarves[i].move_cd > 0 {
+                self.dwarves[i].move_cd -= 1;
+            }
+            return;
+        }
+        let (mut path, mut repath_cd) = match self.dwarves[i].task.clone() {
+            Task::Fight { target, path, repath_cd } if target == hero => (path, repath_cd),
+            _ => (Vec::new(), 0),
+        };
+        if repath_cd == 0 && path.is_empty() {
+            path = path::astar(&self.map, my_pos, hero_pos, 20_000).unwrap_or_default();
+            repath_cd = 30; // repath often — the hero moves each turn
+        }
+        repath_cd = repath_cd.saturating_sub(1);
+        if !path.is_empty() {
+            if !self.step_along(i, &mut path) {
+                path.clear();
+            }
+        } else if self.dwarves[i].move_cd == 0 {
+            // No route: press greedily toward the hero.
+            let mut opts = Vec::with_capacity(8);
+            path::neighbors(&self.map, my_pos, &mut opts);
+            if let Some(&next) = opts.iter().min_by_key(|q| q.manhattan(hero_pos)) {
+                if next.manhattan(hero_pos) < my_pos.manhattan(hero_pos) {
+                    self.dwarves[i].pos = next;
+                    self.dwarves[i].move_cd = WALK_COOLDOWN;
+                }
+            }
+        } else {
+            self.dwarves[i].move_cd -= 1;
+        }
+        self.dwarves[i].task = Task::Fight { target: hero, path, repath_cd };
+    }
+
     fn update_hostile(&mut self, i: usize) {
         self.tick_vitals(i);
         if !self.dwarves[i].alive {
@@ -4628,6 +4787,23 @@ impl Sim {
     }
 }
 
+/// The lowest walkable surface tile of a map, where a natural spring rises.
+/// Deterministic in the map, so every entry into a region — embark or
+/// adventure travel — gives it the same spring.
+fn natural_spring(map: &Map) -> Option<Pos> {
+    let mut lowest: Option<(usize, i32, i32)> = None;
+    for y in 0..map.height {
+        for x in 0..map.width {
+            if let Some(z) = map.walk_surface_z(x, y) {
+                if lowest.is_none_or(|(lz, _, _)| z < lz) {
+                    lowest = Some((z, x as i32, y as i32));
+                }
+            }
+        }
+    }
+    lowest.map(|(z, x, y)| Pos::new(x, y, z as i32))
+}
+
 fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> Dwarf {
     Dwarf {
         name: names::dwarf_name(rng),
@@ -4660,13 +4836,14 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         beast: false,
         soldier: false,
         last_prayer: 0,
+        follower: false,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 26;
+const SAVE_VERSION: u32 = 27;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
