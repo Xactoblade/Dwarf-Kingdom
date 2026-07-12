@@ -84,6 +84,8 @@ pub const FISH_WORK: u16 = 220;
 pub const PRAYER_INTERVAL: u64 = 6 * TICKS_PER_DAY;
 /// Ticks spent in prayer.
 pub const PRAY_TICKS: u16 = 200;
+/// Ticks a wounded dwarf lingers in the hospital before checking out.
+pub const REST_TICKS: u16 = 500;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -680,6 +682,8 @@ pub enum Task {
     Fish { spot: Pos, path: Vec<Pos>, progress: u16 },
     /// Worship at the temple: walk there and pray a while for solace.
     Pray { spot: Pos, path: Vec<Pos>, remaining: u16 },
+    /// Rest in a hospital until wounds mend.
+    Recover { spot: Pos, path: Vec<Pos>, remaining: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -766,6 +770,7 @@ impl Dwarf {
             Task::Relax { .. } => "relaxing at the tavern",
             Task::Fish { .. } => "fishing",
             Task::Pray { .. } => "praying at the temple",
+            Task::Recover { .. } => "resting in the hospital",
         }
     }
 
@@ -919,6 +924,8 @@ pub struct Sim {
     pub pastures: Vec<Rect>,
     pub taverns: Vec<Rect>,
     pub temples: Vec<Rect>,
+    /// Hospital zones: wounded dwarves rest here and mend faster.
+    pub hospitals: Vec<Rect>,
     pub fisheries: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
@@ -1032,6 +1039,7 @@ impl Sim {
             pastures: Vec::new(),
             taverns: Vec::new(),
             temples: Vec::new(),
+            hospitals: Vec::new(),
             fisheries: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
@@ -1224,6 +1232,22 @@ impl Sim {
 
     pub fn temple_at(&self, p: Pos) -> bool {
         self.temples.iter().any(|t| t.contains(p))
+    }
+
+    /// Designate a hospital: the wounded rest here and mend far faster.
+    pub fn add_hospital(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.hospitals.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn hospital_at(&self, p: Pos) -> bool {
+        self.hospitals.iter().any(|h| h.contains(p))
     }
 
     /// Designate a fishery over water (dwarves fish from its banks).
@@ -3465,6 +3489,26 @@ impl Sim {
                 }
             }
         }
+        // The wounded seek the hospital to mend (bleeding, or a part below
+        // half health — not every scratch).
+        let hurt = self.dwarves[i]
+            .body
+            .iter()
+            .any(|p| p.bleeding > 0 || p.hp * 2 < p.max_hp);
+        if hurt && !self.hospitals.is_empty() {
+            if let Some(spot) = self
+                .hospitals
+                .iter()
+                .flat_map(|h| h.cells())
+                .filter(|&c| self.regions.id(c) == my_region && self.map.walkable(c))
+                .min_by_key(|&c| c.manhattan(dwarf_pos))
+            {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::Recover { spot, path: p, remaining: REST_TICKS };
+                    return None;
+                }
+            }
+        }
         // The devout seek the temple when their worship is overdue.
         let overdue = self.clock.tick.saturating_sub(self.dwarves[i].last_prayer)
             >= PRAYER_INTERVAL;
@@ -4781,6 +4825,26 @@ impl Sim {
                     self.dwarves[i].task = Task::Pray { spot, path, remaining: remaining - 1 };
                 }
             }
+            Task::Recover { spot, mut path, remaining } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Recover { spot, path, remaining };
+                    } else if self.hospital_at(self.dwarves[i].pos) {
+                        self.dwarves[i].task = Task::Recover { spot, path: Vec::new(), remaining };
+                    } else {
+                        self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+                    }
+                    return;
+                }
+                // Resting in the ward: healing is handled in tick_vitals, which
+                // mends faster for anyone standing in a hospital. Leave once
+                // whole again, or when the stay is up.
+                if remaining == 0 || !self.dwarves[i].is_wounded() {
+                    self.dwarves[i].task = Task::Idle { wander_cd: 10 };
+                } else {
+                    self.dwarves[i].task = Task::Recover { spot, path, remaining: remaining - 1 };
+                }
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -5123,6 +5187,8 @@ impl Sim {
         let tick = self.clock.tick;
         let pos = self.dwarves[i].pos;
         let submerged = self.map.water_at(pos) >= 5;
+        // A tended ward mends the fort's own far faster.
+        let in_hospital = self.dwarves[i].faction == Faction::Fort && self.hospital_at(pos);
         let name = self.dwarves[i].name.clone();
         let d = &mut self.dwarves[i];
 
@@ -5140,14 +5206,16 @@ impl Sim {
         } else {
             d.blood = (d.blood + 0.002).min(100.0);
         }
-        let resting = matches!(d.task, Task::Sleep { .. });
-        let decay_every = if resting { 100 } else { 400 };
+        let resting = matches!(d.task, Task::Sleep { .. } | Task::Recover { .. });
+        // The ward stanches bleeding and knits wounds several times faster.
+        let decay_every = if in_hospital { 40 } else if resting { 100 } else { 400 };
         if tick % decay_every == 0 {
             for p in &mut d.body {
                 p.bleeding = p.bleeding.saturating_sub(1);
             }
         }
-        if resting && tick % 200 == 0 {
+        let heal_every = if in_hospital { 60 } else { 200 };
+        if (resting || in_hospital) && tick % heal_every == 0 {
             for p in &mut d.body {
                 if p.hp < p.max_hp {
                     p.hp += 1;
@@ -5642,7 +5710,8 @@ impl Sim {
             | Task::Sulk { .. }
             | Task::Relax { .. }
             | Task::Fish { .. }
-            | Task::Pray { .. } => {}
+            | Task::Pray { .. }
+            | Task::Recover { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -5715,7 +5784,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 36;
+const SAVE_VERSION: u32 = 37;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
