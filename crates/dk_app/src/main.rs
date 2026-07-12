@@ -65,7 +65,8 @@ ZONES & LABOR\n\
   f ... farm     p ... stockpile    n ... pasture    o ... tavern    ' ... temple\n\
   z ... fishery      Shift+H ... hospital (the wounded mend here, faster)\n\
   u ... cull an animal      Shift+U ... war-train a dog\n\
-  i ... enlist/dismiss a soldier      c ... cancel designations\n\
+  i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
+  c ... cancel designations\n\
 \n\
 FORTRESS\n\
   r ... trade with a caravan     y ... Legends & your fort's poetry\n\
@@ -202,6 +203,7 @@ enum UiKind {
     Temple,
     Fishery,
     Hospital,
+    Barracks,
     Cancel,
 }
 
@@ -218,6 +220,7 @@ impl UiKind {
             UiKind::Temple => "TEMPLE",
             UiKind::Fishery => "FISHERY",
             UiKind::Hospital => "HOSPITAL",
+            UiKind::Barracks => "BARRACKS",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -1133,6 +1136,7 @@ fn handle_input(
                     UiKind::Temple => sim.0.add_temple(anchor, here),
                     UiKind::Fishery => sim.0.add_fishery(anchor, here),
                     UiKind::Hospital => sim.0.add_hospital(anchor, here),
+                    UiKind::Barracks => sim.0.add_barracks(anchor, here),
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -1231,7 +1235,19 @@ fn handle_input(
         dirty.0 = true;
     }
     // 'i': enlist/dismiss the fort dwarf under the cursor as a soldier.
-    if keys.just_pressed(KeyCode::KeyI) {
+    // Shift+I instead designates a barracks (two-press rectangle) where idle
+    // soldiers drill between battles.
+    if shift && keys.just_pressed(KeyCode::KeyI) {
+        let here = cursor.pos(view_z.0);
+        match mode.0 {
+            Some((UiKind::Barracks, anchor)) if anchor.z == here.z => {
+                sim.0.add_barracks(anchor, here);
+                mode.0 = None;
+            }
+            _ => mode.0 = Some((UiKind::Barracks, here)),
+        }
+        dirty.0 = true;
+    } else if keys.just_pressed(KeyCode::KeyI) {
         let here = cursor.pos(view_z.0);
         match sim.0.toggle_soldier(here) {
             Some(true) => info!("enlisted a soldier"),
@@ -1635,6 +1651,9 @@ fn tile_visual(
     }
     if sim.hospital_at(here) {
         rgb = mix(rgb, [0.9, 0.35, 0.35], 0.28);
+    }
+    if sim.barracks_at(here) {
+        rgb = mix(rgb, [0.55, 0.5, 0.4], 0.32);
     }
     if let Some((a, b)) = selection {
         if view_z == a.z
@@ -2372,7 +2391,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital u:cull U:war-dog i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

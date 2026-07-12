@@ -86,6 +86,8 @@ pub const PRAYER_INTERVAL: u64 = 6 * TICKS_PER_DAY;
 pub const PRAY_TICKS: u16 = 200;
 /// Ticks a wounded dwarf lingers in the hospital before checking out.
 pub const REST_TICKS: u16 = 500;
+/// Ticks a soldier drills at the barracks per session.
+pub const SPAR_TICKS: u16 = 300;
 
 const HUNGER_RATE: f32 = 0.004;
 const THIRST_RATE: f32 = 0.005;
@@ -684,6 +686,8 @@ pub enum Task {
     Pray { spot: Pos, path: Vec<Pos>, remaining: u16 },
     /// Rest in a hospital until wounds mend.
     Recover { spot: Pos, path: Vec<Pos>, remaining: u16 },
+    /// Drill at the barracks, honing the fighting skill.
+    Spar { spot: Pos, path: Vec<Pos>, remaining: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -771,6 +775,7 @@ impl Dwarf {
             Task::Fish { .. } => "fishing",
             Task::Pray { .. } => "praying at the temple",
             Task::Recover { .. } => "resting in the hospital",
+            Task::Spar { .. } => "drilling at the barracks",
         }
     }
 
@@ -926,6 +931,8 @@ pub struct Sim {
     pub temples: Vec<Rect>,
     /// Hospital zones: wounded dwarves rest here and mend faster.
     pub hospitals: Vec<Rect>,
+    /// Barracks zones: enlisted soldiers spar here to hone their fighting.
+    pub barracks: Vec<Rect>,
     pub fisheries: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
@@ -1040,6 +1047,7 @@ impl Sim {
             taverns: Vec::new(),
             temples: Vec::new(),
             hospitals: Vec::new(),
+            barracks: Vec::new(),
             fisheries: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
@@ -1248,6 +1256,22 @@ impl Sim {
 
     pub fn hospital_at(&self, p: Pos) -> bool {
         self.hospitals.iter().any(|h| h.contains(p))
+    }
+
+    /// Designate a barracks: enlisted soldiers drill here between battles.
+    pub fn add_barracks(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.barracks.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn barracks_at(&self, p: Pos) -> bool {
+        self.barracks.iter().any(|b| b.contains(p))
     }
 
     /// Designate a fishery over water (dwarves fish from its banks).
@@ -1860,6 +1884,7 @@ impl Sim {
         self.temples.clear();
         self.fisheries.clear();
         self.hospitals.clear();
+        self.barracks.clear();
         self.buildings.clear();
         self.farms.clear();
         self.designations.clear();
@@ -3510,6 +3535,25 @@ impl Sim {
                 }
             }
         }
+        // Between battles, an idle soldier drills at the barracks — but only
+        // when no enemy walks the fort (then they fight instead).
+        if self.dwarves[i].soldier
+            && !self.barracks.is_empty()
+            && self.alive_hostiles() == 0
+        {
+            if let Some(spot) = self
+                .barracks
+                .iter()
+                .flat_map(|b| b.cells())
+                .filter(|&c| self.regions.id(c) == my_region && self.map.walkable(c))
+                .min_by_key(|&c| c.manhattan(dwarf_pos))
+            {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::Spar { spot, path: p, remaining: SPAR_TICKS };
+                    return None;
+                }
+            }
+        }
         // The devout seek the temple when their worship is overdue.
         let overdue = self.clock.tick.saturating_sub(self.dwarves[i].last_prayer)
             >= PRAYER_INTERVAL;
@@ -4846,6 +4890,25 @@ impl Sim {
                     self.dwarves[i].task = Task::Recover { spot, path, remaining: remaining - 1 };
                 }
             }
+            Task::Spar { spot, mut path, remaining } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Spar { spot, path, remaining };
+                    } else if self.barracks_at(self.dwarves[i].pos) {
+                        self.dwarves[i].task = Task::Spar { spot, path: Vec::new(), remaining };
+                    } else {
+                        self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+                    }
+                    return;
+                }
+                // Drilling: every session hones the soldier's prowess.
+                if remaining == 0 {
+                    self.add_xp(i, Skill::Fighting, 20);
+                    self.dwarves[i].task = Task::Idle { wander_cd: 10 };
+                } else {
+                    self.dwarves[i].task = Task::Spar { spot, path, remaining: remaining - 1 };
+                }
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -5712,7 +5775,8 @@ impl Sim {
             | Task::Relax { .. }
             | Task::Fish { .. }
             | Task::Pray { .. }
-            | Task::Recover { .. } => {}
+            | Task::Recover { .. }
+            | Task::Spar { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -5785,7 +5849,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 37;
+const SAVE_VERSION: u32 = 38;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
