@@ -847,6 +847,9 @@ pub struct Sim {
     pub magma: FluidSim,
     /// Adventure mode: index of the player-controlled creature, if any.
     pub player: Option<usize>,
+    /// Adventure mode: the overworld region the hero currently stands in
+    /// (set by the app; used to drive region travel).
+    pub adv_region: Option<(usize, usize)>,
     /// Adventure quest: (target name, completed).
     pub quest: Option<(String, bool)>,
     /// Index of the spawned nemesis, so completion checks the right body.
@@ -951,6 +954,7 @@ impl Sim {
             water,
             magma,
             player: None,
+            adv_region: None,
             quest: None,
             quest_target: None,
             deeds: Vec::new(),
@@ -1577,6 +1581,79 @@ impl Sim {
             }
         }
         Some(hero)
+    }
+
+    /// Adventure travel: carry the hero into a fresh land. Their body,
+    /// needs, skills, deeds, and quest come along; the old region's people
+    /// and things are left behind. If the quest is unfinished, the nemesis
+    /// follows to this new land so the hunt continues.
+    pub fn relocate_player(&mut self, new_map: Map, raws: &Raws) {
+        let Some(hero) = self.player else { return };
+        let mut wanderer = self.dwarves[hero].clone();
+
+        // A clean land: replace the map and clear everything of the old one.
+        self.map = new_map;
+        self.items.clear();
+        self.animals.clear();
+        self.stockpiles.clear();
+        self.pastures.clear();
+        self.taverns.clear();
+        self.temples.clear();
+        self.fisheries.clear();
+        self.buildings.clear();
+        self.farms.clear();
+        self.designations.clear();
+        self.caravan = None;
+        self.water = WaterSim::default();
+        self.magma = FluidSim::magma();
+        self.rebuild_caches();
+
+        // Set the wanderer down at a walkable spot near the map's edge.
+        let entry = self
+            .map
+            .walk_surface_z(2, self.map.height / 2)
+            .map(|z| Pos::new(2, self.map.height as i32 / 2, z as i32))
+            .or_else(|| {
+                (0..self.map.height).find_map(|y| {
+                    (0..self.map.width).find_map(|x| {
+                        self.map
+                            .walk_surface_z(x, y)
+                            .map(|z| Pos::new(x as i32, y as i32, z as i32))
+                    })
+                })
+            });
+        let Some(entry) = entry else { return };
+        wanderer.pos = entry;
+        wanderer.task = Task::Idle { wander_cd: 0 };
+        self.dwarves = vec![wanderer];
+        self.player = Some(0);
+        self.quest_target = None;
+        let name = self.dwarves[0].name.clone();
+        self.log_event(format!("{name} travels into a new land."));
+
+        // The quarry follows the hunt to this new country.
+        if let Some((target_name, false)) = self.quest.clone() {
+            let hero_pos = self.dwarves[0].pos;
+            let mut spot = None;
+            'search: for y in (1..self.map.height - 1).rev() {
+                for x in (1..self.map.width - 1).rev() {
+                    if let Some(z) = self.map.walk_surface_z(x, y) {
+                        let p = Pos::new(x as i32, y as i32, z as i32);
+                        if self.regions.same_region(hero_pos, p) && p.manhattan(hero_pos) > 20 {
+                            spot = Some(p);
+                            break 'search;
+                        }
+                    }
+                }
+            }
+            if let Some(p) = spot {
+                self.spawn_raider_at(p, raws);
+                let idx = self.dwarves.len() - 1;
+                self.dwarves[idx].name = target_name.clone();
+                self.quest_target = Some(idx);
+                self.log_event(format!("{target_name} has followed you here."));
+            }
+        }
     }
 
     /// One player turn: act, then let the world advance a few ticks.
@@ -4589,7 +4666,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 25;
+const SAVE_VERSION: u32 = 26;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

@@ -269,6 +269,13 @@ fn screenshot_mode_on() -> bool {
 }
 
 /// Build the fortress sim for a chosen overworld region.
+/// The deterministic local map for an overworld region.
+fn region_map(raws: &Raws, region: (usize, usize)) -> dk_world::Map {
+    let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
+    let mut rng = dk_core::rng_from_seed(seed);
+    dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed)
+}
+
 fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Each region is its own deterministic local map.
     let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
@@ -759,6 +766,7 @@ fn handle_input(
             if world.0.overworld.get(region.0, region.1).biome.embarkable() {
                 let mut new_sim = embark(&world.0, &reg.0, region);
                 if new_sim.begin_adventure(&reg.0).is_some() {
+                    new_sim.adv_region = Some(region);
                     enter_fort(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
                     screen.0 = Screen::Adventure;
                 }
@@ -817,6 +825,41 @@ fn handle_input(
                 }
             }
             dirty.0 = true;
+        }
+        // 'g': journey to the next land — the nearest embarkable region in
+        // whichever direction the cursor was last nudged (default: east).
+        if keys.just_pressed(KeyCode::KeyG) {
+            if let Some(sim_inner) = sim.0.as_mut() {
+                if let Some((rx, ry)) = sim_inner.adv_region {
+                    // Try the four neighbors, preferring one that's land.
+                    let neighbors = [
+                        (rx + 1, ry),
+                        (rx.wrapping_sub(1), ry),
+                        (rx, ry + 1),
+                        (rx, ry.wrapping_sub(1)),
+                    ];
+                    let dest = neighbors.into_iter().find(|&(nx, ny)| {
+                        nx < OW && ny < OW && world.0.overworld.get(nx, ny).biome.embarkable()
+                    });
+                    if let Some(dest) = dest {
+                        let new_map = region_map(&reg.0, dest);
+                        sim_inner.relocate_player(new_map, &reg.0);
+                        sim_inner.adv_region = Some(dest);
+                        if let Some(hero) = sim_inner.player {
+                            let p = sim_inner.dwarves[hero].pos;
+                            view_z.0 = p.z;
+                            cursor.x = p.x;
+                            cursor.y = p.y;
+                            if let Ok(mut tf) = camera.single_mut() {
+                                tf.translation.x = p.x as f32 * TILE;
+                                tf.translation.y = p.y as f32 * TILE;
+                            }
+                        }
+                        dirty.0 = true;
+                    }
+                }
+            }
+            return;
         }
         if keys.just_pressed(KeyCode::KeyY) {
             legends.from = Screen::Adventure;
@@ -1819,7 +1862,7 @@ fn update_hud(
             for mut text in &mut q {
                 text.0 = format!(
                     "Dwarf Kingdom :: Adventure\n{status}\n{quest}\n\
-                     arrows: move/attack   [ ]: stairs   .: wait   y: Legends   Esc: abandon   Q: quit{log_tail}"
+                     arrows: move/attack   [ ]: stairs   .: wait   g: journey on   y: Legends   Esc: abandon   Q: quit{log_tail}"
                 );
             }
             return;
