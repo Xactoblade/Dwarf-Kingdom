@@ -71,6 +71,10 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
       fighter deadlier the more blood they draw; forged weapons hit harder
 - [x] **Animal training**: war dogs that charge raiders and guard the gates,
       trained by a handler and rendered as their own sprite
+- [x] **Weapon traps** (Shift+T): a static defense — hidden blades shred any
+      raider or beast that treads onto the trap
+- [x] **Item quality tiers**: a skilled crafter turns out finer, dearer goods
+      (up to a masterwork worth 3.5×), so skills matter to the economy
 - [x] The fortress can fall: when the last citizen dies it leaves an epitaph
 
 ### Adventure, culture, and the wider world
@@ -78,6 +82,8 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 - [x] Region travel ('g'): walk your hero from one land into the next, body,
       skills, deeds, gear, and pursuing nemesis all carried along
 - [x] Companions ('c'): recruit townsfolk who fight at your side and journey on
+- [x] **Spoils of war**: a slain raider drops their blade; take it up ('p') and
+      wield it to strike harder
 - [x] Deeds → Legends: an adventurer's feats are inscribed into world history
 - [x] Retire & reclaim fortresses (F8): a fort endures in the world and can be
       re-entered exactly as it was
