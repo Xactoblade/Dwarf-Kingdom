@@ -5,7 +5,7 @@
 
 mod common;
 
-use dk_agents::{Faction, Sim};
+use dk_agents::{Faction, Sim, Task, ASSIGN_INTERVAL};
 use dk_world::path::Pos;
 
 fn adventure_with_neighbor(seed: u64) -> (Sim, dk_raws::Raws, usize) {
@@ -78,6 +78,54 @@ fn a_companion_journeys_on_with_the_hero() {
     assert!(comp.alive);
     assert!(sim.map.walkable(comp.pos), "companion on solid ground");
     assert_ne!(comp.pos, sim.dwarves[0].pos, "not stacked on the hero");
+}
+
+#[test]
+fn a_companion_takes_no_fort_jobs() {
+    // A fort with real work to do: supplies to haul into a stockpile.
+    let raws = common::test_raws();
+    let mut rng = dk_core::rng_from_seed(3304);
+    let map = dk_world::generate(&raws.materials, &mut rng, 48, 48, 16, 3304);
+    let mut sim = Sim::new(map, &raws, rng, 4);
+    sim.invasions = false;
+    let (cx, cy) = (sim.map.width as i32 / 2, sim.map.height as i32 / 2);
+    sim.place_flat_stockpiles(cx, cy, 24);
+    sim.add_embark_supplies(&raws);
+
+    let hero = sim.begin_adventure(&raws).unwrap();
+    let hp = sim.dwarves[hero].pos;
+    // Scatter the other townsfolk, then stand exactly one at the hero's elbow.
+    let others: Vec<usize> = sim
+        .dwarves
+        .iter()
+        .enumerate()
+        .filter(|&(j, d)| j != hero && d.alive && d.faction == Faction::Fort)
+        .map(|(j, _)| j)
+        .collect();
+    for &j in &others {
+        sim.dwarves[j].pos = Pos::new(hp.x, hp.y + 10, hp.z);
+    }
+    let ally = others[0];
+    sim.dwarves[ally].pos = Pos::new(hp.x + 1, hp.y, hp.z);
+    sim.recruit_companion().expect("recruit the neighbour");
+
+    // Let the fort's job board churn many times over.
+    for _ in 0..(ASSIGN_INTERVAL as usize * 20) {
+        sim.step(&raws);
+    }
+
+    // The companion is never handed fort work: it holds no reservation and
+    // only rests or fights beside the hero.
+    assert!(
+        sim.items.iter().all(|it| it.reserved_by != Some(ally)),
+        "a companion must not reserve fort work (leaks the reservation forever)"
+    );
+    assert!(
+        matches!(sim.dwarves[ally].task, Task::Idle { .. } | Task::Fight { .. }),
+        "a companion only rests or fights; task was {:?}",
+        sim.dwarves[ally].task
+    );
+    assert!(sim.dwarves[ally].follower, "and remains a companion");
 }
 
 #[test]

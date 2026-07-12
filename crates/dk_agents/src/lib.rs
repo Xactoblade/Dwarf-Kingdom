@@ -850,6 +850,9 @@ pub struct Sim {
     pub magma: FluidSim,
     /// Adventure mode: index of the player-controlled creature, if any.
     pub player: Option<usize>,
+    /// The overworld region this fortress was founded on (set by the app at
+    /// embark). Used to retire the fort back to its own place in the world.
+    pub home_region: Option<(usize, usize)>,
     /// Adventure mode: the overworld region the hero currently stands in
     /// (set by the app; used to drive region travel).
     pub adv_region: Option<(usize, usize)>,
@@ -947,6 +950,7 @@ impl Sim {
             water,
             magma,
             player: None,
+            home_region: None,
             adv_region: None,
             quest: None,
             quest_target: None,
@@ -3007,8 +3011,11 @@ impl Sim {
             .iter()
             .any(|b| b.kind == BuildingKind::Craftsdwarf);
         for i in 0..self.dwarves.len() {
-            if self.player == Some(i) {
-                continue; // the player follows no job board
+            if self.player == Some(i) || self.dwarves[i].follower {
+                // The player and their sworn companions follow no job board —
+                // and handing a follower a fort job would leak its reservation
+                // (follow_hero overwrites the task without abandon_task).
+                continue;
             }
             let d = &self.dwarves[i];
             if d.alive && d.faction == Faction::Fort && d.is_idle() {
@@ -4843,7 +4850,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 27;
+const SAVE_VERSION: u32 = 28;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

@@ -246,6 +246,12 @@ fn save_path() -> PathBuf {
     PathBuf::from("saves/world.bin")
 }
 
+/// A retired fortress is kept in its own file, named for its region, so it
+/// endures in the world and can be reclaimed by returning to that spot.
+fn fort_path(region: (usize, usize)) -> PathBuf {
+    PathBuf::from(format!("saves/fort_{}_{}.bin", region.0, region.1))
+}
+
 /// The assets directory lives at the workspace root, not the app crate.
 fn assets_dir() -> String {
     let candidates = [
@@ -282,6 +288,7 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     let mut rng = dk_core::rng_from_seed(seed);
     let map = dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed);
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
+    sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     // Caravans come from the nearest friendly neighbors.
     sim.trade_partner = world
@@ -756,7 +763,24 @@ fn handle_input(
         if keys.just_pressed(KeyCode::Enter) {
             let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
             if world.0.overworld.get(region.0, region.1).biome.embarkable() {
-                let new_sim = embark(&world.0, &reg.0, region);
+                // A fortress retired to this region is reclaimed as it was;
+                // otherwise a new colony is founded here.
+                let reclaimed = fort_path(region).exists().then(|| {
+                    load_sim(&fort_path(region), &reg.0)
+                        .map_err(|e| error!("reclaim failed: {e:#}"))
+                        .ok()
+                        .filter(|s| {
+                            (s.map.width, s.map.height, s.map.depth) == (MAP_W, MAP_H, MAP_D)
+                        })
+                });
+                let new_sim = match reclaimed {
+                    Some(Some(mut loaded)) => {
+                        info!("reclaimed the retired fortress at {region:?}");
+                        loaded.home_region = Some(region);
+                        loaded
+                    }
+                    _ => embark(&world.0, &reg.0, region),
+                };
                 enter_fort(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
             }
         }
@@ -903,6 +927,31 @@ fn handle_input(
     }
 
     // ---- Playing.
+    // F8: retire the fortress. It is preserved in its own file, keyed to its
+    // region, so it endures in the world and can be reclaimed by embarking
+    // there again. Then return to the overworld.
+    if keys.just_pressed(KeyCode::F8) {
+        if let Some(s) = sim.0.as_ref() {
+            match s.home_region {
+                Some(region) => {
+                    match save_sim(s, &fort_path(region), &reg.0) {
+                        Ok(()) => info!("the fortress at {region:?} is retired to history"),
+                        Err(e) => error!("retire failed: {e:#}"),
+                    }
+                    sim.0 = None;
+                    screen.0 = Screen::Embark;
+                    if let Ok(mut tf) = camera.single_mut() {
+                        tf.translation.x = MAP_W as f32 * TILE * 0.5;
+                        tf.translation.y = MAP_H as f32 * TILE * 0.5;
+                        tf.scale = Vec3::ONE;
+                    }
+                    dirty.0 = true;
+                }
+                None => error!("this fortress has no home region; cannot retire"),
+            }
+        }
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyY) {
         legends.from = Screen::Playing;
         legends.scroll = 0;
@@ -1801,7 +1850,14 @@ fn update_hud(
                 .nearest_hostile_civ(rx, ry)
                 .map(|c| format!("nearest threat: {} of the {}", c.name, c.race.name()))
                 .unwrap_or_default();
-            let ok = if region.biome.embarkable() { "Enter: embark here" } else { "cannot embark on ocean" };
+            let reclaimable = region.biome.embarkable() && fort_path((rx, ry)).exists();
+            let ok = if !region.biome.embarkable() {
+                "cannot embark on ocean"
+            } else if reclaimable {
+                "Enter: reclaim the retired fortress here"
+            } else {
+                "Enter: embark here"
+            };
             let resume = if has_save.0 { "   F9: continue your saved fortress" } else { "" };
             for mut text in &mut q {
                 text.0 = format!(
@@ -2110,7 +2166,7 @@ fn update_hud(
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
              d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
-             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   Q:quit{}{}{}",
+             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
