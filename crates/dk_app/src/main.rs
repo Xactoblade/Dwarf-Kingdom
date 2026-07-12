@@ -64,6 +64,7 @@ DIG & BUILD (cursor = arrow keys or click)\n\
 ZONES & LABOR\n\
   f ... farm     p ... stockpile    n ... pasture    o ... tavern    ' ... temple\n\
   z ... fishery      Shift+H ... hospital (the wounded mend here, faster)\n\
+  Shift+Z ... burrow (safe room)     F2 ... sound/lift the alarm (civilians hide)\n\
   u ... cull an animal      Shift+U ... war-train a dog\n\
   i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
   c ... cancel designations\n\
@@ -204,6 +205,7 @@ enum UiKind {
     Fishery,
     Hospital,
     Barracks,
+    Burrow,
     Cancel,
 }
 
@@ -221,6 +223,7 @@ impl UiKind {
             UiKind::Fishery => "FISHERY",
             UiKind::Hospital => "HOSPITAL",
             UiKind::Barracks => "BARRACKS",
+            UiKind::Burrow => "BURROW",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -1137,6 +1140,7 @@ fn handle_input(
                     UiKind::Fishery => sim.0.add_fishery(anchor, here),
                     UiKind::Hospital => sim.0.add_hospital(anchor, here),
                     UiKind::Barracks => sim.0.add_barracks(anchor, here),
+                    UiKind::Burrow => sim.0.add_burrow(anchor, here),
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -1184,6 +1188,24 @@ fn handle_input(
             }
             _ => mode.0 = Some((UiKind::Hospital, here)),
         }
+        dirty.0 = true;
+    }
+    // Shift+Z: designate a burrow (safe room civilians flee to on the alarm).
+    if shift && keys.just_pressed(KeyCode::KeyZ) {
+        let here = cursor.pos(view_z.0);
+        match mode.0 {
+            Some((UiKind::Burrow, anchor)) if anchor.z == here.z => {
+                sim.0.add_burrow(anchor, here);
+                mode.0 = None;
+            }
+            _ => mode.0 = Some((UiKind::Burrow, here)),
+        }
+        dirty.0 = true;
+    }
+    // F2: sound or lift the civilian alarm.
+    if keys.just_pressed(KeyCode::F2) {
+        let on = sim.0.toggle_alarm();
+        info!("alarm {}", if on { "sounded" } else { "lifted" });
         dirty.0 = true;
     }
     // Shift+B: plan a constructed wall on the floor tile at the cursor.
@@ -1654,6 +1676,9 @@ fn tile_visual(
     }
     if sim.barracks_at(here) {
         rgb = mix(rgb, [0.55, 0.5, 0.4], 0.32);
+    }
+    if sim.burrow_at(here) {
+        rgb = mix(rgb, [0.4, 0.7, 0.55], 0.3);
     }
     if let Some((a, b)) = selection {
         if view_z == a.z
@@ -2372,6 +2397,7 @@ fn update_hud(
         .0
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
+    let alarm_txt = if sim.0.alarm { " [SOUNDED]" } else { "" };
     let log_tail = sim
         .0
         .log
@@ -2391,8 +2417,8 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
-             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
+             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
@@ -2427,6 +2453,7 @@ fn update_hud(
             sim.0.veterans(),
             sim.0.armed_soldiers(),
             sim.0.poems.len(),
+            alarm_txt,
             mode_txt,
             log_tail,
             dwarf_panel,

@@ -688,6 +688,8 @@ pub enum Task {
     Recover { spot: Pos, path: Vec<Pos>, remaining: u16 },
     /// Drill at the barracks, honing the fighting skill.
     Spar { spot: Pos, path: Vec<Pos>, remaining: u16 },
+    /// Shelter in a burrow while the alarm sounds.
+    Shelter { spot: Pos, path: Vec<Pos> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -776,6 +778,7 @@ impl Dwarf {
             Task::Pray { .. } => "praying at the temple",
             Task::Recover { .. } => "resting in the hospital",
             Task::Spar { .. } => "drilling at the barracks",
+            Task::Shelter { .. } => "sheltering from the raid",
         }
     }
 
@@ -933,6 +936,10 @@ pub struct Sim {
     pub hospitals: Vec<Rect>,
     /// Barracks zones: enlisted soldiers spar here to hone their fighting.
     pub barracks: Vec<Rect>,
+    /// Burrow zones: safe rooms civilians retreat to when the alarm sounds.
+    pub burrows: Vec<Rect>,
+    /// Whether the civilian alarm is sounded (retreat to the burrows).
+    pub alarm: bool,
     pub fisheries: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
@@ -1048,6 +1055,8 @@ impl Sim {
             temples: Vec::new(),
             hospitals: Vec::new(),
             barracks: Vec::new(),
+            burrows: Vec::new(),
+            alarm: false,
             fisheries: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
@@ -1272,6 +1281,33 @@ impl Sim {
 
     pub fn barracks_at(&self, p: Pos) -> bool {
         self.barracks.iter().any(|b| b.contains(p))
+    }
+
+    /// Designate a burrow: a safe room civilians flee to when the alarm sounds.
+    pub fn add_burrow(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.burrows.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn burrow_at(&self, p: Pos) -> bool {
+        self.burrows.iter().any(|b| b.contains(p))
+    }
+
+    /// Sound or lift the civilian alarm. Returns the new state.
+    pub fn toggle_alarm(&mut self) -> bool {
+        self.alarm = !self.alarm;
+        if self.alarm {
+            self.log_event("The alarm sounds — civilians take to the burrows!".to_string());
+        } else {
+            self.log_event("The alarm is lifted; the fort returns to work.".to_string());
+        }
+        self.alarm
     }
 
     /// Designate a fishery over water (dwarves fish from its banks).
@@ -1885,6 +1921,8 @@ impl Sim {
         self.fisheries.clear();
         self.hospitals.clear();
         self.barracks.clear();
+        self.burrows.clear();
+        self.alarm = false;
         self.buildings.clear();
         self.farms.clear();
         self.designations.clear();
@@ -4112,6 +4150,30 @@ impl Sim {
             return;
         }
 
+        // The alarm: civilians drop everything and flee to a burrow; when it
+        // lifts they return to work. Soldiers ignore it (they hold the line).
+        if self.alarm && !self.dwarves[i].soldier && !self.burrows.is_empty() {
+            if !matches!(self.dwarves[i].task, Task::Shelter { .. }) {
+                let here = self.dwarves[i].pos;
+                let region = self.regions.id(here);
+                if let Some(spot) = self
+                    .burrows
+                    .iter()
+                    .flat_map(|b| b.cells())
+                    .filter(|&c| self.regions.id(c) == region && self.map.walkable(c))
+                    .min_by_key(|&c| c.manhattan(here))
+                {
+                    if let Some(p) = path::astar(&self.map, here, spot, MAX_ASTAR_NODES) {
+                        self.abandon_task(i);
+                        self.dwarves[i].task = Task::Shelter { spot, path: p };
+                    }
+                }
+            }
+            // fall through to walk/hold the Shelter task
+        } else if !self.alarm && matches!(self.dwarves[i].task, Task::Shelter { .. }) {
+            self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+        }
+
         // Soldiers proactively hunt: march on the nearest reachable hostile
         // instead of standing at their post.
         if self.dwarves[i].soldier {
@@ -4908,6 +4970,21 @@ impl Sim {
                 } else {
                     self.dwarves[i].task = Task::Spar { spot, path, remaining: remaining - 1 };
                 }
+            }
+            Task::Shelter { spot, mut path } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Shelter { spot, path };
+                    } else if self.burrow_at(self.dwarves[i].pos) {
+                        self.dwarves[i].task = Task::Shelter { spot, path: Vec::new() };
+                    } else {
+                        self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+                    }
+                    return;
+                }
+                // Huddled safe in the burrow: hold until the alarm is lifted
+                // (update_dwarf releases us back to Idle then).
+                self.dwarves[i].task = Task::Shelter { spot, path };
             }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
@@ -5776,7 +5853,8 @@ impl Sim {
             | Task::Fish { .. }
             | Task::Pray { .. }
             | Task::Recover { .. }
-            | Task::Spar { .. } => {}
+            | Task::Spar { .. }
+            | Task::Shelter { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -5849,7 +5927,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 38;
+const SAVE_VERSION: u32 = 39;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
