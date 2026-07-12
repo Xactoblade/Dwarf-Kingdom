@@ -75,6 +75,8 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
       raider or beast that treads onto the trap
 - [x] **Item quality tiers**: a skilled crafter turns out finer, dearer goods
       (up to a masterwork worth 3.5×), so skills matter to the economy
+- [x] **Constructed walls** (Shift+B): masons haul stone and raise walls — seal
+      a breach, wall off a burrow, or funnel raiders — not just dig
 - [x] The fortress can fall: when the last citizen dies it leaves an epitaph
 
 ### Adventure, culture, and the wider world
