@@ -952,6 +952,10 @@ pub struct Sim {
     pub burrows: Vec<Rect>,
     /// Whether the civilian alarm is sounded (retreat to the burrows).
     pub alarm: bool,
+    /// Library zones: with one, the fort's scholars set down treatises.
+    pub library: Vec<Rect>,
+    /// Scholarly works the fort has written — its accumulated knowledge.
+    pub treatises: Vec<String>,
     pub fisheries: Vec<Rect>,
     pub animals: Vec<Animal>,
     pub buildings: Vec<Building>,
@@ -1069,6 +1073,8 @@ impl Sim {
             barracks: Vec::new(),
             burrows: Vec::new(),
             alarm: false,
+            library: Vec::new(),
+            treatises: Vec::new(),
             fisheries: Vec::new(),
             animals: Vec::new(),
             buildings: Vec::new(),
@@ -1309,6 +1315,22 @@ impl Sim {
 
     pub fn burrow_at(&self, p: Pos) -> bool {
         self.burrows.iter().any(|b| b.contains(p))
+    }
+
+    /// Designate a library: with one, the fort's scholars pen treatises.
+    pub fn add_library(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.library.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn library_at(&self, p: Pos) -> bool {
+        self.library.iter().any(|l| l.contains(p))
     }
 
     /// Sound or lift the civilian alarm. Returns the new state.
@@ -1935,6 +1957,8 @@ impl Sim {
         self.barracks.clear();
         self.burrows.clear();
         self.alarm = false;
+        self.library.clear();
+        self.treatises.clear();
         self.buildings.clear();
         self.farms.clear();
         self.designations.clear();
@@ -5664,11 +5688,11 @@ impl Sim {
         }
     }
 
-    /// A daily flourish of culture: if the fort has a tavern and living folk,
-    /// a poet composes a named work. Deterministic (no RNG, no dwarf state
-    /// touched) so it never perturbs the simulation — pure fortress flavor.
+    /// A daily flourish of culture: a poet composes a work at the tavern, and
+    /// a scholar sets down a treatise in the library. Deterministic (no RNG, no
+    /// dwarf state touched), so it never perturbs the simulation — pure flavor.
     fn tick_culture(&mut self) {
-        if self.taverns.is_empty() {
+        if self.taverns.is_empty() && self.library.is_empty() {
             return;
         }
         let bards: Vec<usize> = self
@@ -5682,15 +5706,60 @@ impl Sim {
             return;
         }
         let day = self.clock.tick / TICKS_PER_DAY;
-        let poet = bards[(day as usize) % bards.len()];
-        let work = self.compose_poem(day, poet);
-        let name = self.dwarves[poet].name.clone();
-        self.log_event(format!("{name} composes {work} at the tavern."));
-        self.poems.push(work);
-        // Keep the anthology bounded so long games don't bloat the save.
-        if self.poems.len() > 100 {
-            self.poems.remove(0);
+        // Poetry at the tavern.
+        if !self.taverns.is_empty() {
+            let poet = bards[(day as usize) % bards.len()];
+            let work = self.compose_poem(day, poet);
+            let name = self.dwarves[poet].name.clone();
+            self.log_event(format!("{name} composes {work} at the tavern."));
+            self.poems.push(work);
+            if self.poems.len() > 100 {
+                self.poems.remove(0);
+            }
         }
+        // Scholarship at the library.
+        if !self.library.is_empty() {
+            let scholar = bards[(day as usize + 1) % bards.len()];
+            let work = self.compose_treatise(day, scholar);
+            let name = self.dwarves[scholar].name.clone();
+            self.log_event(format!("{name} sets down {work} in the library."));
+            self.treatises.push(work);
+            if self.treatises.len() > 100 {
+                self.treatises.remove(0);
+            }
+        }
+    }
+
+    /// Compose a scholarly work, drawn deterministically from the day, the
+    /// scholar, and the world the fort knows.
+    fn compose_treatise(&self, day: u64, scholar: usize) -> String {
+        const FORMS: [&str; 5] = [
+            "a treatise on",
+            "a history of",
+            "a study of",
+            "a discourse on",
+            "an inquiry into",
+        ];
+        let mut subjects: Vec<String> = vec![
+            "the working of stone and metal".to_string(),
+            "the turning of the seasons".to_string(),
+            "the deep places of the world".to_string(),
+            "the breeding of beasts".to_string(),
+            "the properties of magma and water".to_string(),
+        ];
+        if let Some(roster) = &self.siege_roster {
+            subjects.push(format!("the wars against {}", roster.civ_name));
+        }
+        if let Some(civ) = &self.trade_partner {
+            subjects.push(format!("the customs of {}", civ));
+        }
+        if self.stats.beasts_slain > 0 {
+            subjects.push("the anatomy of forgotten beasts".to_string());
+        }
+        let d = day as usize;
+        let form = FORMS[d % FORMS.len()];
+        let subject = &subjects[(d / 2 + scholar) % subjects.len()];
+        format!("{form} {subject}")
     }
 
     /// Compose a titled poetic work, spun deterministically from the day and
@@ -6000,7 +6069,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 40;
+const SAVE_VERSION: u32 = 41;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

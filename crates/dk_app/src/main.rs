@@ -65,6 +65,7 @@ ZONES & LABOR\n\
   f ... farm     p ... stockpile    n ... pasture    o ... tavern    ' ... temple\n\
   z ... fishery      Shift+H ... hospital (the wounded mend here, faster)\n\
   Shift+Z ... burrow (safe room)     F2 ... sound/lift the alarm (civilians hide)\n\
+  Shift+L ... library (scholars write treatises, read them in Legends)\n\
   u ... cull an animal      Shift+U ... war-train a dog\n\
   i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
   c ... cancel designations\n\
@@ -206,6 +207,7 @@ enum UiKind {
     Hospital,
     Barracks,
     Burrow,
+    Library,
     Cancel,
 }
 
@@ -224,6 +226,7 @@ impl UiKind {
             UiKind::Hospital => "HOSPITAL",
             UiKind::Barracks => "BARRACKS",
             UiKind::Burrow => "BURROW",
+            UiKind::Library => "LIBRARY",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -327,8 +330,15 @@ fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
     if let Some(s) = sim {
         if !s.poems.is_empty() {
             lines.push("=== The Fortress Anthology ===".to_string());
-            for p in s.poems.iter().rev().take(60) {
+            for p in s.poems.iter().rev().take(40) {
                 lines.push(p.clone());
+            }
+            lines.push(String::new());
+        }
+        if !s.treatises.is_empty() {
+            lines.push("=== The Library ===".to_string());
+            for t in s.treatises.iter().rev().take(40) {
+                lines.push(t.clone());
             }
             lines.push(String::new());
         }
@@ -1141,6 +1151,7 @@ fn handle_input(
                     UiKind::Hospital => sim.0.add_hospital(anchor, here),
                     UiKind::Barracks => sim.0.add_barracks(anchor, here),
                     UiKind::Burrow => sim.0.add_burrow(anchor, here),
+                    UiKind::Library => sim.0.add_library(anchor, here),
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -1258,7 +1269,19 @@ fn handle_input(
         }
         dirty.0 = true;
     }
-    if keys.just_pressed(KeyCode::KeyL) {
+    // Shift+L designates a library (two-press rectangle); plain 'l' links a
+    // lever to a floodgate.
+    if shift && keys.just_pressed(KeyCode::KeyL) {
+        let here = cursor.pos(view_z.0);
+        match mode.0 {
+            Some((UiKind::Library, anchor)) if anchor.z == here.z => {
+                sim.0.add_library(anchor, here);
+                mode.0 = None;
+            }
+            _ => mode.0 = Some((UiKind::Library, here)),
+        }
+        dirty.0 = true;
+    } else if keys.just_pressed(KeyCode::KeyL) {
         let here = cursor.pos(view_z.0);
         match sim.0.add_lever(here) {
             Some(gate) => info!("lever placed, linked to floodgate at {:?}", gate),
@@ -1691,6 +1714,9 @@ fn tile_visual(
     }
     if sim.burrow_at(here) {
         rgb = mix(rgb, [0.4, 0.7, 0.55], 0.3);
+    }
+    if sim.library_at(here) {
+        rgb = mix(rgb, [0.7, 0.6, 0.9], 0.3);
     }
     if let Some((a, b)) = selection {
         if view_z == a.z
@@ -2433,7 +2459,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   poems {}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow L:library u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
