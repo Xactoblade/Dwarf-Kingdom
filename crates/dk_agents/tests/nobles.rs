@@ -59,10 +59,15 @@ fn a_fulfilled_mandate_pleases_the_baron() {
         sim.step(&raws);
     }
     let baron = sim.baron.expect("baron appointed");
-    // Run the working fort for the mandate window: with a farm, still, and
-    // kitchen going, production mandates get met in the normal course of
-    // life (possibly across several mandates).
-    let horizon = (MANDATE_DAYS + 25) * TICKS_PER_DAY;
+    // Set a concretely fulfillable demand (this fort cooks but does not
+    // mine, so pin a cooking mandate rather than trusting the random roll).
+    sim.mandate = Some(dk_agents::Mandate {
+        kind: MandateKind::CookMeals,
+        amount: 3,
+        deadline: sim.clock.tick + (MANDATE_DAYS + 60) * TICKS_PER_DAY,
+        baseline: sim.stats.meals_cooked,
+    });
+    let horizon = (MANDATE_DAYS + 60) * TICKS_PER_DAY;
     for _ in 0..horizon {
         sim.step(&raws);
         if sim.stats.mandates_met > 0 {

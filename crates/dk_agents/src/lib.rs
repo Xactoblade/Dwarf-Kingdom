@@ -5,7 +5,7 @@
 //! tick, so the whole game loop can run (and be tested) headlessly.
 
 use anyhow::{Context, Result};
-use dk_core::{Calendar, DAYS_PER_SEASON, TICKS_PER_DAY};
+use dk_core::{Calendar, Season, DAYS_PER_SEASON, TICKS_PER_DAY};
 use dk_raws::{MaterialCategory, Raws};
 use dk_sim::{FluidSim, WaterSim};
 use dk_world::path::{self, Pos, Regions};
@@ -123,6 +123,25 @@ pub enum ItemKind {
     RoughGem,
     /// A cut gem — a premium trade good. `stuff` = gem-type index.
     CutGem,
+}
+
+/// The sky's mood, cycling with the seasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Weather {
+    #[default]
+    Clear,
+    Rain,
+    Snow,
+}
+
+impl Weather {
+    pub fn name(self) -> &'static str {
+        match self {
+            Weather::Clear => "clear",
+            Weather::Rain => "rain",
+            Weather::Snow => "snow",
+        }
+    }
 }
 
 /// Gem varieties, indexed by `Item::stuff` for RoughGem/CutGem.
@@ -806,6 +825,7 @@ pub struct Sim {
     pub designations: BTreeMap<Pos, Designation>,
     pub stats: SimStats,
     pub clock: Calendar,
+    pub weather: Weather,
     pub water: WaterSim,
     /// The second fluid: slower, hotter, considerably less forgiving.
     pub magma: FluidSim,
@@ -909,6 +929,7 @@ impl Sim {
             designations: BTreeMap::new(),
             stats: SimStats::default(),
             clock: Calendar::default(),
+            weather: Weather::Clear,
             water,
             magma,
             player: None,
@@ -1761,6 +1782,7 @@ impl Sim {
         // The barony: appointments, demands, and judgments (daily check).
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_nobility();
+            self.tick_weather();
         }
         // The unquiet dead stir every other day.
         if self.clock.tick % (2 * TICKS_PER_DAY) == 0 && self.clock.tick > 0 {
@@ -1923,6 +1945,8 @@ impl Sim {
 
     fn grow_farms(&mut self, raws: &Raws) {
         let season = self.clock.season_index();
+        // Rain waters the crops: they grow half again as fast.
+        let step = if self.weather == Weather::Rain { 2 } else { 1 };
         for tile in self.farms.values_mut() {
             if let FarmState::Growing { progress } = tile.state {
                 let plant = raws.plants.get(tile.crop);
@@ -1930,7 +1954,7 @@ impl Sim {
                     continue; // dormant out of season
                 }
                 let done = plant.grow_days as u64 * TICKS_PER_DAY;
-                let next = progress as u64 + 1;
+                let next = progress as u64 + step;
                 tile.state = if next >= done {
                     FarmState::Grown
                 } else {
@@ -1938,6 +1962,24 @@ impl Sim {
                 };
             }
         }
+    }
+
+    /// The sky turns with the seasons: rainy springs and autumns, snowy
+    /// winters, mostly clear summers. Rolled once a day.
+    fn tick_weather(&mut self) {
+        let roll = self.rng.gen_range(0..100u32);
+        self.weather = match self.clock.season() {
+            Season::Winter => {
+                if roll < 45 { Weather::Snow } else { Weather::Clear }
+            }
+            Season::Summer => {
+                if roll < 15 { Weather::Rain } else { Weather::Clear }
+            }
+            // Spring and autumn are the wet seasons.
+            _ => {
+                if roll < 40 { Weather::Rain } else { Weather::Clear }
+            }
+        };
     }
 
     /// Lay a corpse to rest in a tomb: the ghost (if risen) departs, and
@@ -4434,7 +4476,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 22;
+const SAVE_VERSION: u32 = 23;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

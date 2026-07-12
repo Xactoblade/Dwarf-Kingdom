@@ -1351,6 +1351,12 @@ fn tile_visual(
             rgb = mix(rgb, [0.3, 1.0, 0.4], 0.35);
         }
     }
+    // The sky's mood washes over the whole map.
+    match sim.weather {
+        dk_agents::Weather::Rain => rgb = mix(rgb, [0.35, 0.42, 0.55], 0.18),
+        dk_agents::Weather::Snow => rgb = mix(rgb, [0.85, 0.88, 0.95], 0.22),
+        dk_agents::Weather::Clear => {}
+    }
     (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
 }
 
@@ -2020,7 +2026,7 @@ fn update_hud(
         text.0 = format!(
             "Dwarf Kingdom\n\
              z {} / {}   cursor ({}, {})   {}\n\
-             Year {}, {} {}   {}   {:.0} fps\n\
+             Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}\n\
              d:mine x:stairs h:channel f:farm p:stockpile n:pasture o:tavern z:fishery u:cull i:enlist v:still k:kitchen m:crafts j:loom ;:jeweler b:tomb g:gate l:lever t:pull c:cancel\n\
@@ -2033,6 +2039,7 @@ fn update_hud(
             cal.year(),
             cal.season().name(),
             cal.day_of_season(),
+            sim.0.weather.name(),
             status,
             fps,
             alive,
