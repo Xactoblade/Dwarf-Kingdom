@@ -1550,13 +1550,17 @@ impl Sim {
             .name
             .clone()
             .unwrap_or_else(|| "the departed".to_string());
+        // The corpse's `stuff` is the dead dwarf's index (see kill_dwarf).
+        let dead_idx = self.items[corpse].stuff as usize;
         self.items[corpse].consumed = true;
         self.items[corpse].reserved_by = None;
         self.buildings[tomb].occupied = true;
-        // Quiet the matching ghost.
-        let dead: Option<usize> = self.dwarves.iter().position(|d| {
-            !d.alive && d.faction == Faction::Fort && name.contains(&d.name)
-        });
+        // Quiet exactly that dwarf's ghost.
+        let dead: Option<usize> = self
+            .dwarves
+            .get(dead_idx)
+            .filter(|d| !d.alive && d.faction == Faction::Fort)
+            .map(|_| dead_idx);
         if let Some(dd) = dead {
             if self.dwarves[dd].ghost {
                 self.dwarves[dd].ghost = false;
@@ -1589,11 +1593,12 @@ impl Sim {
     fn tick_ghosts(&mut self) {
         let tick = self.clock.tick;
         // Rise: any fort corpse still above ground past the grace period.
-        let unburied: Vec<String> = self
+        // Corpses carry their dwarf index in `stuff`, so this is exact.
+        let unburied: std::collections::BTreeSet<usize> = self
             .items
             .iter()
             .filter(|it| it.active() && it.kind == ItemKind::Corpse)
-            .filter_map(|it| it.name.clone())
+            .map(|it| it.stuff as usize)
             .collect();
         for i in 0..self.dwarves.len() {
             let d = &self.dwarves[i];
@@ -1604,7 +1609,7 @@ impl Sim {
             if tick - died < GHOST_AFTER_DAYS * TICKS_PER_DAY {
                 continue;
             }
-            if !unburied.iter().any(|n| n.contains(&d.name)) {
+            if !unburied.contains(&i) {
                 continue; // buried (or no corpse ever) — they rest
             }
             self.dwarves[i].ghost = true;
@@ -3246,12 +3251,14 @@ impl Sim {
         // `deaths` means fort citizens lost; raider kills have their own
         // counters at the call sites.
         if self.dwarves[i].faction == Faction::Fort {
-            // The body remains, and it wants burying.
+            // The body remains, and it wants burying. `stuff` holds the dead
+            // dwarf's index so burial/haunting never confuse two dwarves who
+            // happen to share a generated name.
             let name = self.dwarves[i].name.clone();
             let pos = self.dwarves[i].pos;
             self.spawn_named_item(
                 ItemKind::Corpse,
-                0,
+                i as u16,
                 pos,
                 Some(format!("remains of {name}")),
             );

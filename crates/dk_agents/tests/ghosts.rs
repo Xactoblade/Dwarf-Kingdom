@@ -108,6 +108,54 @@ fn burial_grants_peace() {
 }
 
 #[test]
+fn identically_named_dead_are_not_confused() {
+    // Two dwarves sharing a name must be tracked by identity, not name, so
+    // burying one never quiets the other's ghost.
+    let (mut sim, raws) = fort(1004);
+    sim.dwarves[0].name = "Urist".to_string();
+    sim.dwarves[1].name = "Urist".to_string();
+
+    // Build one tomb: only one of the two can be buried.
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (ta, _) = sim.find_flat_patch(cx, cy).expect("tomb site");
+    assert!(sim.add_building(BuildingKind::Tomb, ta));
+
+    sim.slay(0);
+    sim.slay(1);
+
+    // One Urist gets buried; the other should still rise and haunt.
+    let mut ticks = 0;
+    let deadline = (GHOST_AFTER_DAYS + 12) * TICKS_PER_DAY;
+    while ticks < deadline {
+        sim.step(&raws);
+        ticks += 1;
+    }
+    let buried_count = sim
+        .buildings
+        .iter()
+        .filter(|b| b.kind == BuildingKind::Tomb && b.occupied)
+        .count();
+    assert_eq!(buried_count, 1, "only one tomb, so only one is buried");
+    // Exactly one of the two is a ghost: the unburied one. Not both (which
+    // a name match could wrongly quiet) and not zero.
+    let ghost_count = [0usize, 1]
+        .iter()
+        .filter(|&&i| sim.dwarves[i].ghost)
+        .count();
+    assert_eq!(
+        ghost_count, 1,
+        "the unburied Urist haunts; the buried one rests — names must not conflate them"
+    );
+    // And a corpse for the unburied one is still above ground.
+    assert_eq!(
+        sim.items.iter().filter(|it| it.active() && it.kind == ItemKind::Corpse).count(),
+        1,
+        "one body buried, one still awaiting a tomb"
+    );
+}
+
+#[test]
 fn a_late_burial_lays_the_ghost_to_rest() {
     let (mut sim, raws) = fort(1003);
     let victim = 0;
