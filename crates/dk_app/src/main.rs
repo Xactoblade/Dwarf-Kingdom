@@ -276,17 +276,31 @@ fn screenshot_mode_on() -> bool {
 
 /// Build the fortress sim for a chosen overworld region.
 /// The deterministic local map for an overworld region.
-fn region_map(raws: &Raws, region: (usize, usize)) -> dk_world::Map {
+/// How a region's overworld biome paints its local surface soil.
+fn surface_style(biome: dk_history::Biome) -> dk_world::SurfaceStyle {
+    use dk_history::Biome;
+    use dk_world::SurfaceStyle;
+    match biome {
+        Biome::Desert => SurfaceStyle::Sandy,
+        Biome::Swamp => SurfaceStyle::Clayey,
+        Biome::Grassland | Biome::Forest | Biome::Hills => SurfaceStyle::Loamy,
+        _ => SurfaceStyle::Default,
+    }
+}
+
+fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::Map {
     let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
-    dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed)
+    let style = surface_style(world.overworld.get(region.0, region.1).biome);
+    dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style)
 }
 
 fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Each region is its own deterministic local map.
     let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
-    let map = dk_world::generate(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed);
+    let style = surface_style(world.overworld.get(region.0, region.1).biome);
+    let map = dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style);
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
@@ -880,7 +894,7 @@ fn handle_input(
                         nx < OW && ny < OW && world.0.overworld.get(nx, ny).biome.embarkable()
                     });
                     if let Some(dest) = dest {
-                        let new_map = region_map(&reg.0, dest);
+                        let new_map = region_map(&world.0, &reg.0, dest);
                         sim_inner.relocate_player(new_map, &reg.0);
                         sim_inner.adv_region = Some(dest);
                         if let Some(hero) = sim_inner.player {

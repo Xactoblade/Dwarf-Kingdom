@@ -236,7 +236,29 @@ pub fn build_remap(old_ids: &[String], reg: &MaterialRegistry) -> Result<Vec<u16
 
 /// Generate a Phase 1 local map: rolling surface with walkable ground,
 /// soil cover, sedimentary over igneous strata, ore veins in the stone.
+/// How a region's surface soil reads, driven by its overworld biome. Purely
+/// cosmetic — it only recolors the top soil layer (all are Soil-category, so
+/// digging and value are unchanged) and never alters the RNG stream, so a
+/// region's structure is identical across styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceStyle {
+    /// The classic mixed palette (loam/clay/sand by position).
+    Default,
+    /// Pale, dry sand — deserts.
+    Sandy,
+    /// Reddish clay — swamps and marshes.
+    Clayey,
+    /// Rich brown loam — grasslands and forests.
+    Loamy,
+}
+
+/// Generate a region with the default (mixed) surface. Kept as the stable
+/// entry point so every existing caller and test is byte-for-byte unchanged.
 pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64) -> Map {
+    generate_styled(reg, rng, width, height, depth, seed, SurfaceStyle::Default)
+}
+
+pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(
         width >= 16 && height >= 16 && depth >= 12,
@@ -305,10 +327,20 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
     // Floor tile (natural ground surface).
     const SOIL_DEPTH: usize = 3;
     const SEDIMENTARY_DEPTH: usize = 8;
+    // The biome recolors the surface soil. A specific style pins one soil
+    // material (falling back to the mixed palette if the raws lack it); this
+    // draws no RNG, so only the top layer's color changes.
+    let styled_soil = |id: &str| reg.index_of(id).filter(|m| soils.contains(m));
+    let fixed_soil = match surface {
+        SurfaceStyle::Sandy => styled_soil("sand"),
+        SurfaceStyle::Clayey => styled_soil("clay"),
+        SurfaceStyle::Loamy => styled_soil("loam"),
+        SurfaceStyle::Default => None,
+    };
     for y in 0..height {
         for x in 0..width {
             let surface = height_at(x, y);
-            let soil_mat = soils[(x / 7 + y / 9) % soils.len()];
+            let soil_mat = fixed_soil.unwrap_or_else(|| soils[(x / 7 + y / 9) % soils.len()]);
             let sed_mat = sedimentary[(x / 11 + y / 6) % sedimentary.len()];
             for z in 0..=surface {
                 let below_surface = surface - z;
@@ -510,5 +542,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn strata_reg() -> MaterialRegistry {
+        MaterialRegistry::from_defs(vec![
+            MaterialDef { id: "loam".into(), name: "loam".into(), category: MaterialCategory::Soil, color: [1; 3], value: 1 },
+            MaterialDef { id: "clay".into(), name: "clay".into(), category: MaterialCategory::Soil, color: [2; 3], value: 1 },
+            MaterialDef { id: "sand".into(), name: "sand".into(), category: MaterialCategory::Soil, color: [3; 3], value: 1 },
+            MaterialDef { id: "sed".into(), name: "sed".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1 },
+            MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1 },
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn a_sandy_biome_lays_sand_across_the_surface() {
+        use rand::SeedableRng;
+        let reg = strata_reg();
+        let sand = reg.index_of("sand").unwrap();
+        let mut rng = ChaCha8Rng::seed_from_u64(5);
+        let map = generate_styled(&reg, &mut rng, 32, 32, 16, 5, SurfaceStyle::Sandy);
+        for y in 0..32 {
+            for x in 0..32 {
+                let wz = map.walk_surface_z(x, y).unwrap();
+                // The topmost solid tile (just below the walkable floor) is soil.
+                assert_eq!(
+                    map.get(x, y, wz - 1).material,
+                    sand,
+                    "sandy surface at ({x},{y}) should be sand"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn styling_the_surface_does_not_change_the_structure() {
+        // Only the soil color changes: the height/shape of every tile is
+        // identical between Default and a styled surface (same seed, same RNG).
+        use rand::SeedableRng;
+        let reg = strata_reg();
+        let mut r1 = ChaCha8Rng::seed_from_u64(9);
+        let a = generate_styled(&reg, &mut r1, 32, 32, 16, 9, SurfaceStyle::Default);
+        let mut r2 = ChaCha8Rng::seed_from_u64(9);
+        let b = generate_styled(&reg, &mut r2, 32, 32, 16, 9, SurfaceStyle::Clayey);
+        for y in 0..32 {
+            for x in 0..32 {
+                assert_eq!(
+                    map_shape(&a, x, y),
+                    map_shape(&b, x, y),
+                    "surface height/shape differs at ({x},{y})"
+                );
+            }
+        }
+    }
+
+    fn map_shape(m: &Map, x: usize, y: usize) -> usize {
+        m.walk_surface_z(x, y).unwrap()
     }
 }
