@@ -3513,7 +3513,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 12;
+const SAVE_VERSION: u32 = 13;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
