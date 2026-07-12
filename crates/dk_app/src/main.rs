@@ -867,6 +867,7 @@ fn handle_input(
             (KeyCode::BracketRight, PlayerAction::Climb(1)),
             (KeyCode::BracketLeft, PlayerAction::Climb(-1)),
             (KeyCode::Period, PlayerAction::Wait),
+            (KeyCode::KeyP, PlayerAction::Grab),
         ] {
             if keys.just_pressed(key) {
                 acted = Some(action);
@@ -2037,7 +2038,7 @@ fn update_hud(
             for mut text in &mut q {
                 text.0 = format!(
                     "Dwarf Kingdom :: Adventure\n{status}\n{quest}\n\
-                     arrows: move/attack   [ ]: stairs   .: wait   c: recruit   g: journey on   y: Legends   Esc: abandon   Q: quit{log_tail}"
+                     arrows: move/attack   [ ]: stairs   .: wait   p: pick up   c: recruit   g: journey on   y: Legends   Esc: abandon   Q: quit{log_tail}"
                 );
             }
             return;

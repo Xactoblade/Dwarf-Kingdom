@@ -803,6 +803,8 @@ pub enum PlayerAction {
     /// +1 up / -1 down through stairs.
     Climb(i32),
     Wait,
+    /// Pick up a loose item under the hero's feet (e.g. a fallen foe's blade).
+    Grab,
 }
 
 // ---------------------------------------------------------------- nobility
@@ -1905,6 +1907,21 @@ impl Sim {
         }
         match action {
             PlayerAction::Wait => {}
+            PlayerAction::Grab => {
+                let me = self.dwarves[hero].pos;
+                if let Some(idx) = self.items.iter().position(|it| {
+                    it.pos == me && it.active() && it.state == ItemState::OnGround
+                }) {
+                    self.items[idx].state = ItemState::Carried { by: hero };
+                    self.items[idx].reserved_by = Some(hero);
+                    let label = match self.items[idx].kind {
+                        ItemKind::Weapon => "a weapon",
+                        _ => "something",
+                    };
+                    let name = self.dwarves[hero].name.clone();
+                    self.log_event(format!("{name} takes up {label}."));
+                }
+            }
             PlayerAction::Move(dx, dy) => {
                 let me = self.dwarves[hero].pos;
                 // Creatures can share tiles; an enemy standing on ours gets
@@ -3868,6 +3885,14 @@ impl Sim {
         rank < weapons
     }
 
+    /// Is this creature carrying a forged weapon in hand? (Used for the lone
+    /// adventurer, who wields looted blades rather than the fortress armory.)
+    fn carries_weapon(&self, i: usize) -> bool {
+        self.items.iter().any(|it| {
+            it.active() && it.kind == ItemKind::Weapon && it.state == ItemState::Carried { by: i }
+        })
+    }
+
     /// Reserve `item` and path toward it; returns false if unreachable.
     fn start_goto_item(
         &mut self,
@@ -4853,10 +4878,13 @@ impl Sim {
             self.rng.gen_range(8..=20) as i16
         };
         // A trained fighter puts more weight behind the blow; a forged weapon
-        // in hand makes it far deadlier than bare fists.
+        // in hand makes it far deadlier than bare fists. A soldier draws from
+        // the armory; a lone adventurer wields whatever blade they carry.
+        let armed = self.is_armed(attacker)
+            || (self.player == Some(attacker) && self.carries_weapon(attacker));
         let dmg = base
             + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting))
-            + if self.is_armed(attacker) { WEAPON_DAMAGE } else { 0 };
+            + if armed { WEAPON_DAMAGE } else { 0 };
         let bleed = self.rng.gen_range(1..=3) as u8;
         // Drawing blood teaches the trade: every landed blow hones prowess.
         self.add_xp(attacker, Skill::Fighting, 6);
@@ -5053,6 +5081,15 @@ impl Sim {
             for j in mourners {
                 self.push_thought(j, ThoughtKind::FriendDied);
             }
+        } else if self.player.is_some()
+            && self.dwarves[i].faction == Faction::Hostile
+            && !self.dwarves[i].beast
+        {
+            // Spoils of war: in an adventure, a slain raider leaves their blade
+            // for the hero to take up. Gated on adventure mode (a live player)
+            // so ordinary fortress play — and its determinism — is unchanged.
+            let pos = self.dwarves[i].pos;
+            self.spawn_quality_item(ItemKind::Weapon, 0, pos, 2);
         }
     }
 
