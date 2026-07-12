@@ -5,7 +5,7 @@
 //! tick, so the whole game loop can run (and be tested) headlessly.
 
 use anyhow::{Context, Result};
-use dk_core::{Calendar, Season, DAYS_PER_SEASON, TICKS_PER_DAY};
+use dk_core::{Calendar, Season, DAYS_PER_SEASON, SEASONS_PER_YEAR, TICKS_PER_DAY};
 use dk_raws::{MaterialCategory, Raws};
 use dk_sim::{FluidSim, WaterSim};
 use dk_world::path::{self, Pos, Regions};
@@ -839,6 +839,9 @@ pub struct Sim {
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
+    /// Tick the last citizen died — the fortress has fallen. `None` while
+    /// it still lives.
+    pub fallen_at: Option<u64>,
     pub water: WaterSim,
     /// The second fluid: slower, hotter, considerably less forgiving.
     pub magma: FluidSim,
@@ -944,6 +947,7 @@ impl Sim {
             stats: SimStats::default(),
             clock: Calendar::default(),
             weather: Weather::Clear,
+            fallen_at: None,
             water,
             magma,
             player: None,
@@ -1851,6 +1855,45 @@ impl Sim {
                 }
             }
         }
+
+        // The fortress falls when its last citizen is gone. (In adventure
+        // mode the lone hero's death is the story's end, handled elsewhere.)
+        if self.fallen_at.is_none() && self.player.is_none() && self.alive_dwarves() == 0 {
+            self.fallen_at = Some(self.clock.tick);
+            self.log_event("The fortress has fallen. Its halls stand silent.".to_string());
+        }
+    }
+
+    /// True once the last citizen has died.
+    pub fn fallen(&self) -> bool {
+        self.fallen_at.is_some()
+    }
+
+    /// The fortress's legacy — a short account of what it achieved, shown
+    /// when it falls.
+    pub fn epitaph(&self) -> String {
+        let s = &self.stats;
+        format!(
+            "The fortress endured {} year(s) and {} season(s).\n\
+             It lost {} of its own, and slew {} raiders and {} forgotten beast(s).\n\
+             Its people harvested {} crops, cooked {} meals, brewed {} drinks,\n\
+             mined {} stone, cut {} gems, wove {} cloth, and created works of legend.\n\
+             {} migrants sought its gates; {} caravans came to trade.\n\
+             Let it be remembered.",
+            self.clock.year().saturating_sub(1),
+            (self.clock.tick / (TICKS_PER_DAY * DAYS_PER_SEASON)) % SEASONS_PER_YEAR,
+            s.deaths,
+            s.raiders_slain,
+            s.beasts_slain,
+            s.crops_harvested,
+            s.meals_cooked,
+            s.drinks_brewed,
+            s.boulders_mined,
+            s.gems_cut,
+            s.cloth_woven,
+            s.migrants_arrived,
+            s.caravans_arrived,
+        )
     }
 
     /// A forgotten beast surfaces at a deep, fort-reachable spot (a mined
@@ -4546,7 +4589,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 24;
+const SAVE_VERSION: u32 = 25;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

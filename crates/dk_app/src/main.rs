@@ -1886,6 +1886,17 @@ fn update_hud(
     }
     let Some(sim) = sim.0.as_ref() else { return };
     let sim = SimRef(sim);
+    // When the fortress has fallen, the HUD gives way to its epitaph.
+    if sim.0.fallen() {
+        for mut text in &mut q {
+            text.0 = format!(
+                "Dwarf Kingdom :: The Fortress Has Fallen\n\n{}\n\n\
+                 F9: load a save    Q: quit",
+                sim.0.epitaph()
+            );
+        }
+        return;
+    }
     let here = cursor.pos(view_z.0);
     let mut under = match sim.0.map.tile_at(here) {
         Some(t) if t.shape != TileShape::Empty => {
