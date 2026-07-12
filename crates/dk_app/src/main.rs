@@ -293,6 +293,44 @@ fn save_path() -> PathBuf {
     PathBuf::from("saves/world.bin")
 }
 
+fn world_seed_path() -> PathBuf {
+    PathBuf::from("saves/world_seed")
+}
+
+/// The seed for this game's world. Persisted so a world is stable across
+/// launches (your saves stay valid); a fresh install — or the "new world"
+/// command — rolls a different one. Screenshot/CI mode always uses the fixed
+/// seed for reproducible verification.
+fn resolve_world_seed() -> u64 {
+    if screenshot_mode_on() {
+        return WORLD_SEED;
+    }
+    if let Ok(s) = std::fs::read_to_string(world_seed_path()) {
+        if let Ok(seed) = s.trim().parse::<u64>() {
+            return seed;
+        }
+    }
+    let seed = fresh_world_seed();
+    persist_world_seed(seed);
+    seed
+}
+
+/// A brand-new random world seed from the wall clock, bit-spread so successive
+/// worlds look nothing alike.
+fn fresh_world_seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(WORLD_SEED);
+    (nanos ^ 0x9E37_79B9_7F4A_7C15).wrapping_mul(0xD1B5_4A32_D192_ED03) | 1
+}
+
+fn persist_world_seed(seed: u64) {
+    let _ = std::fs::create_dir_all("saves");
+    let _ = std::fs::write(world_seed_path(), seed.to_string());
+}
+
 /// A retired fortress is kept in its own file, named for its region, so it
 /// endures in the world and can be reclaimed by returning to that spot.
 fn fort_path(region: (usize, usize)) -> PathBuf {
@@ -366,7 +404,7 @@ fn has_river(biome: dk_history::Biome) -> bool {
 }
 
 fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::Map {
-    let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
+    let seed = world.seed ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
     let biome = world.overworld.get(region.0, region.1).biome;
     let style = surface_style(biome);
@@ -379,7 +417,7 @@ fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::M
 
 fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Each region is its own deterministic local map.
-    let seed = WORLD_SEED ^ ((region.0 as u64) << 32 | region.1 as u64);
+    let seed = world.seed ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
     let biome = world.overworld.get(region.0, region.1).biome;
     let style = surface_style(biome);
@@ -431,7 +469,7 @@ fn default_region(world: &World) -> (usize, usize) {
 
 fn main() {
     let raws = Raws::load(&data_dir()).expect("failed to load raws");
-    let world = World::generate(WORLD_SEED, OW, OW, HISTORY_YEARS);
+    let world = World::generate(resolve_world_seed(), OW, OW, HISTORY_YEARS);
     // DK_SHOT_SCREEN=embark verifies the embark map instead of the fort.
     let shot_embark = std::env::var("DK_SHOT_SCREEN").is_ok_and(|v| v == "embark");
     let (screen, sim) = if screenshot_mode_on() && !shot_embark {
@@ -763,6 +801,38 @@ fn handle_mouse(
             }
         }
     }
+
+    // Keep the view over the map: never pan (or zoom out) into the void past
+    // its edges — the map fills the frame and stops at its banks, like DF.
+    if let Ok(window) = windows.single() {
+        clamp_camera_to_map(&mut cam_tf, window.width(), window.height());
+    }
+}
+
+/// Hold the camera over the map like DF: the map always fills the frame and you
+/// scroll to its edges, never past them into the void. Enforced every frame so
+/// it also corrects a fresh recenter's default zoom to fit the actual window.
+fn clamp_camera_to_map(tf: &mut Transform, win_w: f32, win_h: f32) {
+    let map_w = MAP_W as f32 * TILE;
+    let map_h = MAP_H as f32 * TILE;
+    // Cap zoom-out at the scale where the view still fits inside the map on
+    // both axes — beyond it the void would show. Independent of monitor size,
+    // so a wide 4K screen zooms in enough to fill just like a laptop does.
+    let fit = (map_w / win_w).min(map_h / win_h);
+    let s = tf.scale.x.min(fit).max(0.2);
+    tf.scale = Vec3::new(s, s, tf.scale.z);
+    let half_vw = win_w * 0.5 * s;
+    let half_vh = win_h * 0.5 * s;
+    tf.translation.x = if half_vw * 2.0 >= map_w {
+        map_w * 0.5
+    } else {
+        tf.translation.x.clamp(half_vw, map_w - half_vw)
+    };
+    tf.translation.y = if half_vh * 2.0 >= map_h {
+        map_h * 0.5
+    } else {
+        tf.translation.y.clamp(half_vh, map_h - half_vh)
+    };
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -937,6 +1007,17 @@ fn handle_input(
                 }
                 Err(e) => error!("load failed: {e:#}"),
             }
+        }
+        // 'n': forge a whole new world — a fresh random seed, so its lands,
+        // peoples, and eight decades of history are unlike this one.
+        if keys.just_pressed(KeyCode::KeyN) {
+            let seed = fresh_world_seed();
+            persist_world_seed(seed);
+            world.0 = World::generate(seed, OW, OW, HISTORY_YEARS);
+            cursor.x = 0;
+            cursor.y = 0;
+            dirty.0 = true;
+            info!("forged a new world (seed {seed})");
         }
         if keys.just_pressed(KeyCode::KeyQ) {
             exit.write(AppExit::Success);
@@ -2152,11 +2233,12 @@ fn update_hud(
             let resume = if has_save.0 { "   F9: continue your saved fortress" } else { "" };
             for mut text in &mut q {
                 text.0 = format!(
-                    "Dwarf Kingdom :: Choose your embark\n\
+                    "Dwarf Kingdom :: Choose your embark   (world seed {})\n\
                      {} years of history · {} civilizations · {} sites · {} named figures\n\
                      region ({}, {}) — {}{}\n\
                      {}\n\
-                     arrows/click: move   y: read the Legends   {}{}",
+                     arrows/click: move   y: Legends   n: forge a new world   {}{}",
+                    world.0.seed,
                     world.0.years_simulated,
                     world.0.civs.len(),
                     world.0.sites.len(),
