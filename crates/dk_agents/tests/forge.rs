@@ -28,14 +28,17 @@ fn a_forge_arms_the_soldiers() {
     let cx = sim.map.width as i32 / 2;
     let cy = sim.map.height as i32 / 2;
 
-    // A forge, a stockpile, boulders to work, and an enlisted soldier.
-    sim.add_embark_supplies(&raws); // food & drink so the smith isn't starving
+    // The full metal chain: a smelter turns boulders into bars, a forge turns
+    // bars into weapons, and the armory arms a soldier. Plus stone and food.
+    sim.add_embark_supplies(&raws); // food & drink so the smiths aren't starving
     let (fa, _) = sim.find_flat_patch(cx, cy).expect("forge site");
     assert!(sim.add_building(BuildingKind::Forge, fa));
+    let (sa, _) = sim.find_flat_patch(cx, cy).expect("smelter site");
+    assert!(sim.add_building(BuildingKind::Smelter, sa));
     sim.place_flat_stockpiles(cx, cy, 18);
-    // Boulders on a known-walkable tile so the smith can reach them.
+    // Boulders on a known-walkable tile so the smelter can reach them.
     let sp = sim.dwarves[0].pos;
-    for _ in 0..6 {
+    for _ in 0..10 {
         sim.debug_spawn_boulder(0, sp);
     }
     // Enlist a soldier so the fort wants weapons.
@@ -52,7 +55,8 @@ fn a_forge_arms_the_soldiers() {
             break;
         }
     }
-    assert!(forged, "the smith should forge a weapon from a boulder");
+    assert!(sim.stats.bars_smelted > 0, "the smelter should smelt a bar from ore");
+    assert!(forged, "the smith should forge a weapon from a bar");
     assert!(
         sim.count_kind(ItemKind::Weapon) > 0,
         "a weapon exists in the fort"
