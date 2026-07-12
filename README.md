@@ -75,8 +75,17 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
       raider or beast that treads onto the trap
 - [x] **Item quality tiers**: a skilled crafter turns out finer, dearer goods
       (up to a masterwork worth 3.5×), so skills matter to the economy
+- [x] **Glass industry** (Shift+G): a furnace melts stone into blown glass, the
+      fort's finest ordinary trade good
 - [x] **Constructed walls** (Shift+B): masons haul stone and raise walls — seal
       a breach, wall off a burrow, or funnel raiders — not just dig
+- [x] **Barracks** (Shift+I): soldiers drill between battles to become veterans
+      before the first raid, not only by bleeding for it
+- [x] **Hospital** (Shift+H): the wounded seek the ward and mend far faster
+- [x] **Burrows & the alarm** (Shift+Z / F2): sound the alarm and civilians flee
+      to a safe room while the soldiers hold the line
+- [x] **Library** (Shift+L): scholars set down treatises — the fort's knowledge,
+      read in the Legends viewer
 - [x] The fortress can fall: when the last citizen dies it leaves an epitaph
 
 ### Adventure, culture, and the wider world
