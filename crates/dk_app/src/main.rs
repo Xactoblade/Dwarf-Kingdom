@@ -276,6 +276,23 @@ fn screenshot_mode_on() -> bool {
 
 /// Build the fortress sim for a chosen overworld region.
 /// The deterministic local map for an overworld region.
+/// The full Legends scroll: the active fortress's own anthology of poetry
+/// first (latest works up top), then the recorded history of the world.
+fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(s) = sim {
+        if !s.poems.is_empty() {
+            lines.push("=== The Fortress Anthology ===".to_string());
+            for p in s.poems.iter().rev().take(60) {
+                lines.push(p.clone());
+            }
+            lines.push(String::new());
+        }
+    }
+    lines.extend(world.legends_lines());
+    lines
+}
+
 /// How a region's overworld biome paints its local surface soil.
 fn surface_style(biome: dk_history::Biome) -> dk_world::SurfaceStyle {
     use dk_history::Biome;
@@ -702,7 +719,8 @@ fn handle_input(
     // ---- Legends screen: scroll and close.
     if screen.0 == Screen::Legends {
         // The view never scrolls past the last full page.
-        let max_scroll = world.0.events.len().saturating_sub(LEGENDS_PAGE);
+        let total = legends_all(sim.0.as_ref(), &world.0).len();
+        let max_scroll = total.saturating_sub(LEGENDS_PAGE);
         let held = |key: KeyCode, keys: &ButtonInput<KeyCode>, repeat: &MoveRepeat| {
             keys.just_pressed(key) || (keys.pressed(key) && repeat.0.just_finished())
         };
@@ -1954,7 +1972,7 @@ fn update_hud(
             if !scroll.is_changed() && !screen.is_changed() {
                 return;
             }
-            let lines = world.0.legends_lines();
+            let lines = legends_all(sim.0.as_ref(), &world.0);
             let top = scroll.scroll.min(lines.len().saturating_sub(1));
             let body: String = lines
                 .iter()
@@ -1964,7 +1982,7 @@ fn update_hud(
                 .collect();
             for mut text in &mut q {
                 text.0 = format!(
-                    "Dwarf Kingdom :: Legends — {} recorded events (up/down to scroll, y/Esc to close)\n{}",
+                    "Dwarf Kingdom :: Legends & Anthology — {} entries (up/down to scroll, y/Esc to close)\n{}",
                     lines.len(),
                     body
                 );
