@@ -5092,7 +5092,8 @@ impl Sim {
     }
 
     /// Compose a titled poetic work, spun deterministically from the day and
-    /// the poet, so a given fortress always sings the same songs.
+    /// the poet, so a given fortress always sings the same songs — and, where
+    /// it can, about its own story rather than empty abstraction.
     fn compose_poem(&self, day: u64, poet: usize) -> String {
         const FORMS: [&str; 5] = ["a poem", "a saga", "an ode", "a lament", "a ballad"];
         const ADJS: [&str; 8] = [
@@ -5105,7 +5106,27 @@ impl Sim {
         let form = FORMS[d % FORMS.len()];
         let adj = ADJS[(d + poet) % ADJS.len()];
         let noun = NOUNS[(d / 3 + poet * 2) % NOUNS.len()];
-        format!("{form}, \"The {adj} {noun}\"")
+
+        // Subjects drawn from the fortress's own life, so its verse is its own.
+        let mut subjects: Vec<String> = Vec::new();
+        for dw in &self.dwarves {
+            if !dw.alive && dw.faction == Faction::Fort && !dw.ghost {
+                subjects.push(format!("{}, gone to the earth", dw.name));
+            }
+        }
+        if let Some(roster) = &self.siege_roster {
+            subjects.push(format!("the long hatred of {}", roster.civ_name));
+        }
+        if self.stats.beasts_slain > 0 {
+            subjects.push("the beast that rose from the deep".to_string());
+        }
+        if self.stats.raiders_slain > 0 {
+            subjects.push("the raiders broken at the gate".to_string());
+        }
+        subjects.push("stone, and cold ale, and the mountain's heart".to_string());
+        let subject = &subjects[(d + poet) % subjects.len()];
+
+        format!("{form}, \"The {adj} {noun}\", of {subject}")
     }
 
     /// Compose a scene for an engraving from the fortress's own history —
