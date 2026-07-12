@@ -1859,6 +1859,7 @@ impl Sim {
         self.taverns.clear();
         self.temples.clear();
         self.fisheries.clear();
+        self.hospitals.clear();
         self.buildings.clear();
         self.farms.clear();
         self.designations.clear();
