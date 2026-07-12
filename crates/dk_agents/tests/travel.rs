@@ -106,6 +106,27 @@ fn the_hero_carries_their_gear_into_a_new_land() {
 }
 
 #[test]
+fn traveling_from_a_baronied_fort_does_not_panic() {
+    // Integrity-sweep regression: a fort with a baron (a dwarf index) that
+    // travels rebuilds a small roster; a stale baron index would make
+    // tick_nobility index out of bounds and panic.
+    let (mut sim, raws, _) = adventure_sim(2210);
+    let hero = sim.begin_adventure(&raws).unwrap();
+    // Appoint a baron at a high fort index that won't exist after travel.
+    sim.baron = Some(sim.dwarves.len() - 1);
+    assert!(sim.baron.unwrap() != hero);
+
+    sim.relocate_player(another_land(&raws, 2210), &raws);
+    assert!(sim.baron.is_none(), "the barony is left behind with the fort");
+
+    // A full day of stepping must run tick_nobility without panicking.
+    for _ in 0..(dk_core::TICKS_PER_DAY + 10) {
+        sim.player_step(PlayerAction::Wait, &raws);
+    }
+    assert!(sim.player.is_some(), "the hero still adventures");
+}
+
+#[test]
 fn the_hero_can_still_act_after_traveling() {
     let (mut sim, raws, _) = adventure_sim(2202);
     sim.begin_adventure(&raws).unwrap();

@@ -1820,6 +1820,9 @@ impl Sim {
             .dwarves
             .iter()
             .position(|d| d.alive && d.faction == Faction::Fort)?;
+        // Drop whatever the hero was doing (releasing any reservation / carried
+        // item), since as the player their task never advances to completion.
+        self.abandon_task(hero);
         self.player = Some(hero);
         self.invasions = false; // the world stands still for a duel
         let name = self.dwarves[hero].name.clone();
@@ -1890,6 +1893,10 @@ impl Sim {
             })
             .map(|(j, _)| j)
             .next()?;
+        // Release whatever job the recruit was mid-way through (freeing its
+        // item/animal/designation/farm/construction reservation) before taking
+        // them off the job board as a follower.
+        self.abandon_task(cand);
         self.dwarves[cand].follower = true;
         self.dwarves[cand].task = Task::Idle { wander_cd: 0 };
         let name = self.dwarves[cand].name.clone();
@@ -1959,6 +1966,11 @@ impl Sim {
         self.alarm = false;
         self.library.clear();
         self.treatises.clear();
+        self.poems.clear();
+        // The barony is left behind with the fort; its stale dwarf index would
+        // otherwise make tick_nobility panic on the small new-land roster.
+        self.baron = None;
+        self.mandate = None;
         self.buildings.clear();
         self.farms.clear();
         self.designations.clear();
@@ -3584,6 +3596,27 @@ impl Sim {
                 }
             }
         }
+        // The wounded seek the hospital FIRST — a bleeding dwarf must mend
+        // before it goes to drink away its troubles (bleeding, or a part below
+        // half health — not every scratch).
+        let hurt = self.dwarves[i]
+            .body
+            .iter()
+            .any(|p| p.bleeding > 0 || p.hp * 2 < p.max_hp);
+        if hurt && !self.hospitals.is_empty() {
+            if let Some(spot) = self
+                .hospitals
+                .iter()
+                .flat_map(|h| h.cells())
+                .filter(|&c| self.regions.id(c) == my_region && self.map.walkable(c))
+                .min_by_key(|&c| c.manhattan(dwarf_pos))
+            {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::Recover { spot, path: p, remaining: REST_TICKS };
+                    return None;
+                }
+            }
+        }
         // The weary of heart seek the tavern before returning to labor.
         if self.dwarves[i].stress >= TAVERN_STRESS_AT && !self.taverns.is_empty() {
             if let Some(spot) = self
@@ -3600,26 +3633,6 @@ impl Sim {
                         remaining: RELAX_TICKS,
                         drank: false,
                     };
-                    return None;
-                }
-            }
-        }
-        // The wounded seek the hospital to mend (bleeding, or a part below
-        // half health — not every scratch).
-        let hurt = self.dwarves[i]
-            .body
-            .iter()
-            .any(|p| p.bleeding > 0 || p.hp * 2 < p.max_hp);
-        if hurt && !self.hospitals.is_empty() {
-            if let Some(spot) = self
-                .hospitals
-                .iter()
-                .flat_map(|h| h.cells())
-                .filter(|&c| self.regions.id(c) == my_region && self.map.walkable(c))
-                .min_by_key(|&c| c.manhattan(dwarf_pos))
-            {
-                if let Some(p) = path::astar(&self.map, dwarf_pos, spot, MAX_ASTAR_NODES) {
-                    self.dwarves[i].task = Task::Recover { spot, path: p, remaining: REST_TICKS };
                     return None;
                 }
             }

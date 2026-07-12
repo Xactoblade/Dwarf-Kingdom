@@ -81,6 +81,32 @@ fn a_companion_journeys_on_with_the_hero() {
 }
 
 #[test]
+fn recruiting_releases_the_recruits_reservation() {
+    // Integrity-sweep regression: recruiting a dwarf that was mid-job must free
+    // whatever it had reserved, or that item is reserved forever.
+    let (mut sim, raws, ally) = adventure_with_neighbor(3305);
+    // Put a boulder in the world and pretend the ally is hauling it.
+    let hp = sim.dwarves[ally].pos;
+    sim.debug_spawn_boulder(0, hp);
+    let boulder = sim.items.len() - 1;
+    sim.items[boulder].reserved_by = Some(ally);
+    sim.dwarves[ally].task = Task::Haul {
+        item: boulder,
+        dest: hp,
+        path: Vec::new(),
+        carrying: false,
+    };
+
+    sim.recruit_companion().expect("recruit the neighbour");
+    assert!(sim.dwarves[ally].follower);
+    assert_eq!(
+        sim.items[boulder].reserved_by, None,
+        "the recruit's reservation is released when they join the band"
+    );
+    let _ = &raws;
+}
+
+#[test]
 fn a_companion_takes_no_fort_jobs() {
     // A fort with real work to do: supplies to haul into a stockpile.
     let raws = common::test_raws();
