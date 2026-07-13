@@ -180,6 +180,9 @@ pub enum ItemKind {
     /// A barrel worked from a log at the carpenter's shop. `stuff` unused. A
     /// fine wooden trade good.
     Barrel,
+    /// A carved statue. `stuff` = material index. A precious work of art that
+    /// beautifies the fort — and a rich trade good.
+    Statue,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -711,6 +714,8 @@ pub enum CraftKind {
     SewClothes,
     /// Work a log into a barrel at the carpenter's shop.
     MakeBarrel,
+    /// Carve a stone boulder into a statue at the mason's workshop.
+    CarveStatue,
     /// Melt a boulder into a piece of blown glass.
     MakeGlass,
 }
@@ -841,6 +846,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::MakeFurniture, .. } => "building furniture",
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
             Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
+            Task::Craft { kind: CraftKind::CarveStatue, .. } => "carving a statue",
             Task::Chop { .. } => "chopping wood",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
@@ -902,6 +908,8 @@ pub struct SimStats {
     pub trees_felled: u32,
     /// Barrels worked from logs at the carpenter's shop.
     pub barrels_made: u32,
+    /// Statues carved at the mason's workshop.
+    pub statues_carved: u32,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -920,6 +928,7 @@ struct Wants {
     furniture: bool,
     clothes: bool,
     barrels: bool,
+    statues: bool,
 }
 
 // -------------------------------------------------------------- adventure
@@ -1024,6 +1033,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Log => 10,
         // A barrel: a fine wooden good, worth several logs.
         ItemKind::Barrel => 45,
+        // A statue: a precious work of art, the fort's finest furnishing.
+        ItemKind::Statue => raws.materials.get(item.stuff).value * 15 + 40,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -2485,6 +2496,12 @@ impl Sim {
         self.spawn_item(ItemKind::Log, 0, pos);
     }
 
+    /// Drop a statue on the ground (scenarios/tests). Any statue beautifies the
+    /// whole fort, easing every citizen's stress a touch.
+    pub fn debug_spawn_statue(&mut self, material: u16, pos: Pos) {
+        self.spawn_item(ItemKind::Statue, material, pos);
+    }
+
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
     /// by citizens in index order, so this dresses the fort's first citizens.
     pub fn debug_spawn_clothes(&mut self, pos: Pos) {
@@ -3759,6 +3776,7 @@ impl Sim {
         let mut pending_furniture = 0usize;
         let mut pending_clothes = 0usize;
         let mut pending_barrels = 0usize;
+        let mut pending_statues = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -3772,6 +3790,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::MakeFurniture, .. } => pending_furniture += 1,
                     Task::Craft { kind: CraftKind::SewClothes, .. } => pending_clothes += 1,
                     Task::Craft { kind: CraftKind::MakeBarrel, .. } => pending_barrels += 1,
+                    Task::Craft { kind: CraftKind::CarveStatue, .. } => pending_statues += 1,
                     _ => {}
                 }
             }
@@ -3848,6 +3867,12 @@ impl Sim {
                 let want_furniture = has_mason
                     && boulders > 4 + pending_crafts + pending_furniture
                     && beds + pending_furniture < alive + 2;
+                // Adorn the halls: carve a few statues from surplus stone. A
+                // handful beautifies the whole fort, so the target is small.
+                let statues = self.count_kind(ItemKind::Statue);
+                let want_statues = has_mason
+                    && boulders > 4 + pending_crafts + pending_furniture + pending_statues
+                    && statues + pending_statues < 3;
                 // Sew clothes from any cloth on hand until the fort is dressed
                 // (plus a couple of sets over to trade).
                 let cloth = self.count_kind(ItemKind::Cloth);
@@ -3872,6 +3897,7 @@ impl Sim {
                     furniture: want_furniture,
                     clothes: want_clothes,
                     barrels: want_barrels,
+                    statues: want_statues,
                 };
                 match self.assign_one(i, raws, wants) {
                     Some(CraftKind::Brew) => pending_brews += 1,
@@ -3884,6 +3910,7 @@ impl Sim {
                     Some(CraftKind::MakeFurniture) => pending_furniture += 1,
                     Some(CraftKind::SewClothes) => pending_clothes += 1,
                     Some(CraftKind::MakeBarrel) => pending_barrels += 1,
+                    Some(CraftKind::CarveStatue) => pending_statues += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -4122,6 +4149,13 @@ impl Sim {
             if let Some((shop, input)) = self.craft_mason_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeFurniture }, &mut best);
+            }
+        }
+        // Statuary: carve a boulder into a statue at the mason's workshop.
+        if w.statues {
+            if let Some((shop, input)) = self.craft_mason_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::CarveStatue }, &mut best);
             }
         }
         // Tailoring: sew a bolt of cloth into clothes at the clothier's shop.
@@ -5253,7 +5287,8 @@ impl Sim {
                             | CraftKind::ForgeArmor
                             | CraftKind::MakeFurniture
                             | CraftKind::SewClothes
-                            | CraftKind::MakeBarrel => Skill::Crafting,
+                            | CraftKind::MakeBarrel
+                            | CraftKind::CarveStatue => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -5343,6 +5378,12 @@ impl Sim {
                                 // valued as a fine wooden good on its own.
                                 self.stats.barrels_made += 1;
                                 self.spawn_quality_item(ItemKind::Barrel, 0, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::CarveStatue => {
+                                // The boulder's stone carries into the statue.
+                                self.stats.statues_carved += 1;
+                                self.spawn_quality_item(ItemKind::Statue, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -6160,6 +6201,9 @@ impl Sim {
         // A dwarf dressed in good clothes frets a little less (computed before
         // the mutable borrow; a no-op unless the fort has sewn any clothes).
         let clothed = self.wears_clothes(i);
+        // A fort adorned with statues lifts every citizen's spirits a touch —
+        // a no-op unless at least one statue has been carved.
+        let adorned = self.count_kind(ItemKind::Statue) > 0;
         let d = &mut self.dwarves[i];
         let old_hunger = d.hunger;
         let old_thirst = d.thirst;
@@ -6174,8 +6218,14 @@ impl Sim {
         d.happiness += (50.0 - d.happiness).signum() * 0.0005;
 
         // Stress slowly drains in calm times; boiling over breaks the mind.
-        // Fine clothes ease the mind a touch faster.
-        let calm = if clothed { 0.0015 } else { 0.001 };
+        // Fine clothes and a hall of statues each ease the mind a touch faster.
+        let mut calm = 0.001;
+        if clothed {
+            calm += 0.0005;
+        }
+        if adorned {
+            calm += 0.0005;
+        }
         d.stress = (d.stress - calm).max(0.0);
         let crossed_hungry = old_hunger < NEED_AT && d.hunger >= NEED_AT;
         let crossed_thirsty = old_thirst < NEED_AT && d.thirst >= NEED_AT;
@@ -6739,7 +6789,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 48;
+const SAVE_VERSION: u32 = 49;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6814,7 +6864,8 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Glass
             | ItemKind::Bar
             | ItemKind::Armor
-            | ItemKind::Bed => remap_one(&mat_remap, item.stuff, "material")?,
+            | ItemKind::Bed
+            | ItemKind::Statue => remap_one(&mat_remap, item.stuff, "material")?,
             // These carry no raws index (dwarf index, gem type, or nothing).
             ItemKind::Corpse
             | ItemKind::Wool

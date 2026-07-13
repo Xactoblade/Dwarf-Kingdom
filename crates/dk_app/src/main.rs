@@ -2032,6 +2032,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Clothes => "set of clothes".to_string(),
         ItemKind::Log => "wooden log".to_string(),
         ItemKind::Barrel => "wooden barrel".to_string(),
+        ItemKind::Statue => format!("{} statue", raws.materials.get(it.stuff).name),
     };
     // A crafted good wears its quality; an artifact's name already says it.
     if it.quality > 0 && it.kind != ItemKind::Artifact {
@@ -2069,6 +2070,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Clothes => Color::srgb(0.85, 0.5, 0.7),
         ItemKind::Log => Color::srgb(0.5, 0.35, 0.18),
         ItemKind::Barrel => Color::srgb(0.62, 0.44, 0.24),
+        ItemKind::Statue => item_material_color(raws, stuff),
     }
 }
 
@@ -2237,6 +2239,7 @@ fn sync_agent_sprites(
                             ItemKind::Clothes => "artifact",
                             ItemKind::Log => "boulder",
                             ItemKind::Barrel => "still",
+                            ItemKind::Statue => "artifact",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
@@ -2584,6 +2587,7 @@ fn update_hud(
             ItemKind::Clothes => "set of clothes (trade good)".to_string(),
             ItemKind::Log => "wooden log".to_string(),
             ItemKind::Barrel => "wooden barrel (trade good)".to_string(),
+            ItemKind::Statue => format!("{} statue (a work of art)", reg.0.materials.get(it.stuff).name),
         };
         let what = if it.quality > 0 && it.kind != ItemKind::Artifact {
             format!("{} {what}", dk_agents::quality_name(it.quality))
