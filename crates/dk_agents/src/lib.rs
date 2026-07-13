@@ -13,7 +13,7 @@ use dk_world::{Map, Tile, TileShape, NO_MATERIAL};
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 
 pub mod names;
@@ -22,6 +22,8 @@ pub mod names;
 pub const MINE_WORK: u16 = 40;
 /// Ticks of work to harvest a grown crop.
 pub const HARVEST_WORK: u16 = 60;
+/// Ticks of work (at speed 1) to fell a tree.
+pub const CHOP_WORK: u16 = 120;
 /// Ticks of work at a workshop to brew/cook.
 pub const CRAFT_WORK: u16 = 150;
 /// Ticks between two steps of a walking dwarf.
@@ -114,6 +116,8 @@ pub enum DesignationKind {
     /// Smooth and engrave a wall: the wall stays, but its face is carved with
     /// a scene from the fortress's history.
     Smooth,
+    /// Fell a tree standing on this tile, yielding a log.
+    Chop,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -170,6 +174,9 @@ pub enum ItemKind {
     /// Sewn clothes — the fort's woven cloth made into something to wear.
     /// `stuff` unused. A fine trade good, and a well-dressed dwarf is content.
     Clothes,
+    /// A felled log. `stuff` unused. The carpenter's raw stock (later), and a
+    /// modest trade good.
+    Log,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -737,6 +744,8 @@ pub enum Task {
     Spar { spot: Pos, path: Vec<Pos>, remaining: u16 },
     /// Shelter in a burrow while the alarm sounds.
     Shelter { spot: Pos, path: Vec<Pos> },
+    /// Walk to a marked tree and fell it for a log.
+    Chop { tree: Pos, path: Vec<Pos>, progress: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -823,6 +832,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::ForgeArmor, .. } => "forging armor",
             Task::Craft { kind: CraftKind::MakeFurniture, .. } => "building furniture",
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
+            Task::Chop { .. } => "chopping wood",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
@@ -879,6 +889,8 @@ pub struct SimStats {
     pub furniture_made: u32,
     /// Sets of clothes sewn at the clothier's shop.
     pub clothes_sewn: u32,
+    /// Trees felled by woodcutters.
+    pub trees_felled: u32,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -996,6 +1008,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Bed => raws.materials.get(item.stuff).value * 6 + 20,
         // Sewn clothes: worth well more than the bolt of cloth they're made of.
         ItemKind::Clothes => 40,
+        // A felled log: cheap raw wood.
+        ItemKind::Log => 10,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -1052,6 +1066,9 @@ pub struct Sim {
     /// `true` once a builder has claimed it. A dwarf hauls a boulder over and
     /// raises the wall.
     pub constructions: BTreeMap<Pos, bool>,
+    /// Trees standing on the surface. Passable, but a woodcutter can fell one
+    /// (designate Chop) for a log. Empty unless a map is planted with them.
+    pub trees: BTreeSet<Pos>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -1164,6 +1181,7 @@ impl Sim {
             buildings: Vec::new(),
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
+            trees: BTreeSet::new(),
             engravings: BTreeMap::new(),
             constructions: BTreeMap::new(),
             stats: SimStats::default(),
@@ -1237,6 +1255,8 @@ impl Sim {
                     DesignationKind::Smooth => {
                         tile.is_solid() && !self.engravings.contains_key(&p)
                     }
+                    // Fell a tree standing on this tile.
+                    DesignationKind::Chop => self.trees.contains(&p),
                 };
                 // Never dig away a tile that carries a building (an open
                 // floodgate is a plain Floor, but its Building persists).
@@ -1756,6 +1776,40 @@ impl Sim {
         }
     }
 
+    /// Is there a tree standing on this tile?
+    pub fn tree_at(&self, p: Pos) -> bool {
+        self.trees.contains(&p)
+    }
+
+    /// Scatter `count` trees across walkable surface tiles. Deterministic given
+    /// the sim's rng; called at embark (like the starting dogs) so headless
+    /// tests that don't ask for a forest stay byte-identical.
+    pub fn plant_trees(&mut self, count: usize) {
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        let mut placed = 0;
+        // Bounded attempts so a map with little open ground can't spin forever.
+        for _ in 0..(count * 20) {
+            if placed >= count {
+                break;
+            }
+            let x = self.rng.gen_range(0..w);
+            let y = self.rng.gen_range(0..h);
+            let Some(z) = self.map.walk_surface_z(x as usize, y as usize) else { continue };
+            let p = Pos::new(x, y, z as i32);
+            // Keep trees off occupied ground so they never block a workshop,
+            // farm, stockpile tile, or another tree.
+            if self.trees.contains(&p)
+                || self.building_at(p).is_some()
+                || self.farms.contains_key(&p)
+                || self.map.water_at(p) > 0
+            {
+                continue;
+            }
+            self.trees.insert(p);
+            placed += 1;
+        }
+    }
+
     /// App/embark only: curse one of the founding seven as a secret vampire.
     /// Deliberately kept out of `add_embark_supplies` — the many headless tests
     /// that build a fort by hand must stay byte-identical, so a fort only
@@ -2141,6 +2195,7 @@ impl Sim {
         self.designations.clear();
         self.engravings.clear();
         self.constructions.clear();
+        self.trees.clear();
         self.caravan = None;
         self.water = WaterSim::default();
         if let Some(spring) = natural_spring(&self.map) {
@@ -3915,6 +3970,7 @@ impl Sim {
             Train { animal: usize },
             Build { site: Pos, input: usize },
             Fish { spot: Pos },
+            Chop { tree: Pos },
         }
         let mut best: Option<(u32, Cand)> = None;
         let consider = |dist: u32, c: Cand, best: &mut Option<(u32, Cand)>| {
@@ -3927,6 +3983,14 @@ impl Sim {
         let mut scratch = Vec::with_capacity(6);
         for (&target, des) in &self.designations {
             if des.assigned || des.retry_at > tick {
+                continue;
+            }
+            // Chopping: the woodcutter stands on the (passable) tree tile
+            // itself, rather than working a wall from an adjacent square.
+            if des.kind == DesignationKind::Chop {
+                if self.regions.id(target) == my_region {
+                    consider(target.manhattan(dwarf_pos), Cand::Chop { tree: target }, &mut best);
+                }
                 continue;
             }
             path::work_positions(&self.map, target, &mut scratch);
@@ -4120,6 +4184,17 @@ impl Sim {
                     }
                     None => {
                         self.designations.get_mut(&target).unwrap().retry_at = tick + RETRY_DELAY;
+                    }
+                }
+            }
+            Cand::Chop { tree } => {
+                match path::astar(&self.map, dwarf_pos, tree, MAX_ASTAR_NODES) {
+                    Some(p) => {
+                        self.designations.get_mut(&tree).unwrap().assigned = true;
+                        self.dwarves[i].task = Task::Chop { tree, path: p, progress: 0 };
+                    }
+                    None => {
+                        self.designations.get_mut(&tree).unwrap().retry_at = tick + RETRY_DELAY;
                     }
                 }
             }
@@ -5042,6 +5117,35 @@ impl Sim {
                 self.spawn_item(ItemKind::Seed, crop, tile);
                 self.stats.crops_harvested += 1;
                 self.add_xp(i, Skill::Farming, 25);
+                self.push_thought(i, ThoughtKind::HarvestedCrop);
+                self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+            }
+            Task::Chop { tree, mut path, progress } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Chop { tree, path, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // The tree may have been felled or cancelled while walking over.
+                if !self.trees.contains(&tree) {
+                    self.abandon_task(i);
+                    return;
+                }
+                let speed = 1 + self.dwarves[i].skill_level(Skill::Mining) as u16 / 2;
+                let progress = progress + speed;
+                if progress < CHOP_WORK {
+                    self.dwarves[i].task = Task::Chop { tree, path, progress };
+                    return;
+                }
+                // Timber! The tree falls, leaving a log where it stood.
+                self.trees.remove(&tree);
+                self.designations.remove(&tree);
+                self.spawn_item(ItemKind::Log, 0, tree);
+                self.stats.trees_felled += 1;
+                self.add_xp(i, Skill::Mining, 25);
                 self.push_thought(i, ThoughtKind::HarvestedCrop);
                 self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
@@ -6393,6 +6497,7 @@ impl Sim {
                 self.magma.wake(below);
             }
             DesignationKind::Smooth => unreachable!("smoothing handled above"),
+            DesignationKind::Chop => unreachable!("chopping handled in Task::Chop"),
         }
         // Digging the wall away destroys any scene engraved on it.
         self.engravings.remove(&target);
@@ -6430,7 +6535,7 @@ impl Sim {
     /// drop anything carried, and go idle. Safe to call in any state.
     fn abandon_task(&mut self, i: usize) {
         match self.dwarves[i].task.clone() {
-            Task::Mine { target, .. } => {
+            Task::Mine { target, .. } | Task::Chop { tree: target, .. } => {
                 if let Some(des) = self.designations.get_mut(&target) {
                     des.assigned = false;
                     des.retry_at = self.clock.tick + RETRY_DELAY;
@@ -6565,7 +6670,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 46;
+const SAVE_VERSION: u32 = 47;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6646,6 +6751,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Wool
             | ItemKind::Cloth
             | ItemKind::Clothes
+            | ItemKind::Log
             | ItemKind::RoughGem
             | ItemKind::CutGem => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,

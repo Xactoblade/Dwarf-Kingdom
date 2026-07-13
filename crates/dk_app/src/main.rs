@@ -56,6 +56,7 @@ CAMERA & VIEW\n\
 \n\
 DIG & BUILD (cursor = arrow keys or click)\n\
   d ... mine        x ... stairs      h ... channel     Shift+D ... engrave a wall\n\
+  Shift+X ... fell trees for logs (drag over a stand of trees)\n\
   Shift+B ... build a wall (masons haul stone and raise it)\n\
   v ... still   k ... kitchen   m ... craftsdwarf   j ... loom   ; ... jeweler\n\
   Shift+M ... smelter (ore -> metal bars)   Shift+F ... forge (bars -> weapons & armor)\n\
@@ -211,6 +212,7 @@ enum UiKind {
     Barracks,
     Burrow,
     Library,
+    Chop,
     Cancel,
 }
 
@@ -230,6 +232,7 @@ impl UiKind {
             UiKind::Barracks => "BARRACKS",
             UiKind::Burrow => "BURROW",
             UiKind::Library => "LIBRARY",
+            UiKind::Chop => "CHOP",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -434,6 +437,18 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
+    // Scatter a woodland across the surface — dense in forests, sparse on the
+    // plains, bare in the desert. Woodcutters fell them (Shift+X) for logs.
+    let trees = {
+        use dk_history::Biome;
+        match biome {
+            Biome::Forest => 240,
+            Biome::Grassland | Biome::Swamp | Biome::Hills => 120,
+            Biome::Desert | Biome::Mountains => 20,
+            _ => 60,
+        }
+    };
+    sim.plant_trees(trees);
     // Rarely (about one fort in ten), one of the founding seven keeps a dark
     // secret — a vampire, indistinguishable from any other dwarf until
     // fort-mates start turning up drained of blood.
@@ -1257,6 +1272,9 @@ fn handle_input(
                     UiKind::Barracks => sim.0.add_barracks(anchor, here),
                     UiKind::Burrow => sim.0.add_burrow(anchor, here),
                     UiKind::Library => sim.0.add_library(anchor, here),
+                    UiKind::Chop => {
+                        sim.0.designate_rect(DesignationKind::Chop, anchor, here);
+                    }
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -1293,6 +1311,19 @@ fn handle_input(
             }
             dirty.0 = true;
         }
+    }
+    // Shift+X: designate trees for chopping (two-press rectangle; only tiles
+    // with a tree are marked). Shift keeps it clear of the plain 'x' stairs.
+    if shift && keys.just_pressed(KeyCode::KeyX) {
+        let here = cursor.pos(view_z.0);
+        match mode.0 {
+            Some((UiKind::Chop, anchor)) if anchor.z == here.z => {
+                sim.0.designate_rect(DesignationKind::Chop, anchor, here);
+                mode.0 = None;
+            }
+            _ => mode.0 = Some((UiKind::Chop, here)),
+        }
+        dirty.0 = true;
     }
     // Shift+H: designate a hospital zone (two-press rectangle, like a tavern).
     if shift && keys.just_pressed(KeyCode::KeyH) {
@@ -1776,6 +1807,17 @@ fn tile_visual(
         rgb = mix(rgb, tint, k);
         glyph = "farm";
     }
+    if sim.tree_at(here) {
+        // A tree standing on the surface — leafy green, or amber once a
+        // woodcutter has marked it to be felled.
+        let marked = matches!(
+            sim.designations.get(&here).map(|d| d.kind),
+            Some(DesignationKind::Chop)
+        );
+        let tint = if marked { [0.85, 0.5, 0.12] } else { [0.16, 0.5, 0.14] };
+        rgb = mix(rgb, tint, 0.75);
+        glyph = "crop";
+    }
     if let Some(b) = sim.building_at(here) {
         let tint = match b.kind {
             BuildingKind::Still => [0.85, 0.5, 0.22],
@@ -1975,6 +2017,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Armor => format!("{} armor", raws.materials.get(it.stuff).name),
         ItemKind::Bed => format!("{} bed", raws.materials.get(it.stuff).name),
         ItemKind::Clothes => "set of clothes".to_string(),
+        ItemKind::Log => "wooden log".to_string(),
     };
     // A crafted good wears its quality; an artifact's name already says it.
     if it.quality > 0 && it.kind != ItemKind::Artifact {
@@ -2010,6 +2053,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Armor => Color::srgb(0.62, 0.66, 0.78),
         ItemKind::Bed => item_material_color(raws, stuff),
         ItemKind::Clothes => Color::srgb(0.85, 0.5, 0.7),
+        ItemKind::Log => Color::srgb(0.5, 0.35, 0.18),
     }
 }
 
@@ -2176,6 +2220,7 @@ fn sync_agent_sprites(
                             ItemKind::Armor => "weapon",
                             ItemKind::Bed => "artifact",
                             ItemKind::Clothes => "artifact",
+                            ItemKind::Log => "boulder",
                         };
                         if let Some(atlas) = sprite.texture_atlas.as_mut() {
                             atlas.index = ts.index(glyph);
@@ -2521,6 +2566,7 @@ fn update_hud(
             ItemKind::Armor => format!("{} armor", reg.0.materials.get(it.stuff).name),
             ItemKind::Bed => format!("{} bed (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Clothes => "set of clothes (trade good)".to_string(),
+            ItemKind::Log => "wooden log".to_string(),
         };
         let what = if it.quality > 0 && it.kind != ItemKind::Artifact {
             format!("{} {what}", dk_agents::quality_name(it.quality))
