@@ -186,6 +186,11 @@ pub enum ItemKind {
     /// A wooden musical instrument worked from a log. `stuff` unused. Played at
     /// the tavern, it lets the fort compose songs; also a fine trade good.
     Instrument,
+    /// A raw animal hide, saved from butchering once a tanner stands. `stuff`
+    /// unused. The tanner's stock.
+    Hide,
+    /// Tanned leather. `stuff` unused. A fine trade good worked from a hide.
+    Leather,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -291,6 +296,8 @@ pub enum BuildingKind {
     Clothier,
     /// Works logs into wooden goods — barrels for the fort.
     Carpenter,
+    /// Tans raw hides into leather.
+    Tanner,
     /// Melts stone into blown glass — the fort's finest trade goods.
     GlassFurnace,
     /// A weapon trap: a raider that steps onto it is struck by hidden blades.
@@ -316,6 +323,7 @@ impl BuildingKind {
             BuildingKind::Mason => "Mason's Workshop",
             BuildingKind::Clothier => "Clothier's Shop",
             BuildingKind::Carpenter => "Carpenter's Workshop",
+            BuildingKind::Tanner => "Tanner's Shop",
             BuildingKind::GlassFurnace => "Glass Furnace",
             BuildingKind::Trap => "Weapon Trap",
             BuildingKind::Tomb => "Tomb",
@@ -721,6 +729,8 @@ pub enum CraftKind {
     CarveStatue,
     /// Work a log into a musical instrument at the carpenter's shop.
     MakeInstrument,
+    /// Tan a raw hide into leather at the tanner's shop.
+    TanHide,
     /// Melt a boulder into a piece of blown glass.
     MakeGlass,
 }
@@ -853,6 +863,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
             Task::Craft { kind: CraftKind::CarveStatue, .. } => "carving a statue",
             Task::Craft { kind: CraftKind::MakeInstrument, .. } => "making an instrument",
+            Task::Craft { kind: CraftKind::TanHide, .. } => "tanning leather",
             Task::Chop { .. } => "chopping wood",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
@@ -918,6 +929,8 @@ pub struct SimStats {
     pub statues_carved: u32,
     /// Instruments crafted at the carpenter's shop.
     pub instruments_made: u32,
+    /// Hides tanned into leather at the tanner's shop.
+    pub leather_tanned: u32,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -938,6 +951,7 @@ struct Wants {
     barrels: bool,
     statues: bool,
     instruments: bool,
+    leather: bool,
 }
 
 // -------------------------------------------------------------- adventure
@@ -1046,6 +1060,10 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Statue => raws.materials.get(item.stuff).value * 15 + 40,
         // A musical instrument: a fine crafted good.
         ItemKind::Instrument => 55,
+        // A raw hide: cheap until it's tanned.
+        ItemKind::Hide => 6,
+        // Tanned leather: a fine, renewable trade good.
+        ItemKind::Leather => 30,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -2517,6 +2535,11 @@ impl Sim {
         self.spawn_item(ItemKind::Statue, material, pos);
     }
 
+    /// Drop a raw hide on the ground (scenarios/tests) — the tanner's stock.
+    pub fn debug_spawn_hide(&mut self, pos: Pos) {
+        self.spawn_item(ItemKind::Hide, 0, pos);
+    }
+
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
     /// by citizens in index order, so this dresses the fort's first citizens.
     pub fn debug_spawn_clothes(&mut self, pos: Pos) {
@@ -3793,6 +3816,7 @@ impl Sim {
         let mut pending_barrels = 0usize;
         let mut pending_statues = 0usize;
         let mut pending_instruments = 0usize;
+        let mut pending_leather = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -3808,6 +3832,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::MakeBarrel, .. } => pending_barrels += 1,
                     Task::Craft { kind: CraftKind::CarveStatue, .. } => pending_statues += 1,
                     Task::Craft { kind: CraftKind::MakeInstrument, .. } => pending_instruments += 1,
+                    Task::Craft { kind: CraftKind::TanHide, .. } => pending_leather += 1,
                     _ => {}
                 }
             }
@@ -3821,6 +3846,7 @@ impl Sim {
         let has_mason = self.buildings.iter().any(|b| b.kind == BuildingKind::Mason);
         let has_clothier = self.buildings.iter().any(|b| b.kind == BuildingKind::Clothier);
         let has_carpenter = self.buildings.iter().any(|b| b.kind == BuildingKind::Carpenter);
+        let has_tanner = self.buildings.iter().any(|b| b.kind == BuildingKind::Tanner);
         let has_glassworks = self
             .buildings
             .iter()
@@ -3908,6 +3934,9 @@ impl Sim {
                 let want_instruments = has_carpenter
                     && logs > pending_barrels + pending_instruments
                     && instruments + pending_instruments < 2;
+                // Tan any hides on hand into leather at the tanner's shop.
+                let hides = self.count_kind(ItemKind::Hide);
+                let want_leather = has_tanner && hides > pending_leather;
                 let wants = Wants {
                     drinks: want_drinks,
                     meals: want_meals,
@@ -3921,6 +3950,7 @@ impl Sim {
                     barrels: want_barrels,
                     statues: want_statues,
                     instruments: want_instruments,
+                    leather: want_leather,
                 };
                 match self.assign_one(i, raws, wants) {
                     Some(CraftKind::Brew) => pending_brews += 1,
@@ -3935,6 +3965,7 @@ impl Sim {
                     Some(CraftKind::MakeBarrel) => pending_barrels += 1,
                     Some(CraftKind::CarveStatue) => pending_statues += 1,
                     Some(CraftKind::MakeInstrument) => pending_instruments += 1,
+                    Some(CraftKind::TanHide) => pending_leather += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -4201,6 +4232,13 @@ impl Sim {
             if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeInstrument }, &mut best);
+            }
+        }
+        // Tanning: tan a raw hide into leather at the tanner's shop.
+        if w.leather {
+            if let Some((shop, input)) = self.craft_tanner_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::TanHide }, &mut best);
             }
         }
         // Glassblowing: melt a boulder into fine glass at the furnace.
@@ -4512,6 +4550,27 @@ impl Sim {
             .enumerate()
             .filter(|(_, it)| {
                 it.kind == ItemKind::Cloth
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// Nearest (tanner's shop, raw hide) pair for tanning leather.
+    fn craft_tanner_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Tanner && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Hide
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
             })
@@ -5320,7 +5379,8 @@ impl Sim {
                             | CraftKind::SewClothes
                             | CraftKind::MakeBarrel
                             | CraftKind::CarveStatue
-                            | CraftKind::MakeInstrument => Skill::Crafting,
+                            | CraftKind::MakeInstrument
+                            | CraftKind::TanHide => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -5423,6 +5483,13 @@ impl Sim {
                                 // is valued as a fine crafted good on its own.
                                 self.stats.instruments_made += 1;
                                 self.spawn_quality_item(ItemKind::Instrument, 0, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::TanHide => {
+                                // A hide carries no material index; leather is
+                                // valued as a fine good on its own.
+                                self.stats.leather_tanned += 1;
+                                self.spawn_quality_item(ItemKind::Leather, 0, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -5578,6 +5645,11 @@ impl Sim {
                 let meat = if adult { kind.meat_yield() } else { kind.meat_yield() / 2 + 1 };
                 for _ in 0..meat {
                     self.spawn_item(ItemKind::Meal, 0, apos);
+                }
+                // Once a tanner stands, the hide is saved to be tanned. Gated on
+                // the building so a fort without one butchers exactly as before.
+                if self.buildings.iter().any(|b| b.kind == BuildingKind::Tanner) {
+                    self.spawn_item(ItemKind::Hide, 0, apos);
                 }
                 self.stats.animals_butchered += 1;
                 self.add_xp(i, Skill::Cooking, 15);
@@ -6872,7 +6944,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 50;
+const SAVE_VERSION: u32 = 51;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6957,6 +7029,8 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Log
             | ItemKind::Barrel
             | ItemKind::Instrument
+            | ItemKind::Hide
+            | ItemKind::Leather
             | ItemKind::RoughGem
             | ItemKind::CutGem => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
