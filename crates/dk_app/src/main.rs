@@ -64,6 +64,7 @@ DIG & BUILD (cursor = arrow keys or click)\n\
   Shift+C ... clothier's shop (cloth -> clothes; a dressed dwarf frets less)\n\
   Shift+J ... carpenter's workshop (logs -> barrels & instruments)\n\
   Shift+N ... tanner's shop (butchered hides -> leather)\n\
+  Shift+P ... dig a well (thirsty dwarves draw water when drink runs out)\n\
   Shift+G ... glass furnace   Shift+T ... weapon trap   b ... tomb\n\
   g ... floodgate   l ... lever   t ... pull lever\n\
 \n\
@@ -1444,6 +1445,16 @@ fn handle_input(
         }
         dirty.0 = true;
     }
+    // Shift+P: dig a well (Shift keeps it clear of the stockpile designation).
+    if shift && keys.just_pressed(KeyCode::KeyP) {
+        let here = cursor.pos(view_z.0);
+        if sim.0.add_building(BuildingKind::Well, here) {
+            info!("dug a Well at {:?}", here);
+        } else {
+            warn!("can't dig a Well there");
+        }
+        dirty.0 = true;
+    }
     // Shift+G: build a glass furnace (Shift keeps it clear of the floodgate).
     if shift && keys.just_pressed(KeyCode::KeyG) {
         let here = cursor.pos(view_z.0);
@@ -1863,6 +1874,7 @@ fn tile_visual(
             BuildingKind::Clothier => [0.7, 0.6, 0.8],
             BuildingKind::Carpenter => [0.55, 0.4, 0.22],
             BuildingKind::Tanner => [0.6, 0.45, 0.3],
+            BuildingKind::Well => [0.3, 0.5, 0.85],
             BuildingKind::GlassFurnace => [0.5, 0.85, 0.85],
             BuildingKind::Trap => [0.85, 0.2, 0.2],
         };
@@ -1882,6 +1894,7 @@ fn tile_visual(
             BuildingKind::Clothier => "still",
             BuildingKind::Carpenter => "artifact",
             BuildingKind::Tanner => "still",
+            BuildingKind::Well => "gate",
             BuildingKind::GlassFurnace => "still",
             BuildingKind::Trap => "weapon",
         };
@@ -2721,7 +2734,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}   songs {}{}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow L:library u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler M:smelter K:mason C:clothier J:carpenter N:tanner F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
+             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow L:library u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler M:smelter K:mason C:clothier J:carpenter N:tanner P:well F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,

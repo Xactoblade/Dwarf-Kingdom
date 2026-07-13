@@ -298,6 +298,9 @@ pub enum BuildingKind {
     Carpenter,
     /// Tans raw hides into leather.
     Tanner,
+    /// A well: a thirsty dwarf can draw clean water from it when the fort has
+    /// run dry of brewed drink.
+    Well,
     /// Melts stone into blown glass — the fort's finest trade goods.
     GlassFurnace,
     /// A weapon trap: a raider that steps onto it is struck by hidden blades.
@@ -324,6 +327,7 @@ impl BuildingKind {
             BuildingKind::Clothier => "Clothier's Shop",
             BuildingKind::Carpenter => "Carpenter's Workshop",
             BuildingKind::Tanner => "Tanner's Shop",
+            BuildingKind::Well => "Well",
             BuildingKind::GlassFurnace => "Glass Furnace",
             BuildingKind::Trap => "Weapon Trap",
             BuildingKind::Tomb => "Tomb",
@@ -774,6 +778,9 @@ pub enum Task {
     Shelter { spot: Pos, path: Vec<Pos> },
     /// Walk to a marked tree and fell it for a log.
     Chop { tree: Pos, path: Vec<Pos>, progress: u16 },
+    /// Walk to a well and drink clean water (a fallback when brewed drink is
+    /// gone).
+    DrinkWell { spot: Pos, path: Vec<Pos> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -865,6 +872,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::MakeInstrument, .. } => "making an instrument",
             Task::Craft { kind: CraftKind::TanHide, .. } => "tanning leather",
             Task::Chop { .. } => "chopping wood",
+            Task::DrinkWell { .. } => "drawing water",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
@@ -3995,6 +4003,21 @@ impl Sim {
                     return None;
                 }
             }
+            // No brewed drink within reach — draw water from a well if one
+            // stands in this region. (A pure fallback; if unreachable it simply
+            // falls through, exactly as a fort without a well would.)
+            let well = self
+                .buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::Well && self.regions.id(b.pos) == my_region)
+                .map(|b| b.pos)
+                .min_by_key(|p| p.manhattan(dwarf_pos));
+            if let Some(well) = well {
+                if let Some(p) = path::astar(&self.map, dwarf_pos, well, MAX_ASTAR_NODES) {
+                    self.dwarves[i].task = Task::DrinkWell { spot: well, path: p };
+                    return None;
+                }
+            }
         }
         // The wounded seek the hospital FIRST — a bleeding dwarf must mend
         // before it goes to drink away its troubles (bleeding, or a part below
@@ -5220,6 +5243,25 @@ impl Sim {
                     );
                 }
                 self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+            }
+            Task::DrinkWell { spot, mut path } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::DrinkWell { spot, path };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // The well may have been removed while the dwarf walked over.
+                if self.building_at(spot).map(|b| b.kind) != Some(BuildingKind::Well) {
+                    self.abandon_task(i);
+                    return;
+                }
+                self.dwarves[i].thirst = 0.0;
+                self.dwarves[i].dehydrated_since = None;
+                self.push_thought(i, ThoughtKind::HadDrink);
+                self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
             Task::Plant { tile, seed, mut path, stage } => {
                 if !path.is_empty() {
@@ -6869,7 +6911,8 @@ impl Sim {
             | Task::Pray { .. }
             | Task::Recover { .. }
             | Task::Spar { .. }
-            | Task::Shelter { .. } => {}
+            | Task::Shelter { .. }
+            | Task::DrinkWell { .. } => {}
         }
         self.drop_carried(i);
         self.dwarves[i].task = Task::Idle { wander_cd: 5 };
@@ -6944,7 +6987,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 51;
+const SAVE_VERSION: u32 = 52;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
