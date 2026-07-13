@@ -287,6 +287,18 @@ struct CategoryButton(u8);
 /// The category names, indexed by the `cat` field on each tool.
 const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders"];
 
+/// The dwarf whose info sheet is open (clicked with no tool selected).
+#[derive(Resource, Default)]
+struct SelectedDwarf(Option<usize>);
+
+/// Root node of the click-a-dwarf info panel.
+#[derive(Component)]
+struct DwarfPanel;
+
+/// The text inside the dwarf info panel.
+#[derive(Component)]
+struct DwarfPanelText;
+
 /// Marks a clickable toolbar button and carries what it does + how to describe it.
 #[derive(Component, Clone)]
 struct ToolButton {
@@ -669,6 +681,7 @@ fn main() {
         .insert_resource(UiMode::default())
         .insert_resource(ActiveTool::default())
         .insert_resource(OpenCategory(Some(0)))
+        .insert_resource(SelectedDwarf::default())
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
         .insert_resource(OverlayRefresh(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(ShotState::default())
@@ -682,6 +695,8 @@ fn main() {
                     (handle_toolbar, handle_category, tool_escape, toolbar_layout).chain(),
                     handle_mouse,
                     apply_active_tool,
+                    select_dwarf,
+                    update_dwarf_panel,
                     handle_input,
                     handle_trade_input,
                     toolbar_visibility,
@@ -871,6 +886,31 @@ fn setup(
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.8)),
         TooltipUi,
     ));
+
+    // Click-a-dwarf info sheet — a right-side panel, hidden until a dwarf is
+    // clicked with no tool selected.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Px(360.0),
+                max_height: Val::Percent(88.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.06, 0.06, 0.09, 0.92)),
+            Visibility::Hidden,
+            DwarfPanel,
+        ))
+        .with_child((
+            Text::new(""),
+            TextFont { font_size: 14.0, ..default() },
+            TextColor(Color::srgb(0.92, 0.92, 0.85)),
+            DwarfPanelText,
+        ));
 
     // The mouse-driven bottom toolbar: a bar of category launchers, with each
     // category's tools revealed in a panel above when it's opened.
@@ -1237,11 +1277,14 @@ fn tool_escape(
     screen: Res<ScreenRes>,
     mut active: ResMut<ActiveTool>,
     mut open: ResMut<OpenCategory>,
+    mut selected: ResMut<SelectedDwarf>,
 ) {
     if screen.0 != Screen::Playing || !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if active.anchor.is_some() {
+    if selected.0.is_some() {
+        selected.0 = None;
+    } else if active.anchor.is_some() {
         active.anchor = None;
     } else if active.tool.is_some() {
         active.tool = None;
@@ -1300,6 +1343,60 @@ fn apply_active_tool(
         },
     }
     dirty.0 = true;
+}
+
+/// With no tool selected, clicking a tile opens that dwarf's info sheet;
+/// clicking an empty tile closes it.
+fn select_dwarf(
+    buttons: Res<ButtonInput<MouseButton>>,
+    screen: Res<ScreenRes>,
+    active: Res<ActiveTool>,
+    cursor: Res<Cursor>,
+    view_z: Res<ViewZ>,
+    sim: Res<SimRes>,
+    mut selected: ResMut<SelectedDwarf>,
+) {
+    if screen.0 != Screen::Playing || active.over_ui || active.tool.is_some() {
+        return;
+    }
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
+    let here = Pos::new(cursor.x, cursor.y, view_z.0);
+    // The dwarf standing on the clicked tile, if any (fort folk only).
+    let found = sim.dwarves.iter().position(|d| {
+        d.alive && d.faction == dk_agents::Faction::Fort && d.pos == here
+    });
+    // Clicking a dwarf opens their sheet; clicking bare ground closes it.
+    if selected.0 != found {
+        selected.0 = found;
+    }
+}
+
+/// Populate and show/hide the dwarf info sheet.
+fn update_dwarf_panel(
+    selected: Res<SelectedDwarf>,
+    sim: Res<SimRes>,
+    reg: Res<Registry>,
+    mut panel: Query<&mut Visibility, With<DwarfPanel>>,
+    mut text: Query<&mut Text, With<DwarfPanelText>>,
+) {
+    if !selected.is_changed() {
+        return;
+    }
+    let show = match (selected.0, sim.0.as_ref()) {
+        (Some(i), Some(sim)) if i < sim.dwarves.len() => {
+            if let Ok(mut t) = text.single_mut() {
+                t.0 = sim.biography(i, &reg.0);
+            }
+            true
+        }
+        _ => false,
+    };
+    if let Ok(mut vis) = panel.single_mut() {
+        *vis = if show { Visibility::Inherited } else { Visibility::Hidden };
+    }
 }
 
 /// Show the toolbar and tooltip only on the play screen.
