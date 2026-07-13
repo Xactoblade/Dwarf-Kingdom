@@ -48,6 +48,33 @@ fn a_woodcutter_fells_a_tree_for_a_log() {
 }
 
 #[test]
+fn cancelling_a_chop_spares_the_tree() {
+    // Cancelling a chop designation must actually stop the woodcutter — the
+    // tree should still be standing and no log produced (regression: cancel_rect
+    // handled Mine/Build but not Chop, so the cutter felled it anyway).
+    let (mut sim, raws) = wood_fort(3304);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile for a tree");
+    sim.trees.insert(tree);
+    sim.designate_rect(DesignationKind::Chop, tree, tree);
+
+    // Let a cutter get assigned and start walking, then cancel the designation.
+    for _ in 0..40 {
+        sim.step(&raws);
+    }
+    sim.cancel_rect(tree, tree);
+
+    // Give it plenty of time to (wrongly) finish felling if the cancel failed.
+    for _ in 0..4_000 {
+        sim.step(&raws);
+    }
+    assert!(sim.tree_at(tree), "the cancelled tree should still stand");
+    assert_eq!(sim.stats.trees_felled, 0, "nothing should have been felled");
+    assert_eq!(sim.count_kind(ItemKind::Log), 0, "no log from a cancelled chop");
+}
+
+#[test]
 fn a_treeless_fort_grows_no_logs() {
     // With no trees planted, there is nothing to chop and no logs ever appear.
     let (mut sim, raws) = wood_fort(3302);

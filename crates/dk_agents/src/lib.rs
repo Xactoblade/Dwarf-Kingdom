@@ -1299,7 +1299,10 @@ impl Sim {
                 if self.designations.remove(&p).is_some() {
                     removed += 1;
                     for i in 0..self.dwarves.len() {
+                        // Stop a digger OR a woodcutter already working this tile
+                        // — cancelling must actually cancel (Chop was missing).
                         if matches!(self.dwarves[i].task, Task::Mine { target, .. } if target == p)
+                            || matches!(self.dwarves[i].task, Task::Chop { tree, .. } if tree == p)
                         {
                             self.abandon_task(i);
                         }
