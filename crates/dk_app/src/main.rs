@@ -308,6 +308,11 @@ struct OpenCategory(Option<u8>);
 #[derive(Component)]
 struct CategoryButton(u8);
 
+/// Tracks a toggle button's last-frame pressed state so a click toggles once
+/// (Interaction stays Pressed every frame the mouse is held).
+#[derive(Component, Default)]
+struct WasPressed(bool);
+
 /// The category names, indexed by the `cat` field on each tool.
 const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders"];
 
@@ -326,6 +331,55 @@ struct DwarfPanelText;
 /// Handle to the dynamic minimap texture (one pixel per map tile).
 #[derive(Resource)]
 struct Minimap(Handle<Image>);
+
+/// Whether the Stocks (inventory) panel is open.
+#[derive(Resource, Default)]
+struct ShowStocks(bool);
+
+/// The "Stocks" toggle button in the top-right.
+#[derive(Component)]
+struct StocksButton;
+
+/// Root of the Stocks panel (toggled).
+#[derive(Component)]
+struct StocksPanel;
+
+/// The text inside the Stocks panel.
+#[derive(Component)]
+struct StocksPanelText;
+
+/// The fort's goods, grouped for the Stocks panel (label, the item kinds in it).
+const STOCK_GROUPS: &[(&str, &[ItemKind])] = &[
+    ("Food & Drink", &[ItemKind::Meal, ItemKind::Drink, ItemKind::Crop, ItemKind::Seed]),
+    (
+        "Raw materials",
+        &[
+            ItemKind::Boulder,
+            ItemKind::Bar,
+            ItemKind::Log,
+            ItemKind::Wool,
+            ItemKind::Cloth,
+            ItemKind::Hide,
+            ItemKind::Leather,
+        ],
+    ),
+    (
+        "Trade goods",
+        &[
+            ItemKind::Craft,
+            ItemKind::Glass,
+            ItemKind::CutGem,
+            ItemKind::RoughGem,
+            ItemKind::Statue,
+            ItemKind::Barrel,
+            ItemKind::Instrument,
+            ItemKind::Clothes,
+        ],
+    ),
+    ("Furniture", &[ItemKind::Bed]),
+    ("Military", &[ItemKind::Weapon, ItemKind::Armor]),
+    ("Special", &[ItemKind::Artifact, ItemKind::Corpse]),
+];
 
 /// The yellow rectangle on the minimap showing the on-screen viewport.
 #[derive(Component)]
@@ -722,6 +776,7 @@ fn main() {
         .insert_resource(OpenCategory(Some(0)))
         .insert_resource(SelectedDwarf::default())
         .insert_resource(PendingEmbark::default())
+        .insert_resource(ShowStocks::default())
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
         .insert_resource(OverlayRefresh(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(ShotState::default())
@@ -757,6 +812,7 @@ fn main() {
                     position_cursor_sprite,
                     update_hud,
                     update_minimap,
+                    update_stocks,
                     play_event_sounds,
                     screenshot_mode,
                 )
@@ -1038,6 +1094,7 @@ fn setup(
                         },
                         BackgroundColor(tool_bg(i as u8, false, false)),
                         CategoryButton(i as u8),
+                        WasPressed::default(),
                     ))
                     .with_child((
                         Text::new(*name),
@@ -1126,6 +1183,49 @@ fn setup(
                 ));
             }
         });
+
+    // "Stocks" toggle button (top-right) and the inventory panel it opens.
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(8.0),
+                padding: UiRect::axes(Val::Px(12.0), Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(tool_bg(2, false, false)),
+            StocksButton,
+            WasPressed::default(),
+        ))
+        .with_child((
+            Text::new("Stocks"),
+            TextFont { font_size: 15.0, ..default() },
+            TextColor(Color::srgb(0.95, 0.95, 0.92)),
+        ));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(44.0),
+                width: Val::Px(300.0),
+                max_height: Val::Percent(80.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.06, 0.06, 0.09, 0.94)),
+            Visibility::Hidden,
+            StocksPanel,
+        ))
+        .with_child((
+            Text::new(""),
+            TextFont { font_size: 14.0, ..default() },
+            TextColor(Color::srgb(0.92, 0.92, 0.85)),
+            StocksPanelText,
+        ));
 }
 
 // ---------------------------------------------------------------- systems
@@ -1342,13 +1442,8 @@ fn handle_toolbar(
             over = true;
         }
         if matches!(interaction, Interaction::Pressed) {
-            // Toggle: clicking the active tool again puts the mouse back to
-            // plain camera/cursor use (a mouse-only "deselect").
-            if active.tool == Some(tb.tool) {
-                active.tool = None;
-            } else {
-                active.tool = Some(tb.tool);
-            }
+            // Select this tool (idempotent while held). Deselect with Esc.
+            active.tool = Some(tb.tool);
             active.anchor = None;
         }
         if hovered {
@@ -1411,15 +1506,17 @@ fn handle_embark_buttons(
 fn handle_category(
     screen: Res<ScreenRes>,
     mut open: ResMut<OpenCategory>,
-    mut buttons: Query<(&Interaction, &CategoryButton, &mut BackgroundColor)>,
+    mut buttons: Query<(&Interaction, &CategoryButton, &mut WasPressed, &mut BackgroundColor)>,
 ) {
     if screen.0 != Screen::Playing {
         return;
     }
-    for (interaction, cb, mut bg) in &mut buttons {
-        if matches!(interaction, Interaction::Pressed) {
+    for (interaction, cb, mut was, mut bg) in &mut buttons {
+        let pressed = matches!(interaction, Interaction::Pressed);
+        if pressed && !was.0 {
             open.0 = if open.0 == Some(cb.0) { None } else { Some(cb.0) };
         }
+        was.0 = pressed;
         let is_open = open.0 == Some(cb.0);
         let hovered = !matches!(interaction, Interaction::None);
         *bg = BackgroundColor(tool_bg(cb.0, is_open, hovered));
@@ -1733,6 +1830,92 @@ fn apply_embark_action(
         }
         // Chose an unembarkable tile (ocean/mountains) — no-op, like the key.
         _ => {}
+    }
+}
+
+/// A plain plural name for an item kind, for the Stocks list.
+fn item_kind_name(k: ItemKind) -> &'static str {
+    match k {
+        ItemKind::Meal => "prepared meals",
+        ItemKind::Drink => "drinks",
+        ItemKind::Crop => "crops",
+        ItemKind::Seed => "seeds",
+        ItemKind::Boulder => "stone boulders",
+        ItemKind::Bar => "metal bars",
+        ItemKind::Log => "logs",
+        ItemKind::Wool => "raw wool",
+        ItemKind::Cloth => "cloth",
+        ItemKind::Hide => "raw hides",
+        ItemKind::Leather => "leather",
+        ItemKind::Craft => "stone crafts",
+        ItemKind::Glass => "blown glass",
+        ItemKind::CutGem => "cut gems",
+        ItemKind::RoughGem => "rough gems",
+        ItemKind::Statue => "statues",
+        ItemKind::Barrel => "barrels",
+        ItemKind::Instrument => "instruments",
+        ItemKind::Clothes => "sets of clothes",
+        ItemKind::Bed => "beds",
+        ItemKind::Weapon => "weapons",
+        ItemKind::Armor => "suits of armor",
+        ItemKind::Artifact => "artifacts",
+        ItemKind::Corpse => "corpses (unburied)",
+    }
+}
+
+/// The Stocks button toggles a categorized inventory panel; populate it while
+/// it's open.
+fn update_stocks(
+    screen: Res<ScreenRes>,
+    mut show: ResMut<ShowStocks>,
+    mut active: ResMut<ActiveTool>,
+    sim: Res<SimRes>,
+    mut button: Query<
+        (&Interaction, &mut WasPressed, &mut BackgroundColor, &mut Visibility),
+        (With<StocksButton>, Without<StocksPanel>),
+    >,
+    mut panel: Query<&mut Visibility, (With<StocksPanel>, Without<StocksButton>)>,
+    mut text: Query<&mut Text, With<StocksPanelText>>,
+) {
+    let playing = screen.0 == Screen::Playing;
+    if let Ok((interaction, mut was, mut bg, mut vis)) = button.single_mut() {
+        *vis = if playing { Visibility::Inherited } else { Visibility::Hidden };
+        if playing {
+            let hovered = !matches!(interaction, Interaction::None);
+            let pressed = matches!(interaction, Interaction::Pressed);
+            if pressed && !was.0 {
+                show.0 = !show.0;
+            }
+            was.0 = pressed;
+            if hovered {
+                active.over_ui = true;
+            }
+            *bg = BackgroundColor(tool_bg(2, show.0, hovered));
+        }
+    }
+    let open = playing && show.0;
+    if let Ok(mut vis) = panel.single_mut() {
+        *vis = if open { Visibility::Inherited } else { Visibility::Hidden };
+    }
+    if open {
+        if let Some(sim) = sim.0.as_ref() {
+            let mut s = String::from("STOCKS\n");
+            for (group, kinds) in STOCK_GROUPS {
+                let mut rows = String::new();
+                for &k in *kinds {
+                    let n = sim.count_kind(k);
+                    if n > 0 {
+                        rows.push_str(&format!("   {n:>4}  {}\n", item_kind_name(k)));
+                    }
+                }
+                if !rows.is_empty() {
+                    s.push_str(&format!("\n{group}\n{rows}"));
+                }
+            }
+            if let Ok(mut t) = text.single_mut() {
+                t.0 = s;
+            }
+        }
     }
 }
 
