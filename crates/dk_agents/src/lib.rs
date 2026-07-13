@@ -93,6 +93,10 @@ pub const VAMPIRE_FEED_INTERVAL: u64 = 3 * TICKS_PER_DAY / 2;
 /// Blood a vampire drains in one feeding (of 100). Rarely lethal in a single
 /// bite, but repeated feeding on the same sleeper eventually bleeds them white.
 pub const VAMPIRE_DRAIN: f32 = 34.0;
+/// Days in the lunar cycle; a werebeast transforms during the first few nights.
+pub const WERE_MOON_CYCLE: u64 = 28;
+/// Nights of each cycle the moon is full (a cursed dwarf is a beast).
+pub const WERE_MOON_NIGHTS: u64 = 2;
 /// Ticks spent in prayer.
 pub const PRAY_TICKS: u16 = 200;
 /// Ticks a wounded dwarf lingers in the hospital before checking out.
@@ -836,6 +840,11 @@ pub struct Dwarf {
     pub vampire: bool,
     /// Tick a vampire last fed, pacing its hunt for blood.
     pub last_fed: u64,
+    /// A werebeast: an ordinary dwarf by day, but under the full moon it twists
+    /// into a snarling beast and turns on the fort. The curse spreads by its bite.
+    pub werebeast: bool,
+    /// Currently transformed into the beast (only true during a full moon).
+    pub were_form: bool,
 }
 
 impl Dwarf {
@@ -1908,6 +1917,67 @@ impl Sim {
         }
     }
 
+    /// App/embark only: afflict one of the founders with the werebeast curse.
+    pub fn curse_a_werebeast(&mut self) {
+        let candidates: Vec<usize> = self
+            .dwarves
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.alive && d.faction == Faction::Fort)
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let pick = candidates[self.rng.gen_range(0..candidates.len())];
+        self.dwarves[pick].werebeast = true;
+    }
+
+    /// App/embark only: rarely (about one fort in twelve) a founder carries the
+    /// werebeast curse, unknown until the first full moon.
+    pub fn maybe_curse_a_werebeast(&mut self) {
+        if self.rng.gen_ratio(1, 12) {
+            self.curse_a_werebeast();
+        }
+    }
+
+    /// Under the full moon, cursed dwarves twist into beasts and turn on the
+    /// fort; at dawn after, the survivors revert. Draws no rng and changes
+    /// nothing unless a cursed dwarf exists, so a fort without one is identical.
+    fn tick_werebeasts(&mut self) {
+        if !self.dwarves.iter().any(|d| d.alive && d.werebeast) {
+            return;
+        }
+        let day = self.clock.tick / TICKS_PER_DAY;
+        let full_moon = day % WERE_MOON_CYCLE < WERE_MOON_NIGHTS;
+        for i in 0..self.dwarves.len() {
+            if !self.dwarves[i].alive || !self.dwarves[i].werebeast {
+                continue;
+            }
+            let were_form = self.dwarves[i].were_form;
+            let is_fort = self.dwarves[i].faction == Faction::Fort;
+            if full_moon && !were_form && is_fort {
+                // The beast wakes: it turns hostile and falls upon the fort.
+                let name = self.dwarves[i].name.clone();
+                self.abandon_task(i);
+                self.dwarves[i].were_form = true;
+                self.dwarves[i].faction = Faction::Hostile;
+                self.dwarves[i].beast = true;
+                self.log_event(format!(
+                    "Under the full moon, {name} twists into a snarling beast!"
+                ));
+            } else if !full_moon && were_form {
+                // Dawn: the beast passes, leaving a shaken dwarf.
+                let name = self.dwarves[i].name.clone();
+                self.dwarves[i].were_form = false;
+                self.dwarves[i].beast = false;
+                self.dwarves[i].faction = Faction::Fort;
+                self.dwarves[i].task = Task::Idle { wander_cd: 0 };
+                self.log_event(format!("{name} returns to their senses, the curse sated for now."));
+            }
+        }
+    }
+
     /// A vampire feeds on the blood of an adjacent sleeping fort-mate. This
     /// draws no rng and changes nothing unless a *living fort vampire* exists,
     /// so a fort without one steps byte-for-byte identically — the whole
@@ -2665,6 +2735,7 @@ impl Sim {
         self.tick_animals_movement();
         self.tick_war_animals();
         self.tick_vampires();
+        self.tick_werebeasts();
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
         }
@@ -6245,6 +6316,18 @@ impl Sim {
                 self.stats.raiders_slain += 1;
             }
         }
+        // A werebeast's bite passes the curse to a fort-mate who survives it.
+        // The && short-circuits, so no rng is drawn unless a beast is attacking.
+        if self.dwarves[attacker].were_form
+            && self.dwarves[defender].alive
+            && self.dwarves[defender].faction == Faction::Fort
+            && !self.dwarves[defender].werebeast
+            && self.rng.gen_ratio(1, 4)
+        {
+            self.dwarves[defender].werebeast = true;
+            let name = self.dwarves[defender].name.clone();
+            self.log_event(format!("{name} is savaged by the beast -- the curse takes root."));
+        }
     }
 
     /// Blood, breath, bleeding, and rest-healing — applies to every faction.
@@ -6981,13 +7064,15 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         follower: false,
         vampire: false,
         last_fed: 0,
+        werebeast: false,
+        were_form: false,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 52;
+const SAVE_VERSION: u32 = 53;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

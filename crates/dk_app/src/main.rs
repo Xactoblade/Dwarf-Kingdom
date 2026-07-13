@@ -681,6 +681,8 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // secret — a vampire, indistinguishable from any other dwarf until
     // fort-mates start turning up drained of blood.
     sim.maybe_curse_a_vampire();
+    // Rarer still, a founder is a werebeast — a beast under the full moon.
+    sim.maybe_curse_a_werebeast();
     // Caravans come from the nearest friendly neighbors.
     sim.trade_partner = world
         .nearest_friendly_civ(region.0, region.1)
