@@ -20,6 +20,8 @@
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
@@ -298,6 +300,21 @@ struct DwarfPanel;
 /// The text inside the dwarf info panel.
 #[derive(Component)]
 struct DwarfPanelText;
+
+/// Handle to the dynamic minimap texture (one pixel per map tile).
+#[derive(Resource)]
+struct Minimap(Handle<Image>);
+
+/// The yellow rectangle on the minimap showing the on-screen viewport.
+#[derive(Component)]
+struct MinimapViewport;
+
+/// The minimap image node (toggled with the play screen).
+#[derive(Component)]
+struct MinimapContainer;
+
+/// The minimap image node itself (side of the square in screen px).
+const MINIMAP_PX: f32 = 190.0;
 
 /// Marks a clickable toolbar button and carries what it does + how to describe it.
 #[derive(Component, Clone)]
@@ -708,6 +725,7 @@ fn main() {
                     sync_agent_sprites,
                     position_cursor_sprite,
                     update_hud,
+                    update_minimap,
                     play_event_sounds,
                     screenshot_mode,
                 )
@@ -784,6 +802,7 @@ fn setup(
     reg: Res<Registry>,
     asset_server: Res<AssetServer>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     // Load the sprite sheet if data/tileset.ron declared one.
     let tileset = reg.0.tileset.as_ref().map(|def| {
@@ -997,6 +1016,42 @@ fn setup(
                 }
             });
         });
+
+    // Minimap: a live top-down picture of the map (one pixel per tile) in the
+    // lower-right corner, with a yellow outline showing the on-screen viewport.
+    let minimap = Image::new_fill(
+        Extent3d { width: MAP_W as u32, height: MAP_H as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[18, 18, 22, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::all(),
+    );
+    let minimap = images.add(minimap);
+    commands.insert_resource(Minimap(minimap.clone()));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                bottom: Val::Px(60.0),
+                width: Val::Px(MINIMAP_PX),
+                height: Val::Px(MINIMAP_PX),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.5, 0.5, 0.55)),
+            ImageNode::new(minimap),
+            MinimapContainer,
+        ))
+        .with_child((
+            Node {
+                position_type: PositionType::Absolute,
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(Color::srgb(1.0, 0.95, 0.3)),
+            MinimapViewport,
+        ));
 }
 
 // ---------------------------------------------------------------- systems
@@ -1396,6 +1451,82 @@ fn update_dwarf_panel(
     };
     if let Ok(mut vis) = panel.single_mut() {
         *vis = if show { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
+/// Colour of a tile on the minimap: the topmost non-empty tile's material
+/// (water shows blue), scanned from the surface down.
+fn minimap_color(sim: &Sim, raws: &Raws, x: i32, y: i32) -> [u8; 3] {
+    for z in (0..MAP_D as i32).rev() {
+        let p = Pos::new(x, y, z);
+        if let Some(t) = sim.map.tile_at(p) {
+            if t.shape != TileShape::Empty {
+                if sim.map.water_at(p) >= 3 {
+                    return [40, 90, 160];
+                }
+                return raws.materials.get(t.material).color;
+            }
+        }
+    }
+    [18, 18, 22]
+}
+
+/// Repaint the minimap texture and move the yellow viewport rectangle to match
+/// what's on screen.
+fn update_minimap(
+    screen: Res<ScreenRes>,
+    sim: Res<SimRes>,
+    reg: Res<Registry>,
+    minimap: Res<Minimap>,
+    mut images: ResMut<Assets<Image>>,
+    windows: Query<&Window>,
+    camera: Query<&Transform, With<Camera2d>>,
+    mut container: Query<&mut Visibility, With<MinimapContainer>>,
+    mut viewport: Query<&mut Node, With<MinimapViewport>>,
+) {
+    // Hide the minimap off the play screen.
+    let playing = screen.0 == Screen::Playing;
+    if let Ok(mut vis) = container.single_mut() {
+        *vis = if playing { Visibility::Inherited } else { Visibility::Hidden };
+    }
+    if !playing {
+        return;
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
+
+    // Repaint the map picture (one pixel per tile; row 0 = top = high map-y).
+    if let Some(img) = images.get_mut(&minimap.0) {
+        if let Some(data) = img.data.as_mut() {
+            for y in 0..MAP_H {
+                let row = MAP_H - 1 - y;
+                for x in 0..MAP_W {
+                    let c = minimap_color(sim, &reg.0, x as i32, y as i32);
+                    let idx = (row * MAP_W + x) * 4;
+                    data[idx] = c[0];
+                    data[idx + 1] = c[1];
+                    data[idx + 2] = c[2];
+                    data[idx + 3] = 255;
+                }
+            }
+        }
+    }
+
+    // Move the viewport outline to the camera's visible tile rectangle.
+    let (Ok(window), Ok(cam)) = (windows.single(), camera.single()) else { return };
+    let ppt = MINIMAP_PX / MAP_W as f32;
+    let half_w = window.width() * 0.5 * cam.scale.x / TILE;
+    let half_h = window.height() * 0.5 * cam.scale.y / TILE;
+    let cx = cam.translation.x / TILE;
+    let cy = cam.translation.y / TILE;
+    let x0 = (cx - half_w).clamp(0.0, MAP_W as f32);
+    let x1 = (cx + half_w).clamp(0.0, MAP_W as f32);
+    let y0 = (cy - half_h).clamp(0.0, MAP_H as f32);
+    let y1 = (cy + half_h).clamp(0.0, MAP_H as f32);
+    if let Ok(mut node) = viewport.single_mut() {
+        node.left = Val::Px(x0 * ppt);
+        node.top = Val::Px((MAP_H as f32 - y1) * ppt);
+        node.width = Val::Px((x1 - x0).max(2.0) * ppt);
+        node.height = Val::Px((y1 - y0).max(2.0) * ppt);
     }
 }
 
