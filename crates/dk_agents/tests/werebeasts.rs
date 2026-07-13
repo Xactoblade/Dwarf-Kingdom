@@ -41,6 +41,19 @@ fn a_werebeast_transforms_under_the_full_moon_and_reverts() {
 }
 
 #[test]
+fn a_lone_werebeast_transforming_is_not_a_fallen_fort() {
+    // Regression: when the only citizen transforms, alive_dwarves() (fort-only)
+    // hits 0, but the fort has NOT fallen -- the beast reverts at dawn.
+    let (mut sim, raws) = were_fort(6605, 1);
+    sim.curse_a_werebeast();
+    for _ in 0..50 {
+        sim.step(&raws);
+    }
+    assert!(sim.dwarves[0].were_form, "the lone citizen is a beast under the moon");
+    assert!(!sim.fallen(), "a fort of werebeasts has not fallen; they revert at dawn");
+}
+
+#[test]
 fn a_fort_with_no_curse_never_transforms() {
     let (mut sim, raws) = were_fort(6602, 4);
     for _ in 0..(TICKS_PER_DAY * 3) {

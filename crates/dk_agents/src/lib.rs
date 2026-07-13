@@ -97,6 +97,10 @@ pub const VAMPIRE_DRAIN: f32 = 34.0;
 pub const WERE_MOON_CYCLE: u64 = 28;
 /// Nights of each cycle the moon is full (a cursed dwarf is a beast).
 pub const WERE_MOON_NIGHTS: u64 = 2;
+/// Ticks between a necromancer's attempts to raise a nearby corpse.
+pub const NECRO_INTERVAL: u64 = 40;
+/// How near (Manhattan) a corpse must be for a necromancer to raise it.
+pub const NECRO_RANGE: u32 = 6;
 /// Ticks spent in prayer.
 pub const PRAY_TICKS: u16 = 200;
 /// Ticks a wounded dwarf lingers in the hospital before checking out.
@@ -845,6 +849,8 @@ pub struct Dwarf {
     pub werebeast: bool,
     /// Currently transformed into the beast (only true during a full moon).
     pub were_form: bool,
+    /// A necromancer (a hostile): raises the fort's fallen dead as undead.
+    pub necromancer: bool,
 }
 
 impl Dwarf {
@@ -948,6 +954,8 @@ pub struct SimStats {
     pub instruments_made: u32,
     /// Hides tanned into leather at the tanner's shop.
     pub leather_tanned: u32,
+    /// Corpses raised as undead by a necromancer.
+    pub raised: u32,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -1978,6 +1986,37 @@ impl Sim {
         }
     }
 
+    /// A necromancer raises the fort's fallen: a nearby corpse claws its way up
+    /// as a hostile undead. Draws no rng and changes nothing unless a living
+    /// necromancer walks the map, so a fort without one (every headless test —
+    /// necromancers arrive only with invasion sieges) steps byte-identically.
+    fn tick_necromancers(&mut self, raws: &Raws) {
+        if !self.dwarves.iter().any(|d| d.alive && d.necromancer) {
+            return;
+        }
+        if self.clock.tick % NECRO_INTERVAL != 0 {
+            return;
+        }
+        for ni in 0..self.dwarves.len() {
+            if !(self.dwarves[ni].alive && self.dwarves[ni].necromancer) {
+                continue;
+            }
+            let npos = self.dwarves[ni].pos;
+            // The first raisable corpse in range (by index, deterministic).
+            let corpse = self.items.iter().position(|it| {
+                it.active() && it.kind == ItemKind::Corpse && it.pos.manhattan(npos) <= NECRO_RANGE
+            });
+            let Some(ci) = corpse else { continue };
+            let cpos = self.items[ci].pos;
+            self.items[ci].consumed = true;
+            let mut undead = new_dwarf(&mut self.rng, cpos, Faction::Hostile, raws);
+            undead.name = "a shambling corpse".to_string();
+            self.dwarves.push(undead);
+            self.stats.raised += 1;
+            self.log_event("The dead claw their way up to serve the necromancer!".to_string());
+        }
+    }
+
     /// A vampire feeds on the blood of an adjacent sleeping fort-mate. This
     /// draws no rng and changes nothing unless a *living fort vampire* exists,
     /// so a fort without one steps byte-for-byte identically — the whole
@@ -2618,6 +2657,11 @@ impl Sim {
         self.spawn_item(ItemKind::Hide, 0, pos);
     }
 
+    /// Drop a corpse on the ground (scenarios/tests) — a necromancer's fodder.
+    pub fn debug_spawn_corpse(&mut self, pos: Pos) {
+        self.spawn_item(ItemKind::Corpse, 0, pos);
+    }
+
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
     /// by citizens in index order, so this dresses the fort's first citizens.
     pub fn debug_spawn_clothes(&mut self, pos: Pos) {
@@ -2736,6 +2780,7 @@ impl Sim {
         self.tick_war_animals();
         self.tick_vampires();
         self.tick_werebeasts();
+        self.tick_necromancers(raws);
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
         }
@@ -2751,6 +2796,23 @@ impl Sim {
                 let wealth = self.items.iter().filter(|i| i.active()).count();
                 let n = (1 + wealth / 150).min(5);
                 self.spawn_raiders(n, raws);
+                // Some sieges bring a necromancer who raises the fort's own
+                // dead against it. Chosen deterministically (no rng) so it never
+                // perturbs the raider spawns; gated behind invasions, which no
+                // headless test enables.
+                if seasons_elapsed % 4 == 0 {
+                    if let Some(d) = self
+                        .dwarves
+                        .iter_mut()
+                        .rev()
+                        .find(|d| d.alive && d.faction == Faction::Hostile && !d.necromancer)
+                    {
+                        d.necromancer = true;
+                        self.log_event(
+                            "A necromancer marches with them -- the dead will not rest!".to_string(),
+                        );
+                    }
+                }
                 // Timid dwarves take the news badly.
                 for i in 0..self.dwarves.len() {
                     let d = &self.dwarves[i];
@@ -2770,7 +2832,16 @@ impl Sim {
 
         // The fortress falls when its last citizen is gone. (In adventure
         // mode the lone hero's death is the story's end, handled elsewhere.)
-        if self.fallen_at.is_none() && self.player.is_none() && self.alive_dwarves() == 0 {
+        // A citizen transformed by the full moon still lives — it will revert to
+        // a fort-mate at dawn — so it must not count as a fallen fort. Without
+        // this guard, a fort whose only survivors are all werebeasts at moonrise
+        // would latch a permanent, false game-over.
+        let a_beast_will_return = self.dwarves.iter().any(|d| d.alive && d.were_form);
+        if self.fallen_at.is_none()
+            && self.player.is_none()
+            && self.alive_dwarves() == 0
+            && !a_beast_will_return
+        {
             self.fallen_at = Some(self.clock.tick);
             self.log_event("The fortress has fallen. Its halls stand silent.".to_string());
         }
@@ -7066,13 +7137,14 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         last_fed: 0,
         werebeast: false,
         were_form: false,
+        necromancer: false,
     }
 }
 
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 53;
+const SAVE_VERSION: u32 = 54;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
