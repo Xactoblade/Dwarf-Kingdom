@@ -257,6 +257,12 @@ enum Tool {
     Wall,
     /// Smooth-and-engrave the clicked wall.
     Engrave,
+    /// Mark the animal at the clicked tile for slaughter.
+    Cull,
+    /// Train the dog at the clicked tile for war.
+    WarDog,
+    /// Enlist (or dismiss) the dwarf at the clicked tile as a soldier.
+    Enlist,
 }
 
 /// The currently selected toolbar tool and its pending rectangle anchor.
@@ -339,6 +345,9 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Build(BuildingKind::Tomb), label: "Tomb", key: "b", tip: "Bury the dead so their ghosts rest", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Floodgate), label: "Gate", key: "g", tip: "A floodgate, opened and shut by a linked lever", cat: 2 },
     // --- Orders (cat 3)
+    ToolButton { tool: Tool::Enlist, label: "Enlist", key: "i", tip: "Make the dwarf here a soldier (click again to dismiss)", cat: 3 },
+    ToolButton { tool: Tool::Cull, label: "Cull", key: "u", tip: "Mark the animal here to be slaughtered for meat", cat: 3 },
+    ToolButton { tool: Tool::WarDog, label: "War Dog", key: "\u{21e7}U", tip: "Train the dog here into a war beast", cat: 3 },
     ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
 ];
 
@@ -1041,6 +1050,29 @@ fn handle_mouse(
         }
     }
 
+    // Live rubber-band: while a rectangle is being drawn (a toolbar tool's
+    // anchor is down, or a keyboard mode is armed), the tile cursor follows the
+    // mouse so the selection previews as you move — like DF's drag-select.
+    // Only redraw when the tile actually changes, to keep it cheap.
+    if (active.anchor.is_some() || mode.0.is_some()) && !active.over_ui {
+        if let Ok(window) = windows.single() {
+            if let Some(screen) = window.cursor_position() {
+                if let Ok(world) = cam.viewport_to_world_2d(cam_global, screen) {
+                    let tx = (world.x / TILE).round() as i32;
+                    let ty = (world.y / TILE).round() as i32;
+                    if (0..MAP_W as i32).contains(&tx)
+                        && (0..MAP_H as i32).contains(&ty)
+                        && (cursor.x != tx || cursor.y != ty)
+                    {
+                        cursor.x = tx;
+                        cursor.y = ty;
+                        dirty.0 = true;
+                    }
+                }
+            }
+        }
+    }
+
     // Keep the view over the map: never pan (or zoom out) into the void past
     // its edges — the map fills the frame and stops at its banks, like DF.
     if let Ok(window) = windows.single() {
@@ -1249,6 +1281,15 @@ fn apply_active_tool(
         }
         Tool::Engrave => {
             sim.designate_rect(DesignationKind::Smooth, here, here);
+        }
+        Tool::Cull => {
+            sim.mark_nearest_animal(here);
+        }
+        Tool::WarDog => {
+            sim.mark_nearest_for_war(here);
+        }
+        Tool::Enlist => {
+            sim.toggle_soldier(here);
         }
         Tool::Rect(kind) => match active.anchor {
             Some(a) if a.z == here.z => {
@@ -2388,6 +2429,7 @@ fn redraw_tiles(
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
     mode: Res<UiMode>,
+    active: Res<ActiveTool>,
     mut tiles: Query<(&TileSprite, &mut Sprite)>,
 ) {
     if !dirty.0 {
@@ -2423,7 +2465,13 @@ fn redraw_tiles(
         return;
     }
     let Some(sim) = sim.0.as_ref() else { return };
-    let selection = mode.0.map(|(_, anchor)| (anchor, cursor.pos(view_z.0)));
+    // Preview the rectangle being drawn — from the keyboard mode's anchor, or
+    // the toolbar tool's anchor — to the cursor.
+    let selection = mode
+        .0
+        .map(|(_, anchor)| anchor)
+        .or(active.anchor)
+        .map(|anchor| (anchor, cursor.pos(view_z.0)));
     for (t, mut sprite) in &mut tiles {
         let (color, glyph) =
             tile_visual(sim, &reg.0, t.x as i32, t.y as i32, view_z.0, selection);
@@ -3146,7 +3194,7 @@ fn update_hud(
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}   songs {}{}\n\
-             d:mine D:engrave x:stairs h:channel f:farm p:stockpile n:pasture o:tavern ':temple z:fishery H:hospital Z:burrow L:library u:cull U:war-dog i:enlist I:barracks v:still k:kitchen m:crafts j:loom ;:jeweler M:smelter K:mason C:clothier J:carpenter N:tanner P:well F:forge G:glass T:trap B:wall b:tomb g:gate l:lever t:pull c:cancel\n\
+             Build & dig from the toolbar below (or press its key) -- click a tool, then click the map.   l:lever  t:pull   F1: full controls\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
             MAP_D - 1,
