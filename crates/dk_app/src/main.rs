@@ -276,6 +276,28 @@ struct ActiveTool {
     over_ui: bool,
 }
 
+/// An action offered by the clickable buttons on the embark / world-map screen.
+#[derive(Clone, Copy, PartialEq)]
+enum EmbarkAction {
+    Embark,
+    Adventure,
+    NewWorld,
+    Legends,
+}
+
+/// Set when an embark button is clicked; consumed by handle_input's embark
+/// branch so a click does exactly what the matching key does.
+#[derive(Resource, Default)]
+struct PendingEmbark(Option<EmbarkAction>);
+
+/// A clickable button on the embark screen.
+#[derive(Component)]
+struct EmbarkButton(EmbarkAction);
+
+/// The embark button bar (shown only on the embark screen).
+#[derive(Component)]
+struct EmbarkBar;
+
 /// Which toolbar category is expanded (its tools shown), if any. The bar is a
 /// category launcher: click Dig/Zones/Workshops/Orders to reveal that group's
 /// tools, DF-Steam style, instead of showing all ~33 at once.
@@ -699,6 +721,7 @@ fn main() {
         .insert_resource(ActiveTool::default())
         .insert_resource(OpenCategory(Some(0)))
         .insert_resource(SelectedDwarf::default())
+        .insert_resource(PendingEmbark::default())
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
         .insert_resource(OverlayRefresh(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(ShotState::default())
@@ -709,11 +732,19 @@ fn main() {
             Update,
             (
                 (
-                    (handle_toolbar, handle_category, tool_escape, toolbar_layout).chain(),
+                    (
+                        handle_toolbar,
+                        handle_embark_buttons,
+                        handle_category,
+                        tool_escape,
+                        toolbar_layout,
+                    )
+                        .chain(),
                     handle_mouse,
                     apply_active_tool,
                     select_dwarf,
                     update_dwarf_panel,
+                    apply_embark_action,
                     handle_input,
                     handle_trade_input,
                     toolbar_visibility,
@@ -1052,6 +1083,49 @@ fn setup(
             BorderColor(Color::srgb(1.0, 0.95, 0.3)),
             MinimapViewport,
         ));
+
+    // Clickable action buttons for the embark / world-map screen (shown only
+    // there). Keyboard shortcuts still work.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.92)),
+            Visibility::Hidden,
+            EmbarkBar,
+        ))
+        .with_children(|bar| {
+            for (act, label, cat) in [
+                (EmbarkAction::Embark, "Embark here  (Enter)", 1u8),
+                (EmbarkAction::Adventure, "Adventure  (a)", 2),
+                (EmbarkAction::NewWorld, "Forge a new world  (n)", 0),
+                (EmbarkAction::Legends, "Legends  (y)", 3),
+            ] {
+                bar.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)),
+                        ..default()
+                    },
+                    BackgroundColor(tool_bg(cat, false, false)),
+                    EmbarkButton(act),
+                ))
+                .with_child((
+                    Text::new(label),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                ));
+            }
+        });
 }
 
 // ---------------------------------------------------------------- systems
@@ -1295,6 +1369,43 @@ fn handle_toolbar(
     }
 }
 
+/// Embark-screen buttons: clicking one queues the matching action; the button
+/// bar is shown only on the embark screen.
+fn handle_embark_buttons(
+    screen: Res<ScreenRes>,
+    mut active: ResMut<ActiveTool>,
+    mut pending: ResMut<PendingEmbark>,
+    mut bar: Query<&mut Visibility, With<EmbarkBar>>,
+    mut buttons: Query<(&Interaction, &EmbarkButton, &mut BackgroundColor)>,
+) {
+    let on_embark = screen.0 == Screen::Embark;
+    if let Ok(mut vis) = bar.single_mut() {
+        *vis = if on_embark { Visibility::Inherited } else { Visibility::Hidden };
+    }
+    if !on_embark {
+        return;
+    }
+    let mut over = false;
+    for (interaction, eb, mut bg) in &mut buttons {
+        let hovered = !matches!(interaction, Interaction::None);
+        if hovered {
+            over = true;
+        }
+        if matches!(interaction, Interaction::Pressed) {
+            pending.0 = Some(eb.0);
+        }
+        let cat = match eb.0 {
+            EmbarkAction::Embark => 1,
+            EmbarkAction::Adventure => 2,
+            EmbarkAction::NewWorld => 0,
+            EmbarkAction::Legends => 3,
+        };
+        *bg = BackgroundColor(tool_bg(cat, false, hovered));
+    }
+    // So clicking a button doesn't also move the world-map cursor.
+    active.over_ui = over;
+}
+
 /// Category launchers: clicking one opens that group's tools (clicking the open
 /// one closes it). The map beneath stays visible.
 fn handle_category(
@@ -1527,6 +1638,101 @@ fn update_minimap(
         node.top = Val::Px((MAP_H as f32 - y1) * ppt);
         node.width = Val::Px((x1 - x0).max(2.0) * ppt);
         node.height = Val::Px((y1 - y0).max(2.0) * ppt);
+    }
+}
+
+/// Drop into fortress play with a freshly founded/reclaimed sim: adopt its
+/// map, recenter the camera and cursor, and switch to the Playing screen.
+fn enter_fort_at(
+    new_sim: Sim,
+    sim: &mut SimRes,
+    screen: &mut ScreenRes,
+    cursor: &mut Cursor,
+    view_z: &mut ViewZ,
+    dirty: &mut MapDirty,
+    camera: &mut Query<&mut Transform, With<Camera2d>>,
+) {
+    view_z.0 = new_sim.map.walk_surface_z(MAP_W / 2, MAP_H / 2).unwrap_or(MAP_D / 2) as i32;
+    sim.0 = Some(new_sim);
+    cursor.x = MAP_W as i32 / 2;
+    cursor.y = MAP_H as i32 / 2;
+    if let Ok(mut tf) = camera.single_mut() {
+        tf.translation.x = MAP_W as f32 * TILE * 0.5;
+        tf.translation.y = MAP_H as f32 * TILE * 0.5;
+        tf.scale = Vec3::ONE;
+    }
+    screen.0 = Screen::Playing;
+    dirty.0 = true;
+}
+
+/// Reclaim a retired fortress at `region` if one endures there, otherwise found
+/// a fresh colony.
+fn found_fort(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
+    let reclaimed = fort_path(region).exists().then(|| {
+        load_sim(&fort_path(region), raws)
+            .map_err(|e| error!("reclaim failed: {e:#}"))
+            .ok()
+            .filter(|s| (s.map.width, s.map.height, s.map.depth) == (MAP_W, MAP_H, MAP_D))
+    });
+    match reclaimed {
+        Some(Some(mut loaded)) => {
+            loaded.home_region = Some(region);
+            loaded
+        }
+        _ => embark(world, raws, region),
+    }
+}
+
+/// Perform a queued embark-screen action from a button click — the same effect
+/// as the matching key, so the world map is fully mouse-drivable.
+fn apply_embark_action(
+    mut pending: ResMut<PendingEmbark>,
+    reg: Res<Registry>,
+    mut world: ResMut<WorldRes>,
+    mut screen: ResMut<ScreenRes>,
+    mut legends: ResMut<LegendsState>,
+    mut sim: ResMut<SimRes>,
+    mut cursor: ResMut<Cursor>,
+    mut view_z: ResMut<ViewZ>,
+    mut dirty: ResMut<MapDirty>,
+    mut camera: Query<&mut Transform, With<Camera2d>>,
+) {
+    if screen.0 != Screen::Embark {
+        pending.0 = None;
+        return;
+    }
+    let Some(act) = pending.0.take() else { return };
+    let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+    let embarkable = world.0.overworld.get(region.0, region.1).biome.embarkable();
+    match act {
+        EmbarkAction::Legends => {
+            legends.from = Screen::Embark;
+            legends.scroll = 0;
+            screen.0 = Screen::Legends;
+            dirty.0 = true;
+        }
+        EmbarkAction::NewWorld => {
+            let seed = fresh_world_seed();
+            persist_world_seed(seed);
+            world.0 = World::generate(seed, OW, OW, HISTORY_YEARS);
+            cursor.x = 0;
+            cursor.y = 0;
+            dirty.0 = true;
+        }
+        EmbarkAction::Embark if embarkable => {
+            let new_sim = found_fort(&world.0, &reg.0, region);
+            enter_fort_at(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+        }
+        EmbarkAction::Adventure if embarkable => {
+            let mut new_sim = embark(&world.0, &reg.0, region);
+            if new_sim.begin_adventure(&reg.0).is_some() {
+                new_sim.adv_region = Some(region);
+                enter_fort_at(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+                screen.0 = Screen::Adventure;
+            }
+        }
+        // Chose an unembarkable tile (ocean/mountains) — no-op, like the key.
+        _ => {}
     }
 }
 
