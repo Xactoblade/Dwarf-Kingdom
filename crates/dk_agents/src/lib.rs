@@ -183,6 +183,9 @@ pub enum ItemKind {
     /// A carved statue. `stuff` = material index. A precious work of art that
     /// beautifies the fort — and a rich trade good.
     Statue,
+    /// A wooden musical instrument worked from a log. `stuff` unused. Played at
+    /// the tavern, it lets the fort compose songs; also a fine trade good.
+    Instrument,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -716,6 +719,8 @@ pub enum CraftKind {
     MakeBarrel,
     /// Carve a stone boulder into a statue at the mason's workshop.
     CarveStatue,
+    /// Work a log into a musical instrument at the carpenter's shop.
+    MakeInstrument,
     /// Melt a boulder into a piece of blown glass.
     MakeGlass,
 }
@@ -847,6 +852,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
             Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
             Task::Craft { kind: CraftKind::CarveStatue, .. } => "carving a statue",
+            Task::Craft { kind: CraftKind::MakeInstrument, .. } => "making an instrument",
             Task::Chop { .. } => "chopping wood",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
@@ -910,6 +916,8 @@ pub struct SimStats {
     pub barrels_made: u32,
     /// Statues carved at the mason's workshop.
     pub statues_carved: u32,
+    /// Instruments crafted at the carpenter's shop.
+    pub instruments_made: u32,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -929,6 +937,7 @@ struct Wants {
     clothes: bool,
     barrels: bool,
     statues: bool,
+    instruments: bool,
 }
 
 // -------------------------------------------------------------- adventure
@@ -1035,6 +1044,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Barrel => 45,
         // A statue: a precious work of art, the fort's finest furnishing.
         ItemKind::Statue => raws.materials.get(item.stuff).value * 15 + 40,
+        // A musical instrument: a fine crafted good.
+        ItemKind::Instrument => 55,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -1119,6 +1130,8 @@ pub struct Sim {
     pub deeds: Vec<String>,
     /// Named poetic works composed at the fort's taverns — its living culture.
     pub poems: Vec<String>,
+    /// Songs the fort has composed and played at the tavern (needs an instrument).
+    pub songs: Vec<String>,
     /// Who attacks this fort and why — wired from world history at embark.
     pub siege_roster: Option<SiegeRoster>,
     /// Friendly civ that sends caravans — wired from world history at embark.
@@ -1222,6 +1235,7 @@ impl Sim {
             quest_target: None,
             deeds: Vec::new(),
             poems: Vec::new(),
+            songs: Vec::new(),
             siege_roster: None,
             trade_partner: None,
             caravan: None,
@@ -2214,6 +2228,7 @@ impl Sim {
         self.library.clear();
         self.treatises.clear();
         self.poems.clear();
+        self.songs.clear();
         // The barony is left behind with the fort; its stale dwarf index would
         // otherwise make tick_nobility panic on the small new-land roster.
         self.baron = None;
@@ -3777,6 +3792,7 @@ impl Sim {
         let mut pending_clothes = 0usize;
         let mut pending_barrels = 0usize;
         let mut pending_statues = 0usize;
+        let mut pending_instruments = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -3791,6 +3807,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::SewClothes, .. } => pending_clothes += 1,
                     Task::Craft { kind: CraftKind::MakeBarrel, .. } => pending_barrels += 1,
                     Task::Craft { kind: CraftKind::CarveStatue, .. } => pending_statues += 1,
+                    Task::Craft { kind: CraftKind::MakeInstrument, .. } => pending_instruments += 1,
                     _ => {}
                 }
             }
@@ -3884,8 +3901,13 @@ impl Sim {
                 let logs = self.count_kind(ItemKind::Log);
                 let barrels = self.count_kind(ItemKind::Barrel);
                 let want_barrels = has_carpenter
-                    && logs > pending_barrels
+                    && logs > pending_barrels + pending_instruments
                     && barrels + pending_barrels < alive + 2;
+                // Craft an instrument or two so the fort can make music.
+                let instruments = self.count_kind(ItemKind::Instrument);
+                let want_instruments = has_carpenter
+                    && logs > pending_barrels + pending_instruments
+                    && instruments + pending_instruments < 2;
                 let wants = Wants {
                     drinks: want_drinks,
                     meals: want_meals,
@@ -3898,6 +3920,7 @@ impl Sim {
                     clothes: want_clothes,
                     barrels: want_barrels,
                     statues: want_statues,
+                    instruments: want_instruments,
                 };
                 match self.assign_one(i, raws, wants) {
                     Some(CraftKind::Brew) => pending_brews += 1,
@@ -3911,6 +3934,7 @@ impl Sim {
                     Some(CraftKind::SewClothes) => pending_clothes += 1,
                     Some(CraftKind::MakeBarrel) => pending_barrels += 1,
                     Some(CraftKind::CarveStatue) => pending_statues += 1,
+                    Some(CraftKind::MakeInstrument) => pending_instruments += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -4170,6 +4194,13 @@ impl Sim {
             if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeBarrel }, &mut best);
+            }
+        }
+        // Instrument-making: work a log into an instrument at the carpenter's shop.
+        if w.instruments {
+            if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeInstrument }, &mut best);
             }
         }
         // Glassblowing: melt a boulder into fine glass at the furnace.
@@ -5288,7 +5319,8 @@ impl Sim {
                             | CraftKind::MakeFurniture
                             | CraftKind::SewClothes
                             | CraftKind::MakeBarrel
-                            | CraftKind::CarveStatue => Skill::Crafting,
+                            | CraftKind::CarveStatue
+                            | CraftKind::MakeInstrument => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -5384,6 +5416,13 @@ impl Sim {
                                 // The boulder's stone carries into the statue.
                                 self.stats.statues_carved += 1;
                                 self.spawn_quality_item(ItemKind::Statue, stuff, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::MakeInstrument => {
+                                // A log carries no material index; the instrument
+                                // is valued as a fine crafted good on its own.
+                                self.stats.instruments_made += 1;
+                                self.spawn_quality_item(ItemKind::Instrument, 0, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -6434,6 +6473,17 @@ impl Sim {
                 self.poems.remove(0);
             }
         }
+        // Music at the tavern — but only once the fort has an instrument to play.
+        if !self.taverns.is_empty() && self.count_kind(ItemKind::Instrument) > 0 {
+            let player = bards[(day as usize + 2) % bards.len()];
+            let work = self.compose_song(day, player);
+            let name = self.dwarves[player].name.clone();
+            self.log_event(format!("{name} plays {work} at the tavern."));
+            self.songs.push(work);
+            if self.songs.len() > 100 {
+                self.songs.remove(0);
+            }
+        }
         // Scholarship at the library.
         if !self.library.is_empty() {
             let scholar = bards[(day as usize + 1) % bards.len()];
@@ -6513,6 +6563,39 @@ impl Sim {
         }
         subjects.push("stone, and cold ale, and the mountain's heart".to_string());
         let subject = &subjects[(d + poet) % subjects.len()];
+
+        format!("{form}, \"The {adj} {noun}\", of {subject}")
+    }
+
+    /// Compose a song, drawn deterministically from the day, the player, and the
+    /// fort's own life — like its verse, its music is its own. Draws no rng.
+    fn compose_song(&self, day: u64, player: usize) -> String {
+        const FORMS: [&str; 5] = ["a reel", "a march", "a dirge", "an air", "a jig"];
+        const ADJS: [&str; 8] = [
+            "Merry", "Mournful", "Roaring", "Quiet", "Brazen", "Ancient", "Stirring", "Wandering",
+        ];
+        const NOUNS: [&str; 8] = [
+            "Miner", "Anvil", "Tankard", "Gate", "Hearthstone", "Deep", "Homeland", "Vein",
+        ];
+        let d = day as usize;
+        let form = FORMS[(d + player) % FORMS.len()];
+        let adj = ADJS[(d / 2 + player) % ADJS.len()];
+        let noun = NOUNS[(d + player * 3) % NOUNS.len()];
+
+        let mut subjects: Vec<String> = Vec::new();
+        for dw in &self.dwarves {
+            if !dw.alive && dw.faction == Faction::Fort && !dw.ghost {
+                subjects.push(format!("{}, remembered in song", dw.name));
+            }
+        }
+        if self.stats.raiders_slain > 0 || self.stats.beasts_slain > 0 {
+            subjects.push("the fight at the gate".to_string());
+        }
+        if let Some(partner) = &self.trade_partner {
+            subjects.push(format!("the long road to {partner}"));
+        }
+        subjects.push("the pick, the pint, and the long dark".to_string());
+        let subject = &subjects[(d + player) % subjects.len()];
 
         format!("{form}, \"The {adj} {noun}\", of {subject}")
     }
@@ -6789,7 +6872,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 49;
+const SAVE_VERSION: u32 = 50;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6873,6 +6956,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Clothes
             | ItemKind::Log
             | ItemKind::Barrel
+            | ItemKind::Instrument
             | ItemKind::RoughGem
             | ItemKind::CutGem => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
