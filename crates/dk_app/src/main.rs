@@ -279,6 +279,8 @@ struct ActiveTool {
 /// An action offered by the clickable buttons on the embark / world-map screen.
 #[derive(Clone, Copy, PartialEq)]
 enum EmbarkAction {
+    /// Skip browsing the world map — auto-pick a good spot and found a fort now.
+    JustPlay,
     Embark,
     Adventure,
     NewWorld,
@@ -1162,7 +1164,8 @@ fn setup(
         ))
         .with_children(|bar| {
             for (act, label, cat) in [
-                (EmbarkAction::Embark, "Embark here  (Enter)", 1u8),
+                (EmbarkAction::JustPlay, "\u{25b6} Just play (auto-pick a spot)", 1u8),
+                (EmbarkAction::Embark, "Embark here  (Enter)", 1),
                 (EmbarkAction::Adventure, "Adventure  (a)", 2),
                 (EmbarkAction::NewWorld, "Forge a new world  (n)", 0),
                 (EmbarkAction::Legends, "Legends  (y)", 3),
@@ -1490,7 +1493,7 @@ fn handle_embark_buttons(
             pending.0 = Some(eb.0);
         }
         let cat = match eb.0 {
-            EmbarkAction::Embark => 1,
+            EmbarkAction::JustPlay | EmbarkAction::Embark => 1,
             EmbarkAction::Adventure => 2,
             EmbarkAction::NewWorld => 0,
             EmbarkAction::Legends => 3,
@@ -1762,6 +1765,29 @@ fn enter_fort_at(
     dirty.0 = true;
 }
 
+/// Auto-pick a welcoming embark spot: an embarkable region nearest the middle
+/// of the world, favouring the green, river-fed lands over bare hills.
+fn pick_embark_region(world: &World) -> (usize, usize) {
+    let c = OW as i32 / 2;
+    let mut best: Option<((usize, usize), i32)> = None;
+    for y in 0..OW {
+        for x in 0..OW {
+            let biome = world.overworld.get(x, y).biome;
+            if !biome.embarkable() {
+                continue;
+            }
+            // Lower score wins: distance from centre, minus a bonus for lands
+            // that get a river (grassland/forest/swamp).
+            let dist = (x as i32 - c).abs() + (y as i32 - c).abs();
+            let score = dist - if has_river(biome) { 8 } else { 0 };
+            if best.map_or(true, |(_, b)| score < b) {
+                best = Some(((x, y), score));
+            }
+        }
+    }
+    best.map_or((OW / 2, OW / 2), |(r, _)| r)
+}
+
 /// Reclaim a retired fortress at `region` if one endures there, otherwise found
 /// a fresh colony.
 fn found_fort(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
@@ -1802,6 +1828,12 @@ fn apply_embark_action(
     let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
     let embarkable = world.0.overworld.get(region.0, region.1).biome.embarkable();
     match act {
+        EmbarkAction::JustPlay => {
+            // Skip the world map entirely: pick a good spot and found a fort.
+            let region = pick_embark_region(&world.0);
+            let new_sim = found_fort(&world.0, &reg.0, region);
+            enter_fort_at(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+        }
         EmbarkAction::Legends => {
             legends.from = Screen::Embark;
             legends.scroll = 0;
