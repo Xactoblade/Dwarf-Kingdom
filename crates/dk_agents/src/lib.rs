@@ -2002,13 +2002,29 @@ impl Sim {
                 continue;
             }
             let npos = self.dwarves[ni].pos;
-            // The first raisable corpse in range (by index, deterministic).
+            // The first raisable corpse in range (by index, deterministic). Only
+            // corpses settled on the ground count — never one a hauler has
+            // claimed and is carrying to a tomb (else it could be raised out of
+            // their arms and still get "buried").
             let corpse = self.items.iter().position(|it| {
-                it.active() && it.kind == ItemKind::Corpse && it.pos.manhattan(npos) <= NECRO_RANGE
+                it.active()
+                    && it.kind == ItemKind::Corpse
+                    && it.reserved_by.is_none()
+                    && matches!(it.state, ItemState::OnGround)
+                    && it.pos.manhattan(npos) <= NECRO_RANGE
             });
             let Some(ci) = corpse else { continue };
             let cpos = self.items[ci].pos;
             self.items[ci].consumed = true;
+            // Raising the body lays its unquiet spirit to rest — otherwise a
+            // ghost whose corpse is consumed could never again be buried.
+            let buried_dwarf = self.items[ci].stuff as usize;
+            if buried_dwarf < self.dwarves.len()
+                && !self.dwarves[buried_dwarf].alive
+                && self.dwarves[buried_dwarf].ghost
+            {
+                self.dwarves[buried_dwarf].ghost = false;
+            }
             let mut undead = new_dwarf(&mut self.rng, cpos, Faction::Hostile, raws);
             undead.name = "a shambling corpse".to_string();
             self.dwarves.push(undead);
@@ -5311,8 +5327,9 @@ impl Sim {
                         return;
                     }
                     let here = self.dwarves[i].pos;
-                    // Corpse delivered to an open tomb: a burial.
-                    if self.items[item].kind == ItemKind::Corpse {
+                    // Corpse delivered to an open tomb: a burial. (Guard active()
+                    // so a corpse a necromancer consumed mid-haul is never buried.)
+                    if self.items[item].active() && self.items[item].kind == ItemKind::Corpse {
                         let tomb = self
                             .buildings
                             .iter()
