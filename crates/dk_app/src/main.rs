@@ -342,6 +342,10 @@ struct ShowStocks(bool);
 #[derive(Component)]
 struct StocksButton;
 
+/// The "?" help button in the top-right (opens the controls reference).
+#[derive(Component)]
+struct HelpButton;
+
 /// Root of the Stocks panel (toggled).
 #[derive(Component)]
 struct StocksPanel;
@@ -815,6 +819,7 @@ fn main() {
                     update_hud,
                     update_minimap,
                     update_stocks,
+                    handle_help_button,
                     play_event_sounds,
                     screenshot_mode,
                 )
@@ -1193,7 +1198,7 @@ fn setup(
             Button,
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(8.0),
+                right: Val::Px(80.0),
                 top: Val::Px(8.0),
                 padding: UiRect::axes(Val::Px(12.0), Val::Px(5.0)),
                 ..default()
@@ -1205,6 +1210,25 @@ fn setup(
         .with_child((
             Text::new("Stocks"),
             TextFont { font_size: 15.0, ..default() },
+            TextColor(Color::srgb(0.95, 0.95, 0.92)),
+        ));
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(8.0),
+                padding: UiRect::axes(Val::Px(13.0), Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(tool_bg(3, false, false)),
+            HelpButton,
+            WasPressed::default(),
+        ))
+        .with_child((
+            Text::new("?"),
+            TextFont { font_size: 16.0, ..default() },
             TextColor(Color::srgb(0.95, 0.95, 0.92)),
         ));
     commands
@@ -1947,6 +1971,35 @@ fn update_stocks(
             if let Ok(mut t) = text.single_mut() {
                 t.0 = s;
             }
+        }
+    }
+}
+
+/// The "?" button opens the controls-reference (Help) screen, like F1.
+fn handle_help_button(
+    mut screen: ResMut<ScreenRes>,
+    mut legends: ResMut<LegendsState>,
+    mut active: ResMut<ActiveTool>,
+    mut button: Query<
+        (&Interaction, &mut WasPressed, &mut BackgroundColor, &mut Visibility),
+        With<HelpButton>,
+    >,
+) {
+    let playing = screen.0 == Screen::Playing;
+    if let Ok((interaction, mut was, mut bg, mut vis)) = button.single_mut() {
+        *vis = if playing { Visibility::Inherited } else { Visibility::Hidden };
+        if playing {
+            let hovered = !matches!(interaction, Interaction::None);
+            let pressed = matches!(interaction, Interaction::Pressed);
+            if pressed && !was.0 {
+                legends.from = Screen::Playing;
+                screen.0 = Screen::Help;
+            }
+            was.0 = pressed;
+            if hovered {
+                active.over_ui = true;
+            }
+            *bg = BackgroundColor(tool_bg(3, false, hovered));
         }
     }
 }
