@@ -174,9 +174,12 @@ pub enum ItemKind {
     /// Sewn clothes — the fort's woven cloth made into something to wear.
     /// `stuff` unused. A fine trade good, and a well-dressed dwarf is content.
     Clothes,
-    /// A felled log. `stuff` unused. The carpenter's raw stock (later), and a
-    /// modest trade good.
+    /// A felled log. `stuff` unused. The carpenter's raw stock, and a modest
+    /// trade good.
     Log,
+    /// A barrel worked from a log at the carpenter's shop. `stuff` unused. A
+    /// fine wooden trade good.
+    Barrel,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -280,6 +283,8 @@ pub enum BuildingKind {
     Mason,
     /// Sews woven cloth into clothes for the fort to wear.
     Clothier,
+    /// Works logs into wooden goods — barrels for the fort.
+    Carpenter,
     /// Melts stone into blown glass — the fort's finest trade goods.
     GlassFurnace,
     /// A weapon trap: a raider that steps onto it is struck by hidden blades.
@@ -304,6 +309,7 @@ impl BuildingKind {
             BuildingKind::Smelter => "Smelter",
             BuildingKind::Mason => "Mason's Workshop",
             BuildingKind::Clothier => "Clothier's Shop",
+            BuildingKind::Carpenter => "Carpenter's Workshop",
             BuildingKind::GlassFurnace => "Glass Furnace",
             BuildingKind::Trap => "Weapon Trap",
             BuildingKind::Tomb => "Tomb",
@@ -703,6 +709,8 @@ pub enum CraftKind {
     MakeFurniture,
     /// Sew a bolt of cloth into clothes.
     SewClothes,
+    /// Work a log into a barrel at the carpenter's shop.
+    MakeBarrel,
     /// Melt a boulder into a piece of blown glass.
     MakeGlass,
 }
@@ -832,6 +840,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::ForgeArmor, .. } => "forging armor",
             Task::Craft { kind: CraftKind::MakeFurniture, .. } => "building furniture",
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
+            Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
             Task::Chop { .. } => "chopping wood",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
@@ -891,6 +900,8 @@ pub struct SimStats {
     pub clothes_sewn: u32,
     /// Trees felled by woodcutters.
     pub trees_felled: u32,
+    /// Barrels worked from logs at the carpenter's shop.
+    pub barrels_made: u32,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -908,6 +919,7 @@ struct Wants {
     armor: bool,
     furniture: bool,
     clothes: bool,
+    barrels: bool,
 }
 
 // -------------------------------------------------------------- adventure
@@ -1010,6 +1022,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Clothes => 40,
         // A felled log: cheap raw wood.
         ItemKind::Log => 10,
+        // A barrel: a fine wooden good, worth several logs.
+        ItemKind::Barrel => 45,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -2466,6 +2480,11 @@ impl Sim {
         self.spawn_item(ItemKind::Cloth, 0, pos);
     }
 
+    /// Drop a felled log on the ground (scenarios/tests) — the carpenter's stock.
+    pub fn debug_spawn_log(&mut self, pos: Pos) {
+        self.spawn_item(ItemKind::Log, 0, pos);
+    }
+
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
     /// by citizens in index order, so this dresses the fort's first citizens.
     pub fn debug_spawn_clothes(&mut self, pos: Pos) {
@@ -3739,6 +3758,7 @@ impl Sim {
         let mut pending_armor = 0usize;
         let mut pending_furniture = 0usize;
         let mut pending_clothes = 0usize;
+        let mut pending_barrels = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -3751,6 +3771,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::ForgeArmor, .. } => pending_armor += 1,
                     Task::Craft { kind: CraftKind::MakeFurniture, .. } => pending_furniture += 1,
                     Task::Craft { kind: CraftKind::SewClothes, .. } => pending_clothes += 1,
+                    Task::Craft { kind: CraftKind::MakeBarrel, .. } => pending_barrels += 1,
                     _ => {}
                 }
             }
@@ -3763,6 +3784,7 @@ impl Sim {
         let has_smelter = self.buildings.iter().any(|b| b.kind == BuildingKind::Smelter);
         let has_mason = self.buildings.iter().any(|b| b.kind == BuildingKind::Mason);
         let has_clothier = self.buildings.iter().any(|b| b.kind == BuildingKind::Clothier);
+        let has_carpenter = self.buildings.iter().any(|b| b.kind == BuildingKind::Carpenter);
         let has_glassworks = self
             .buildings
             .iter()
@@ -3833,6 +3855,12 @@ impl Sim {
                 let want_clothes = has_clothier
                     && cloth > pending_clothes
                     && clothes + pending_clothes < alive + 2;
+                // Work logs into barrels while there's spare wood on hand.
+                let logs = self.count_kind(ItemKind::Log);
+                let barrels = self.count_kind(ItemKind::Barrel);
+                let want_barrels = has_carpenter
+                    && logs > pending_barrels
+                    && barrels + pending_barrels < alive + 2;
                 let wants = Wants {
                     drinks: want_drinks,
                     meals: want_meals,
@@ -3843,6 +3871,7 @@ impl Sim {
                     armor: want_armor,
                     furniture: want_furniture,
                     clothes: want_clothes,
+                    barrels: want_barrels,
                 };
                 match self.assign_one(i, raws, wants) {
                     Some(CraftKind::Brew) => pending_brews += 1,
@@ -3854,6 +3883,7 @@ impl Sim {
                     Some(CraftKind::ForgeArmor) => pending_armor += 1,
                     Some(CraftKind::MakeFurniture) => pending_furniture += 1,
                     Some(CraftKind::SewClothes) => pending_clothes += 1,
+                    Some(CraftKind::MakeBarrel) => pending_barrels += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -4099,6 +4129,13 @@ impl Sim {
             if let Some((shop, input)) = self.craft_clothier_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::SewClothes }, &mut best);
+            }
+        }
+        // Carpentry: work a log into a barrel at the carpenter's shop.
+        if w.barrels {
+            if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeBarrel }, &mut best);
             }
         }
         // Glassblowing: melt a boulder into fine glass at the furnace.
@@ -4410,6 +4447,27 @@ impl Sim {
             .enumerate()
             .filter(|(_, it)| {
                 it.kind == ItemKind::Cloth
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// Nearest (carpenter's shop, log) pair for working a barrel.
+    fn craft_carpenter_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Carpenter && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Log
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
             })
@@ -5194,7 +5252,8 @@ impl Sim {
                             | CraftKind::Smelt
                             | CraftKind::ForgeArmor
                             | CraftKind::MakeFurniture
-                            | CraftKind::SewClothes => Skill::Crafting,
+                            | CraftKind::SewClothes
+                            | CraftKind::MakeBarrel => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -5277,6 +5336,13 @@ impl Sim {
                                 // valued as fine goods on their own.
                                 self.stats.clothes_sewn += 1;
                                 self.spawn_quality_item(ItemKind::Clothes, 0, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::MakeBarrel => {
+                                // A log carries no material index; the barrel is
+                                // valued as a fine wooden good on its own.
+                                self.stats.barrels_made += 1;
+                                self.spawn_quality_item(ItemKind::Barrel, 0, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -6673,7 +6739,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 47;
+const SAVE_VERSION: u32 = 48;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -6755,6 +6821,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Cloth
             | ItemKind::Clothes
             | ItemKind::Log
+            | ItemKind::Barrel
             | ItemKind::RoughGem
             | ItemKind::CutGem => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
