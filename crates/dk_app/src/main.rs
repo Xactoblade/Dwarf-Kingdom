@@ -244,6 +244,101 @@ impl UiKind {
 #[derive(Resource, Default)]
 struct UiMode(Option<(UiKind, Pos)>);
 
+/// A tool the player can pick from the on-screen toolbar (or a keyboard
+/// shortcut) and then apply by clicking the map — mouse-driven, like DF's
+/// Steam UI. Rectangle tools take two map clicks; the rest place at one click.
+#[derive(Clone, Copy, PartialEq)]
+enum Tool {
+    /// Two-click rectangle designation or zone (mine, stockpile, tavern, …).
+    Rect(UiKind),
+    /// Place a workshop/building at the clicked tile.
+    Build(BuildingKind),
+    /// Plan a constructed wall on the clicked tile.
+    Wall,
+    /// Smooth-and-engrave the clicked wall.
+    Engrave,
+}
+
+/// The currently selected toolbar tool and its pending rectangle anchor.
+#[derive(Resource, Default)]
+struct ActiveTool {
+    tool: Option<Tool>,
+    anchor: Option<Pos>,
+    /// True while the mouse is over a toolbar button — map clicks are ignored.
+    over_ui: bool,
+}
+
+/// Marks a clickable toolbar button and carries what it does + how to describe it.
+#[derive(Component, Clone)]
+struct ToolButton {
+    tool: Tool,
+    label: &'static str,
+    key: &'static str,
+    tip: &'static str,
+    /// Category index, for the button's accent colour.
+    cat: u8,
+}
+
+/// The floating tooltip text node shown while hovering a toolbar button.
+#[derive(Component)]
+struct TooltipUi;
+
+/// Root node of the bottom toolbar (toggled with the play screen).
+#[derive(Component)]
+struct ToolbarRoot;
+
+/// Every tool the toolbar offers, grouped by category (cat: 0 dig, 1 zone,
+/// 2 workshop, 3 order). The keyboard shortcuts still do the same thing.
+const TOOLS: &[ToolButton] = &[
+    // --- Dig & build terrain (cat 0)
+    ToolButton { tool: Tool::Rect(UiKind::Mine), label: "Mine", key: "d", tip: "Dig out stone, carving tunnels and rooms", cat: 0 },
+    ToolButton { tool: Tool::Rect(UiKind::Stairs), label: "Stairs", key: "x", tip: "Carve stairs up and down between z-levels", cat: 0 },
+    ToolButton { tool: Tool::Rect(UiKind::Channel), label: "Channel", key: "h", tip: "Dig a channel: opens the floor, water pours in", cat: 0 },
+    ToolButton { tool: Tool::Rect(UiKind::Chop), label: "Chop", key: "\u{21e7}X", tip: "Fell trees for logs (drag over a stand of trees)", cat: 0 },
+    ToolButton { tool: Tool::Wall, label: "Wall", key: "\u{21e7}B", tip: "Plan a constructed wall; masons haul stone and raise it", cat: 0 },
+    ToolButton { tool: Tool::Engrave, label: "Engrave", key: "\u{21e7}D", tip: "Smooth a wall and carve a scene from the fort's history", cat: 0 },
+    // --- Zones (cat 1)
+    ToolButton { tool: Tool::Rect(UiKind::Stockpile), label: "Stockpile", key: "p", tip: "A zone where haulers stack loose goods", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Farm), label: "Farm", key: "f", tip: "A plot for planting and harvesting crops", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Pasture), label: "Pasture", key: "n", tip: "Graze livestock here", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Tavern), label: "Tavern", key: "o", tip: "Dwarves drink and shed stress here", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Temple), label: "Temple", key: "'", tip: "A place of worship for solace", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Fishery), label: "Fishery", key: "z", tip: "Fishers work the water beside this zone", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Hospital), label: "Hospital", key: "\u{21e7}H", tip: "The wounded rest here and mend far faster", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Barracks), label: "Barracks", key: "\u{21e7}I", tip: "Soldiers drill here to become veterans", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Burrow), label: "Burrow", key: "\u{21e7}Z", tip: "A safe room civilians flee to when the alarm sounds", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Library), label: "Library", key: "\u{21e7}L", tip: "Scholars write treatises here", cat: 1 },
+    // --- Workshops (cat 2)
+    ToolButton { tool: Tool::Build(BuildingKind::Still), label: "Still", key: "v", tip: "Brews crops into drink", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Kitchen), label: "Kitchen", key: "k", tip: "Cooks meals", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Craftsdwarf), label: "Crafts", key: "m", tip: "Turns stone into decorative trade goods", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Loom), label: "Loom", key: "j", tip: "Weaves wool into cloth", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Jeweler), label: "Jeweler", key: ";", tip: "Cuts rough gems into brilliant ones", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Smelter), label: "Smelter", key: "\u{21e7}M", tip: "Smelts ore boulders into metal bars", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Forge), label: "Forge", key: "\u{21e7}F", tip: "Forges bars into weapons and armor", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Mason), label: "Mason", key: "\u{21e7}K", tip: "Carves stone into beds and statues", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Carpenter), label: "Carpenter", key: "\u{21e7}J", tip: "Works logs into barrels and instruments", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Clothier), label: "Clothier", key: "\u{21e7}C", tip: "Sews cloth into clothes", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Tanner), label: "Tanner", key: "\u{21e7}N", tip: "Tans hides into leather", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::GlassFurnace), label: "Glass", key: "\u{21e7}G", tip: "Melts stone into blown glass", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Well), label: "Well", key: "\u{21e7}P", tip: "Draw water when the drink runs out", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Trap), label: "Trap", key: "\u{21e7}T", tip: "A weapon trap that shreds raiders", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Tomb), label: "Tomb", key: "b", tip: "Bury the dead so their ghosts rest", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Floodgate), label: "Gate", key: "g", tip: "A floodgate, opened and shut by a linked lever", cat: 2 },
+    // --- Orders (cat 3)
+    ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
+];
+
+/// Accent colour for a tool category.
+fn cat_color(cat: u8) -> Color {
+    match cat {
+        0 => Color::srgb(0.55, 0.4, 0.3),  // dig — earthy
+        1 => Color::srgb(0.3, 0.5, 0.4),   // zone — green
+        2 => Color::srgb(0.4, 0.42, 0.55), // workshop — slate
+        _ => Color::srgb(0.5, 0.3, 0.3),   // order — red
+    }
+}
+
 #[derive(Resource)]
 struct MoveRepeat(Timer);
 
@@ -560,6 +655,7 @@ fn main() {
         .insert_resource(MapDirty(true))
         .insert_resource(SimControl { paused: false, speed: 1 })
         .insert_resource(UiMode::default())
+        .insert_resource(ActiveTool::default())
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
         .insert_resource(OverlayRefresh(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(ShotState::default())
@@ -570,9 +666,12 @@ fn main() {
             Update,
             (
                 (
+                    handle_toolbar,
                     handle_mouse,
+                    apply_active_tool,
                     handle_input,
                     handle_trade_input,
+                    toolbar_visibility,
                     overlay_refresh,
                     redraw_tiles,
                 )
@@ -743,6 +842,59 @@ fn setup(
         },
         HudText,
     ));
+
+    // A floating tooltip that appears just above the toolbar on hover.
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 15.0, ..default() },
+        TextColor(Color::srgb(1.0, 0.95, 0.7)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(10.0),
+            bottom: Val::Px(46.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.8)),
+        TooltipUi,
+    ));
+
+    // The mouse-driven bottom toolbar: one clickable button per tool.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: Val::Px(3.0),
+                row_gap: Val::Px(3.0),
+                padding: UiRect::all(Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.85)),
+            ToolbarRoot,
+        ))
+        .with_children(|bar| {
+            for t in TOOLS {
+                bar.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(cat_color(t.cat)),
+                    t.clone(),
+                ))
+                .with_child((
+                    Text::new(t.label),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                ));
+            }
+        });
 }
 
 // ---------------------------------------------------------------- systems
@@ -790,6 +942,7 @@ fn handle_mouse(
     mut camera: Query<(&Camera, &GlobalTransform, &mut Transform), With<Camera2d>>,
     mut cursor: ResMut<Cursor>,
     mode: Res<UiMode>,
+    active: Res<ActiveTool>,
     mut dirty: ResMut<MapDirty>,
 ) {
     let Ok((cam, cam_global, mut cam_tf)) = camera.single_mut() else { return };
@@ -818,8 +971,9 @@ fn handle_mouse(
         cam_tf.translation.y += delta.y * cam_tf.scale.y;
     }
 
-    // Left click: move the tile cursor to the clicked tile.
-    if buttons.just_pressed(MouseButton::Left) {
+    // Left click: move the tile cursor to the clicked tile (unless the click
+    // landed on a toolbar button).
+    if buttons.just_pressed(MouseButton::Left) && !active.over_ui {
         let Ok(window) = windows.single() else { return };
         let Some(screen) = window.cursor_position() else { return };
         let Ok(world) = cam.viewport_to_world_2d(cam_global, screen) else { return };
@@ -865,6 +1019,147 @@ fn clamp_camera_to_map(tf: &mut Transform, win_w: f32, win_h: f32) {
     } else {
         tf.translation.y.clamp(half_vh, map_h - half_vh)
     };
+}
+
+/// Apply a rectangle tool (designation or zone) to the sim — the shared body
+/// behind both the keyboard shortcuts and the toolbar's mouse clicks.
+fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
+    match kind {
+        UiKind::Mine => {
+            sim.designate_rect(DesignationKind::Mine, a, b);
+        }
+        UiKind::Stairs => {
+            sim.designate_rect(DesignationKind::Stairs, a, b);
+        }
+        UiKind::Channel => {
+            sim.designate_rect(DesignationKind::Channel, a, b);
+        }
+        UiKind::Chop => {
+            sim.designate_rect(DesignationKind::Chop, a, b);
+        }
+        UiKind::Stockpile => sim.add_stockpile(a, b),
+        UiKind::Farm => {
+            sim.add_farm(a, b, 0);
+        }
+        UiKind::Pasture => sim.add_pasture(a, b),
+        UiKind::Tavern => sim.add_tavern(a, b),
+        UiKind::Temple => sim.add_temple(a, b),
+        UiKind::Fishery => sim.add_fishery(a, b),
+        UiKind::Hospital => sim.add_hospital(a, b),
+        UiKind::Barracks => sim.add_barracks(a, b),
+        UiKind::Burrow => sim.add_burrow(a, b),
+        UiKind::Library => sim.add_library(a, b),
+        UiKind::Cancel => {
+            sim.cancel_rect(a, b);
+        }
+    }
+}
+
+/// Background colour for a tool button, brightened when hovered or active.
+fn tool_bg(cat: u8, active: bool, hover: bool) -> Color {
+    let [r, g, b] = match cat {
+        0 => [0.55, 0.4, 0.3],
+        1 => [0.3, 0.5, 0.4],
+        2 => [0.4, 0.42, 0.55],
+        _ => [0.5, 0.3, 0.3],
+    };
+    let k = if active { 0.55 } else if hover { 0.3 } else { 0.0 };
+    Color::srgb(r + (1.0 - r) * k, g + (1.0 - g) * k, b + (1.0 - b) * k)
+}
+
+/// Toolbar buttons: clicking one selects a tool; hovering shows its tooltip.
+fn handle_toolbar(
+    screen: Res<ScreenRes>,
+    mut active: ResMut<ActiveTool>,
+    mut buttons: Query<(&Interaction, &ToolButton, &mut BackgroundColor)>,
+    mut tip: Query<&mut Text, With<TooltipUi>>,
+) {
+    if screen.0 != Screen::Playing {
+        active.over_ui = false;
+        return;
+    }
+    let mut over = false;
+    let mut hover_tip: Option<String> = None;
+    for (interaction, tb, mut bg) in &mut buttons {
+        let hovered = !matches!(interaction, Interaction::None);
+        if hovered {
+            over = true;
+        }
+        if matches!(interaction, Interaction::Pressed) {
+            active.tool = Some(tb.tool);
+            active.anchor = None;
+        }
+        if hovered {
+            hover_tip = Some(format!("{}  ({})   {}", tb.label, tb.key, tb.tip));
+        }
+        let is_active = active.tool == Some(tb.tool);
+        *bg = BackgroundColor(tool_bg(tb.cat, is_active, hovered));
+    }
+    active.over_ui = over;
+    if let Ok(mut text) = tip.single_mut() {
+        text.0 = hover_tip.unwrap_or_default();
+    }
+}
+
+/// Apply the selected toolbar tool where the player clicks the map. Rectangle
+/// tools take two clicks (anchor, then apply); the rest place at one click.
+fn apply_active_tool(
+    buttons: Res<ButtonInput<MouseButton>>,
+    screen: Res<ScreenRes>,
+    cursor: Res<Cursor>,
+    view_z: Res<ViewZ>,
+    mut active: ResMut<ActiveTool>,
+    mut sim: ResMut<SimRes>,
+    mut dirty: ResMut<MapDirty>,
+) {
+    if screen.0 != Screen::Playing || active.over_ui {
+        return;
+    }
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(tool) = active.tool else { return };
+    let Some(sim) = sim.0.as_mut() else { return };
+    // handle_mouse (chained before this) has already moved the cursor to the
+    // clicked tile, so the cursor is exactly where the player clicked.
+    let here = Pos::new(cursor.x, cursor.y, view_z.0);
+    match tool {
+        Tool::Build(kind) => {
+            sim.add_building(kind, here);
+        }
+        Tool::Wall => {
+            sim.designate_construction(here);
+        }
+        Tool::Engrave => {
+            sim.designate_rect(DesignationKind::Smooth, here, here);
+        }
+        Tool::Rect(kind) => match active.anchor {
+            Some(a) if a.z == here.z => {
+                apply_ui_rect(sim, kind, a, here);
+                active.anchor = None;
+            }
+            _ => active.anchor = Some(here),
+        },
+    }
+    dirty.0 = true;
+}
+
+/// Show the toolbar and tooltip only on the play screen.
+fn toolbar_visibility(
+    screen: Res<ScreenRes>,
+    mut roots: Query<&mut Visibility, With<ToolbarRoot>>,
+    mut tips: Query<&mut Visibility, (With<TooltipUi>, Without<ToolbarRoot>)>,
+) {
+    if !screen.is_changed() {
+        return;
+    }
+    let vis = if screen.0 == Screen::Playing { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut roots {
+        *v = vis;
+    }
+    for mut v in &mut tips {
+        *v = vis;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
