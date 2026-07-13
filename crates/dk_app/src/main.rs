@@ -268,6 +268,19 @@ struct ActiveTool {
     over_ui: bool,
 }
 
+/// Which toolbar category is expanded (its tools shown), if any. The bar is a
+/// category launcher: click Dig/Zones/Workshops/Orders to reveal that group's
+/// tools, DF-Steam style, instead of showing all ~33 at once.
+#[derive(Resource, Default)]
+struct OpenCategory(Option<u8>);
+
+/// A top-level category button on the toolbar.
+#[derive(Component)]
+struct CategoryButton(u8);
+
+/// The category names, indexed by the `cat` field on each tool.
+const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders"];
+
 /// Marks a clickable toolbar button and carries what it does + how to describe it.
 #[derive(Component, Clone)]
 struct ToolButton {
@@ -328,16 +341,6 @@ const TOOLS: &[ToolButton] = &[
     // --- Orders (cat 3)
     ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
 ];
-
-/// Accent colour for a tool category.
-fn cat_color(cat: u8) -> Color {
-    match cat {
-        0 => Color::srgb(0.55, 0.4, 0.3),  // dig — earthy
-        1 => Color::srgb(0.3, 0.5, 0.4),   // zone — green
-        2 => Color::srgb(0.4, 0.42, 0.55), // workshop — slate
-        _ => Color::srgb(0.5, 0.3, 0.3),   // order — red
-    }
-}
 
 #[derive(Resource)]
 struct MoveRepeat(Timer);
@@ -656,6 +659,7 @@ fn main() {
         .insert_resource(SimControl { paused: false, speed: 1 })
         .insert_resource(UiMode::default())
         .insert_resource(ActiveTool::default())
+        .insert_resource(OpenCategory(Some(0)))
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
         .insert_resource(OverlayRefresh(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(ShotState::default())
@@ -666,7 +670,7 @@ fn main() {
             Update,
             (
                 (
-                    handle_toolbar,
+                    (handle_toolbar, handle_category, tool_escape, toolbar_layout).chain(),
                     handle_mouse,
                     apply_active_tool,
                     handle_input,
@@ -859,7 +863,8 @@ fn setup(
         TooltipUi,
     ));
 
-    // The mouse-driven bottom toolbar: one clickable button per tool.
+    // The mouse-driven bottom toolbar: a bar of category launchers, with each
+    // category's tools revealed in a panel above when it's opened.
     commands
         .spawn((
             Node {
@@ -867,33 +872,81 @@ fn setup(
                 bottom: Val::Px(0.0),
                 left: Val::Px(0.0),
                 width: Val::Percent(100.0),
-                flex_direction: FlexDirection::Row,
-                flex_wrap: FlexWrap::Wrap,
-                column_gap: Val::Px(3.0),
-                row_gap: Val::Px(3.0),
-                padding: UiRect::all(Val::Px(4.0)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::FlexStart,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.85)),
             ToolbarRoot,
         ))
-        .with_children(|bar| {
-            for t in TOOLS {
-                bar.spawn((
-                    Button,
-                    Node {
-                        padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
-                        ..default()
-                    },
-                    BackgroundColor(cat_color(t.cat)),
-                    t.clone(),
-                ))
-                .with_child((
-                    Text::new(t.label),
-                    TextFont { font_size: 13.0, ..default() },
-                    TextColor(Color::srgb(0.95, 0.95, 0.92)),
-                ));
-            }
+        .with_children(|root| {
+            // The tools panel (shown for the open category) sits above the bar.
+            root.spawn((
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: Val::Px(3.0),
+                    row_gap: Val::Px(3.0),
+                    padding: UiRect::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.9)),
+            ))
+            .with_children(|panel| {
+                for t in TOOLS {
+                    panel
+                        .spawn((
+                            Button,
+                            Node {
+                                display: Display::None, // hidden until its category opens
+                                padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
+                                ..default()
+                            },
+                            BackgroundColor(tool_bg(t.cat, false, false)),
+                            t.clone(),
+                        ))
+                        .with_children(|b| {
+                            b.spawn((
+                                Text::new(t.label),
+                                TextFont { font_size: 13.0, ..default() },
+                                TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                            ))
+                            .with_child((
+                                TextSpan::new(format!("  {}", t.key)),
+                                TextFont { font_size: 11.0, ..default() },
+                                TextColor(Color::srgb(0.75, 0.75, 0.55)),
+                            ));
+                        });
+                }
+            });
+            // The always-visible category launcher bar.
+            root.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(3.0),
+                    padding: UiRect::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.04, 0.04, 0.06, 0.95)),
+            ))
+            .with_children(|bar| {
+                for (i, name) in CATEGORIES.iter().enumerate() {
+                    bar.spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::axes(Val::Px(12.0), Val::Px(5.0)),
+                            ..default()
+                        },
+                        BackgroundColor(tool_bg(i as u8, false, false)),
+                        CategoryButton(i as u8),
+                    ))
+                    .with_child((
+                        Text::new(*name),
+                        TextFont { font_size: 15.0, ..default() },
+                        TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                    ));
+                }
+            });
         });
 }
 
@@ -1067,11 +1120,13 @@ fn tool_bg(cat: u8, active: bool, hover: bool) -> Color {
     Color::srgb(r + (1.0 - r) * k, g + (1.0 - g) * k, b + (1.0 - b) * k)
 }
 
-/// Toolbar buttons: clicking one selects a tool; hovering shows its tooltip.
+/// Tool buttons: clicking selects a tool (clicking the active one again
+/// deselects); hovering shows its tooltip.
 fn handle_toolbar(
     screen: Res<ScreenRes>,
     mut active: ResMut<ActiveTool>,
     mut buttons: Query<(&Interaction, &ToolButton, &mut BackgroundColor)>,
+    cat_interactions: Query<&Interaction, With<CategoryButton>>,
     mut tip: Query<&mut Text, With<TooltipUi>>,
 ) {
     if screen.0 != Screen::Playing {
@@ -1086,7 +1141,13 @@ fn handle_toolbar(
             over = true;
         }
         if matches!(interaction, Interaction::Pressed) {
-            active.tool = Some(tb.tool);
+            // Toggle: clicking the active tool again puts the mouse back to
+            // plain camera/cursor use (a mouse-only "deselect").
+            if active.tool == Some(tb.tool) {
+                active.tool = None;
+            } else {
+                active.tool = Some(tb.tool);
+            }
             active.anchor = None;
         }
         if hovered {
@@ -1095,9 +1156,65 @@ fn handle_toolbar(
         let is_active = active.tool == Some(tb.tool);
         *bg = BackgroundColor(tool_bg(tb.cat, is_active, hovered));
     }
+    // Hovering a category launcher also counts as "over the UI".
+    for interaction in &cat_interactions {
+        if !matches!(interaction, Interaction::None) {
+            over = true;
+        }
+    }
     active.over_ui = over;
     if let Ok(mut text) = tip.single_mut() {
         text.0 = hover_tip.unwrap_or_default();
+    }
+}
+
+/// Category launchers: clicking one opens that group's tools (clicking the open
+/// one closes it). The map beneath stays visible.
+fn handle_category(
+    screen: Res<ScreenRes>,
+    mut open: ResMut<OpenCategory>,
+    mut buttons: Query<(&Interaction, &CategoryButton, &mut BackgroundColor)>,
+) {
+    if screen.0 != Screen::Playing {
+        return;
+    }
+    for (interaction, cb, mut bg) in &mut buttons {
+        if matches!(interaction, Interaction::Pressed) {
+            open.0 = if open.0 == Some(cb.0) { None } else { Some(cb.0) };
+        }
+        let is_open = open.0 == Some(cb.0);
+        let hovered = !matches!(interaction, Interaction::None);
+        *bg = BackgroundColor(tool_bg(cb.0, is_open, hovered));
+    }
+}
+
+/// Show only the tools of the open category (collapse the rest).
+fn toolbar_layout(open: Res<OpenCategory>, mut tools: Query<(&ToolButton, &mut Node)>) {
+    if !open.is_changed() {
+        return;
+    }
+    for (tb, mut node) in &mut tools {
+        node.display = if open.0 == Some(tb.cat) { Display::Flex } else { Display::None };
+    }
+}
+
+/// Escape steps back one level: clear the pending rectangle anchor, then the
+/// selected tool, then close the open category — like right-click in DF.
+fn tool_escape(
+    keys: Res<ButtonInput<KeyCode>>,
+    screen: Res<ScreenRes>,
+    mut active: ResMut<ActiveTool>,
+    mut open: ResMut<OpenCategory>,
+) {
+    if screen.0 != Screen::Playing || !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if active.anchor.is_some() {
+        active.anchor = None;
+    } else if active.tool.is_some() {
+        active.tool = None;
+    } else if open.0.is_some() {
+        open.0 = None;
     }
 }
 
