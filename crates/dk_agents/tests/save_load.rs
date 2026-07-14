@@ -6,6 +6,7 @@
 mod common;
 
 use dk_agents::{load_sim, save_sim, BuildingKind, DesignationKind, ItemKind, Sim};
+use dk_raws::{MaterialCategory, MaterialDef, MaterialRegistry, PlantDef, PlantRegistry, Raws};
 use dk_world::path::Pos;
 
 /// Build a fort exercising as much serialized state as we can reach.
@@ -105,4 +106,83 @@ fn a_rich_fortress_survives_a_save_and_reload() {
         loaded.step(&raws);
     }
     assert!(loaded.dwarves.iter().any(|d| d.alive));
+}
+
+/// The material index of the given id in a registry.
+fn mat_idx(raws: &Raws, id: &str) -> u16 {
+    (0..raws.materials.len() as u16)
+        .find(|&i| raws.materials.get(i).id == id)
+        .expect("material present")
+}
+
+#[test]
+fn a_reordered_registry_remaps_dwarf_favorites_and_tree_species() {
+    // Regression (wood-species review): a dwarf's favorite_material/favorite_crop
+    // and a tree's stored species are raws indices. If the material registry is
+    // reordered between save and load (a same-version data edit), load_sim must
+    // remap them by id — else a dwarf ends up fond of the wrong wood and a tree
+    // changes species (or, on a shrunk registry, panics when named).
+    let m = |id: &str, cat: MaterialCategory| MaterialDef {
+        id: id.into(),
+        name: id.into(),
+        category: cat,
+        color: [100, 100, 100],
+        value: 1,
+    };
+    // Same six materials (covering the categories mapgen needs), two orders.
+    let defs = |rev: bool| {
+        let mut v = vec![
+            m("loam", MaterialCategory::Soil),
+            m("limestone", MaterialCategory::Sedimentary),
+            m("granite", MaterialCategory::Igneous),
+            m("hematite", MaterialCategory::Ore),
+            m("oak", MaterialCategory::Wood),
+            m("pine", MaterialCategory::Wood),
+        ];
+        if rev {
+            v.reverse();
+        }
+        v
+    };
+    let plants = || {
+        PlantRegistry::from_defs(vec![
+            PlantDef { id: "barley".into(), name: "Barley".into(), color: [0, 0, 0], grow_days: 10, seasons: vec![0], brewable: true },
+            PlantDef { id: "potato".into(), name: "Potato".into(), color: [0, 0, 0], grow_days: 8, seasons: vec![0], brewable: false },
+        ])
+        .unwrap()
+    };
+    let raws_a = Raws { materials: MaterialRegistry::from_defs(defs(false)).unwrap(), plants: plants(), tileset: None };
+    let raws_b = Raws { materials: MaterialRegistry::from_defs(defs(true)).unwrap(), plants: plants(), tileset: None };
+
+    let mut rng = dk_core::rng_from_seed(99);
+    let map = dk_world::generate(&raws_a.materials, &mut rng, 24, 24, 12, 99);
+    let mut sim = Sim::new(map, &raws_a, rng, 2);
+    sim.invasions = false;
+
+    // Pin dwarf 0 fond of oak, and plant an oak tree — both by their raws_a index.
+    let oak_a = mat_idx(&raws_a, "oak");
+    sim.dwarves[0].favorite_material = oak_a;
+    let (tree, _) = {
+        let cx = sim.map.width as i32 / 2;
+        let cy = sim.map.height as i32 / 2;
+        sim.find_flat_patch(cx, cy).expect("a flat tile")
+    };
+    sim.trees.insert(tree, oak_a);
+
+    let path = std::env::temp_dir().join("dk_save_load").join("reorder.bin");
+    save_sim(&sim, &path, &raws_a).expect("save");
+    let loaded = load_sim(&path, &raws_b).expect("reload under the reordered registry");
+
+    // The stored indices now point at oak *in raws_b*, not the stale number.
+    let oak_b = mat_idx(&raws_b, "oak");
+    assert_ne!(oak_a, oak_b, "the two registries really do order oak differently");
+    assert_eq!(
+        loaded.dwarves[0].favorite_material, oak_b,
+        "the dwarf is still fond of oak after the registry was reordered"
+    );
+    assert_eq!(
+        loaded.trees.get(&tree).copied(),
+        Some(oak_b),
+        "the tree is still oak after the registry was reordered"
+    );
 }

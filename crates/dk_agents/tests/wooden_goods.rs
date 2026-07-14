@@ -56,6 +56,43 @@ fn a_carpenter_builds_furniture_of_the_logs_wood() {
 }
 
 #[test]
+fn mason_and_carpenter_share_one_bed_target() {
+    // Regression (wood-species review): the mason and carpenter both build beds
+    // toward the same alive+2 target. If the mason ignores the carpenter's
+    // in-flight wood beds (or vice versa) the two overshoot together. With both
+    // shops fed plenty of stone AND logs, the fort must still settle at or under
+    // the target, never a glut.
+    let (mut sim, raws) = wood_fort(7704, 4);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (ma, _) = sim.find_flat_patch(cx, cy).expect("mason site");
+    assert!(sim.add_building(BuildingKind::Mason, ma));
+    let (ca, _) = sim.find_flat_patch(cx, cy).expect("carpenter site");
+    assert!(sim.add_building(BuildingKind::Carpenter, ca));
+
+    let oak = raws.materials.indices_in_category(MaterialCategory::Wood)[0];
+    let granite = raws.materials.indices_in_category(MaterialCategory::Igneous)[0];
+    for _ in 0..40 {
+        if let Some((p, _)) = sim.find_flat_patch(cx, cy) {
+            sim.debug_spawn_item(ItemKind::Log, oak, p);
+            sim.debug_spawn_item(ItemKind::Boulder, granite, p);
+        }
+    }
+
+    let alive = sim.dwarves.iter().filter(|d| d.alive).count();
+    for _ in 0..30_000 {
+        sim.step(&raws);
+    }
+    let beds = sim.count_kind(ItemKind::Bed);
+    assert!(beds > 0, "the fort furnished itself");
+    assert!(
+        beds <= alive + 2,
+        "beds ({beds}) must not overshoot the shared target ({})",
+        alive + 2
+    );
+}
+
+#[test]
 fn a_felled_tree_yields_a_log_of_its_own_wood() {
     let (mut sim, raws) = wood_fort(7703, 4);
     let cx = sim.map.width as i32 / 2;

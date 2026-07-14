@@ -4260,17 +4260,20 @@ impl Sim {
                     && boulders > 4 + pending_crafts + pending_glass
                     && glass + pending_glass < 20;
                 // Furnish the fort: build beds from surplus stone until there's
-                // one for every citizen (plus a couple over to trade).
+                // one for every citizen (plus a couple over to trade). Count
+                // in-flight WOOD beds too, so the mason and carpenter share one
+                // target instead of overshooting it together.
                 let beds = self.count_kind(ItemKind::Bed);
                 let want_furniture = has_mason
                     && boulders > 4 + pending_crafts + pending_furniture
-                    && beds + pending_furniture < alive + 2;
+                    && beds + pending_furniture + pending_wood_beds < alive + 2;
                 // Adorn the halls: carve a few statues from surplus stone. A
                 // handful beautifies the whole fort, so the target is small.
+                // Count in-flight wood statues too (same shared-target reason).
                 let statues = self.count_kind(ItemKind::Statue);
                 let want_statues = has_mason
                     && boulders > 4 + pending_crafts + pending_furniture + pending_statues
-                    && statues + pending_statues < 3;
+                    && statues + pending_statues + pending_wood_statues < 3;
                 // Sew clothes from any cloth on hand until the fort is dressed
                 // (plus a couple of sets over to trade).
                 let cloth = self.count_kind(ItemKind::Cloth);
@@ -7561,6 +7564,14 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
     let old_trees = std::mem::take(&mut sim.trees);
     for (pos, species) in old_trees {
         sim.trees.insert(pos, remap_one(&mat_remap, species, "material")?);
+    }
+    // Each dwarf remembers a favorite material and crop by raws index — remap
+    // those too, so a registry that was reordered (or the wood species added)
+    // between save and load doesn't leave a dwarf fond of the wrong thing (or,
+    // if the registry shrank, index out of bounds when their tale is told).
+    for d in &mut sim.dwarves {
+        d.favorite_material = remap_one(&mat_remap, d.favorite_material, "material")?;
+        d.favorite_crop = remap_one(&plant_remap, d.favorite_crop, "plant")?;
     }
     sim.rebuild_caches();
     Ok(sim)
