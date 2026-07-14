@@ -577,6 +577,72 @@ def t_birch():
     t.speckle(6, 2, 26, 19, gray(202), 0.06)
     return t
 
+# --- Textured ground tiles (tinted grayscale). Several variants of each, so
+# the field is broken up per-tile instead of reading as a flat colored grid.
+
+def _grass(seed, pebble=False):
+    t = Tile(seed)
+    t.fill(0, 0, PX, PX, gray(158))              # bright turf base
+    t.speckle(0, 0, PX, PX, gray(132), 0.14)     # a touch of soil
+    t.speckle(0, 0, PX, PX, gray(190), 0.16)
+    for _ in range(95):                           # blades of grass
+        bx = int(t.rand() * PX)
+        by = 3 + int(t.rand() * (PX - 5))
+        h = 2 + int(t.rand() * 4)
+        shade = gray(185 + int(t.rand() * 70))    # bright blade tips
+        lean = -1 if t.rand() < 0.5 else 1
+        x = bx
+        for i in range(h):
+            t.set(x, by - i, shade)
+            if i % 2 == 1:
+                x += lean
+    if pebble:                                    # an odd stone in the turf
+        t.disc(23, 24, 3, gray(120))
+        t.disc(22, 23, 2, gray(175))
+    return t
+
+def t_grass_a(): return _grass(201)
+def t_grass_b(): return _grass(202)
+def t_grass_c(): return _grass(203, pebble=True)
+
+def _dirt(seed):
+    t = Tile(seed)
+    t.fill(0, 0, PX, PX, gray(128))
+    t.speckle(0, 0, PX, PX, gray(104), 0.28)      # grain
+    t.speckle(0, 0, PX, PX, gray(150), 0.12)
+    for _ in range(9):                            # pebbles
+        px_ = 2 + int(t.rand() * (PX - 4))
+        py_ = 2 + int(t.rand() * (PX - 4))
+        r = 1 + int(t.rand() * 2)
+        t.disc(px_, py_, r, gray(94))
+        t.disc(px_ - 1, py_ - 1, max(1, r - 1), gray(152))
+    return t
+
+def t_dirt_a(): return _dirt(211)
+def t_dirt_b(): return _dirt(212)
+
+def _rock(seed):
+    t = Tile(seed)
+    t.fill(0, 0, PX, PX, gray(140))
+    t.speckle(0, 0, PX, PX, gray(118), 0.20)      # grit
+    t.speckle(0, 0, PX, PX, gray(168), 0.10)
+    for _ in range(3):                            # jagged cracks
+        x = int(t.rand() * PX)
+        y = 0
+        while y < PX:
+            t.set(x, y, gray(78))
+            t.set(min(PX - 1, x + 1), y, gray(96))
+            y += 1 + int(t.rand() * 2)
+            x = max(0, min(PX - 1, x + (-1 if t.rand() < 0.5 else 1)))
+    for _ in range(4):                            # lit facets
+        fx = 3 + int(t.rand() * (PX - 8))
+        fy = 3 + int(t.rand() * (PX - 8))
+        t.fill(fx, fy, fx + 3, fy + 2, gray(175))
+    return t
+
+def t_rock_a(): return _rock(221)
+def t_rock_b(): return _rock(222)
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
@@ -586,9 +652,12 @@ ORDER = [
     ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep), ("dog", t_dog),
     ("weapon", t_weapon), ("tree", t_tree), ("tree_conifer", t_conifer),
     ("tree_willow", t_willow), ("tree_birch", t_birch),
+    ("grass_a", t_grass_a), ("grass_b", t_grass_b), ("grass_c", t_grass_c),
+    ("dirt_a", t_dirt_a), ("dirt_b", t_dirt_b), ("rock_a", t_rock_a), ("rock_b", t_rock_b),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
-          "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch"]
+          "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
+          "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS

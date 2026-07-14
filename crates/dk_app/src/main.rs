@@ -3036,11 +3036,17 @@ fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
 /// The meadow's grass palettes — base greens laid out in soft patches, each
 /// shaded further by a per-tile mottle.
 const GRASS_TYPES: [[f32; 3]; 4] = [
-    [0.20, 0.42, 0.16], // meadow green
-    [0.14, 0.38, 0.14], // lush deep green
-    [0.32, 0.40, 0.15], // dry olive
-    [0.18, 0.44, 0.26], // cool fescue
+    [0.28, 0.58, 0.22], // meadow green
+    [0.20, 0.52, 0.20], // lush deep green
+    [0.42, 0.54, 0.20], // dry olive
+    [0.26, 0.60, 0.34], // cool fescue
 ];
+/// Textured ground sprites, chosen per-tile so the field doesn't read as a
+/// flat colored grid. Grass, bare earth, and stone each have a few variants.
+const GRASS_SPRITES: [&str; 3] = ["grass_a", "grass_b", "grass_c"];
+const DIRT_SPRITES: [&str; 2] = ["dirt_a", "dirt_b"];
+const ROCK_SPRITES: [&str; 2] = ["rock_a", "rock_b"];
+
 /// Wildflower colors sprinkled sparsely through the grass.
 const FLOWER_COLORS: [[f32; 3]; 4] = [
     [0.85, 0.22, 0.24], // red poppy
@@ -3106,9 +3112,14 @@ fn tile_visual(
     if sim.map.water_at(here) == 0 && sim.map.walkable(here) {
         if let Some(t) = sim.map.tile_at(here) {
             let m = raws.materials.get(t.material);
+            // Textured ground sprites (a few variants each) only stand in for a
+            // plain floor; ramps and stairs keep their own shape but still take
+            // the colour below.
+            let is_floor = t.shape == TileShape::Floor;
             if m.category == MaterialCategory::Soil && m.id != "sand" {
-                // Four grass types laid out in soft patches, each shaded a
-                // little by a finer mottle so no two tufts read the same.
+                // Grass: a few types in soft patches, each finely mottled, taking
+                // the season's cast — and in winter a snow blanket that all but
+                // hides it, so it covers far more heavily.
                 let kind = (x * 6151 + y * 3079).rem_euclid(4) as usize;
                 let mottle = (x * 7919 + y * 104729).rem_euclid(8) as f32 / 7.0;
                 let base = GRASS_TYPES[kind];
@@ -3117,26 +3128,35 @@ fn tile_visual(
                     base[1] + 0.09 * mottle,
                     base[2] + 0.04 * mottle,
                 ];
-                // The meadow takes its season's cast — and in winter a blanket
-                // of snow all but hides the grass, so it covers far more heavily.
                 let (green, cover) = match season {
-                    Season::Spring => (mix(green, [0.34, 0.66, 0.28], 0.28), 0.42), // new growth
-                    Season::Summer => (green, 0.42),
-                    Season::Autumn => (mix(green, [0.64, 0.47, 0.16], 0.55), 0.45), // gold
-                    Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.74), // deep snow
+                    Season::Spring => (mix(green, [0.40, 0.72, 0.32], 0.28), 0.72),
+                    Season::Summer => (green, 0.72),
+                    Season::Autumn => (mix(green, [0.68, 0.50, 0.18], 0.55), 0.72),
+                    Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.85),
                 };
                 rgb = mix(rgb, green, cover);
-                // Wildflowers bloom only in the warm seasons — a sparse scatter
-                // of little blooms in a few colors, a bright fleck in the grass.
-                if matches!(season, Season::Spring | Season::Summer) {
-                    let f = x * 1_299_709 + y * 1301;
-                    if f.rem_euclid(13) == 0 {
-                        let bloom =
-                            FLOWER_COLORS[(f / 13).rem_euclid(FLOWER_COLORS.len() as i32) as usize];
-                        rgb = mix(rgb, bloom, 0.55);
-                        glyph = "crop";
+                if is_floor {
+                    glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
+                    // Wildflowers bloom only in the warm seasons — a sparse
+                    // scatter of blooms, a bright fleck in the grass.
+                    if matches!(season, Season::Spring | Season::Summer) {
+                        let f = x * 1_299_709 + y * 1301;
+                        if f.rem_euclid(13) == 0 {
+                            let bloom = FLOWER_COLORS
+                                [(f / 13).rem_euclid(FLOWER_COLORS.len() as i32) as usize];
+                            rgb = mix(rgb, bloom, 0.55);
+                            glyph = "crop";
+                        }
                     }
                 }
+            } else if is_floor {
+                // Bare ground keeps the terrain's own colour but gains texture:
+                // pebbled earth on soil/sand, cracked stone on rock.
+                glyph = if m.category == MaterialCategory::Soil {
+                    DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize]
+                } else {
+                    ROCK_SPRITES[(x * 15_731 + y * 789).rem_euclid(2) as usize]
+                };
             }
         }
     }
