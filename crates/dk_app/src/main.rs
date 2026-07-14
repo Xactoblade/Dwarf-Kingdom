@@ -3041,6 +3041,17 @@ const GRASS_TYPES: [[f32; 3]; 4] = [
     [0.33, 0.55, 0.21], // dry olive
     [0.26, 0.57, 0.28], // cool fescue
 ];
+/// Gentle per-citizen tints (near white) so a fort's dwarves read as
+/// individuals in their own homespun rather than a rank of identical figures.
+const DWARF_TINTS: [[f32; 3]; 6] = [
+    [1.00, 0.92, 0.80], // warm tan
+    [0.85, 0.90, 1.00], // cool blue-grey
+    [0.97, 0.84, 0.84], // dusty rose
+    [0.86, 0.96, 0.86], // sage
+    [1.00, 0.87, 0.70], // ochre
+    [0.91, 0.86, 0.97], // lavender
+];
+
 /// Textured ground sprites, chosen per-tile so the field doesn't read as a
 /// flat colored grid. Grass, bare earth, and stone each have a few variants.
 const GRASS_SPRITES: [&str; 3] = ["grass_a", "grass_b", "grass_c"];
@@ -3692,15 +3703,21 @@ fn sync_agent_sprites(
                                 Faction::Hostile => "raider",
                             });
                         }
-                        // Traders wear the road's gold dust; beasts loom dark.
+                        // Traders wear the road's gold dust; beasts loom dark;
+                        // soldiers take a steel sheen; other citizens each wear
+                        // their own homespun tint so the fort reads as a crowd
+                        // of individuals.
                         sprite.color = if d.beast {
                             Color::srgb(0.5, 0.1, 0.15)
                         } else if d.soldier {
-                            Color::srgb(0.7, 0.8, 1.0) // steel sheen
+                            Color::srgb(0.7, 0.8, 1.0)
                         } else {
                             match d.faction {
                                 Faction::Visitor => Color::srgb(1.0, 0.85, 0.55),
-                                _ => Color::WHITE,
+                                _ => {
+                                    let t = DWARF_TINTS[i % DWARF_TINTS.len()];
+                                    Color::srgb(t[0], t[1], t[2])
+                                }
                             }
                         };
                     }
