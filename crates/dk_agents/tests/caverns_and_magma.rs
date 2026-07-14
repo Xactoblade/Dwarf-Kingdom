@@ -102,6 +102,52 @@ fn water_meets_magma_and_becomes_obsidian() {
 }
 
 #[test]
+fn obsidian_never_seals_in_a_tree_or_shrub() {
+    // Regression (tree-regrowth review): a tile hardening to obsidian is another
+    // way a surface square turns solid, so it must clear any tree/shrub standing
+    // there -- else a phantom is sealed inside unmineable rock.
+    let raws = common::test_raws();
+    let mut m = arena();
+    m.set_magma(Pos::new(8, 8, 1), 7);
+    for x in 4..7 {
+        m.set_water(Pos::new(x, 8, 1), 7);
+    }
+    let rng = dk_core::rng_from_seed(804);
+    let mut sim = Sim::new(m, &raws, rng, 1);
+    sim.water.springs.clear();
+    sim.invasions = false;
+    sim.rebuild_caches();
+    // Blanket the meeting line with vegetation (cap stays 0 -> no regrowth).
+    for x in 4..=9 {
+        sim.trees.insert(Pos::new(x, 8, 1));
+        sim.shrubs.insert(Pos::new(x, 8, 1));
+    }
+
+    for _ in 0..2_000 {
+        sim.step(&raws);
+        if sim.log.iter().any(|(_, msg)| msg.contains("obsidian")) {
+            break;
+        }
+    }
+    assert!(
+        sim.log.iter().any(|(_, msg)| msg.contains("obsidian")),
+        "obsidian must form for this test to mean anything"
+    );
+    for &p in &sim.trees {
+        assert!(
+            !sim.map.get(p.x as usize, p.y as usize, p.z as usize).is_solid(),
+            "a tree is sealed inside solid obsidian at {p:?}"
+        );
+    }
+    for &p in &sim.shrubs {
+        assert!(
+            !sim.map.get(p.x as usize, p.y as usize, p.z as usize).is_solid(),
+            "a shrub is sealed inside solid obsidian at {p:?}"
+        );
+    }
+}
+
+#[test]
 fn magma_is_lethal_and_gates_hold_it_back() {
     let raws = common::test_raws();
     let mut m = arena();

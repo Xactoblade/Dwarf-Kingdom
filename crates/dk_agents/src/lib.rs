@@ -3744,6 +3744,11 @@ impl Sim {
                 continue;
             }
             self.map.set_at(p, Tile::solid(obsidian));
+            // A tile hardening to obsidian is another way a surface square turns
+            // solid — never leave a tree or shrub sealed inside it (mirrors the
+            // wall-raise cleanup).
+            self.trees.remove(&p);
+            self.shrubs.remove(&p);
             self.water.wake(p);
             self.magma.wake(p);
             formed += 1;
