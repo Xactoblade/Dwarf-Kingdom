@@ -29,6 +29,7 @@ use dk_agents::{
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
     SiegeLeader, SiegeRoster, Sim,
 };
+use dk_core::Season;
 use dk_history::World;
 use dk_raws::{MaterialCategory, Raws};
 use dk_world::path::Pos;
@@ -743,6 +744,18 @@ fn main() {
     let (screen, sim) = if screenshot_mode_on() && !shot_embark {
         let mut sim = embark(&world, &raws, default_region(&world));
         demo_scenario(&mut sim, &raws);
+        // DK_SHOT_SEASON=spring|summer|autumn|winter jumps the clock into that
+        // season so the seasonal look can be captured (screenshot builds only).
+        if let Ok(s) = std::env::var("DK_SHOT_SEASON") {
+            let idx = match s.as_str() {
+                "summer" => 1,
+                "autumn" => 2,
+                "winter" => 3,
+                _ => 0,
+            };
+            sim.clock.tick = idx * dk_core::TICKS_PER_DAY * dk_core::DAYS_PER_SEASON
+                + 2 * dk_core::TICKS_PER_DAY;
+        }
         (Screen::Playing, Some(sim))
     } else {
         (Screen::Embark, None)
@@ -3047,9 +3060,11 @@ fn tile_visual(
     }
 
     let here = Pos::new(x, y, view_z);
+    let season = sim.clock.season();
     // Grassy groundcover over open, grass-bearing soil (loam and clay of the
     // plains and forests — never the bare desert sand): a meadow of a few grass
-    // types, dappled here and there with wildflowers. Purely cosmetic and
+    // types, dappled with wildflowers, and turning with the seasons — fresh in
+    // spring, gold in autumn, snow-dusted in winter. Purely cosmetic and
     // deterministic per-tile; trees, farms, zones and buildings all paint over
     // it. (x, y are in-bounds and non-negative here, so the hashes stay small
     // and positive.)
@@ -3067,14 +3082,25 @@ fn tile_visual(
                     base[1] + 0.09 * mottle,
                     base[2] + 0.04 * mottle,
                 ];
-                rgb = mix(rgb, green, 0.42);
-                // Wildflowers: a sparse scatter of little blooms in a few
-                // colors, a bright fleck among the grass.
-                let f = x * 1_299_709 + y * 1301;
-                if f.rem_euclid(13) == 0 {
-                    let bloom = FLOWER_COLORS[(f / 13).rem_euclid(FLOWER_COLORS.len() as i32) as usize];
-                    rgb = mix(rgb, bloom, 0.55);
-                    glyph = "crop";
+                // The meadow takes its season's cast — and in winter a blanket
+                // of snow all but hides the grass, so it covers far more heavily.
+                let (green, cover) = match season {
+                    Season::Spring => (mix(green, [0.34, 0.66, 0.28], 0.28), 0.42), // new growth
+                    Season::Summer => (green, 0.42),
+                    Season::Autumn => (mix(green, [0.64, 0.47, 0.16], 0.55), 0.45), // gold
+                    Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.74), // deep snow
+                };
+                rgb = mix(rgb, green, cover);
+                // Wildflowers bloom only in the warm seasons — a sparse scatter
+                // of little blooms in a few colors, a bright fleck in the grass.
+                if matches!(season, Season::Spring | Season::Summer) {
+                    let f = x * 1_299_709 + y * 1301;
+                    if f.rem_euclid(13) == 0 {
+                        let bloom =
+                            FLOWER_COLORS[(f / 13).rem_euclid(FLOWER_COLORS.len() as i32) as usize];
+                        rgb = mix(rgb, bloom, 0.55);
+                        glyph = "crop";
+                    }
                 }
             }
         }
@@ -3089,8 +3115,9 @@ fn tile_visual(
         glyph = "farm";
     }
     if let Some(species) = sim.tree_species(here) {
-        // A tree standing on the surface — leafy green shaded toward its own
-        // wood, or amber once a woodcutter has marked it to be felled.
+        // A tree standing on the surface, its canopy turning with the season —
+        // green in the warm months, ablaze in autumn (each wood its own hue),
+        // bare in winter — unless it's an evergreen. Amber once marked to fell.
         let marked = matches!(
             sim.designations.get(&here).map(|d| d.kind),
             Some(DesignationKind::Chop)
@@ -3098,14 +3125,32 @@ fn tile_visual(
         if marked {
             rgb = mix(rgb, [0.85, 0.5, 0.12], 0.75);
         } else {
-            // Canopy green, tinged by the species' wood color so an oakwood and
-            // a mahogany stand read differently.
-            let wood = raws.materials.get(species).color;
+            let mat = raws.materials.get(species);
+            let wood = mat.color;
             let wood = [wood[0] as f32 / 255.0, wood[1] as f32 / 255.0, wood[2] as f32 / 255.0];
-            let canopy = mix([0.16, 0.5, 0.14], wood, 0.3);
-            rgb = mix(rgb, canopy, 0.75);
+            let evergreen = mat.id == "pine";
+            let canopy = if evergreen {
+                // A conifer holds its dark needles all year, snow-laden in winter.
+                let green = mix([0.10, 0.34, 0.15], wood, 0.15);
+                if matches!(season, Season::Winter) {
+                    mix(green, [0.80, 0.85, 0.90], 0.30)
+                } else {
+                    green
+                }
+            } else {
+                match season {
+                    Season::Spring => mix([0.20, 0.56, 0.18], wood, 0.2),
+                    Season::Summer => mix([0.16, 0.5, 0.14], wood, 0.25),
+                    // Autumn fire, pulled strongly toward the wood's own color
+                    // so maple burns red, birch yellows, oak goes russet.
+                    Season::Autumn => mix([0.74, 0.42, 0.10], wood, 0.45),
+                    // Bare branches under snow.
+                    Season::Winter => mix([0.42, 0.34, 0.27], [0.82, 0.85, 0.90], 0.35),
+                }
+            };
+            rgb = mix(rgb, canopy, 0.8);
         }
-        glyph = "crop";
+        glyph = "tree";
     }
     if sim.shrub_at(here) {
         // A wild berry shrub — low and berry-red, or amber once a forager has
@@ -3158,6 +3203,23 @@ fn tile_visual(
             BuildingKind::GlassFurnace => "still",
             BuildingKind::Trap => "weapon",
         };
+    }
+    // Relief shadows: light falls from the upper-left, so a wall throws a soft
+    // shadow onto the open ground at its lower-right. Only open (walkable) tiles
+    // catch a shadow; walls, water and magma below take their own overlays. This
+    // gives the flat grid a sense of raised stone and depth.
+    if sim.map.walkable(here) && sim.map.water_at(here) == 0 {
+        let mut shade = 0.0f32;
+        for (dx, dy, s) in [(-1, 0, 0.13f32), (0, 1, 0.13), (-1, 1, 0.08)] {
+            let np = Pos::new(x + dx, y + dy, view_z);
+            if sim.map.tile_at(np).is_some_and(|t| t.is_solid()) {
+                shade += s;
+            }
+        }
+        if shade > 0.0 {
+            let f = 1.0 - shade;
+            rgb = [rgb[0] * f, rgb[1] * f, rgb[2] * f];
+        }
     }
     let water = sim.map.water_at(here);
     if water > 0 {

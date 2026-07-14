@@ -503,6 +503,23 @@ def t_weapon():
     outline(t)
     return t
 
+def t_tree():
+    t = Tile(77)
+    # A tree seen from above: a rounded, lumpy mass of foliage with a lit
+    # upper-left and a shaded underside, plus a hint of trunk at the base.
+    # Grayscale, so it tints to the wood's (and the season's) color at runtime.
+    cx, cy = 16, 15
+    t.disc(cx, cy + 1, 12, gray(90))       # underside shadow
+    t.disc(cx, cy, 12, gray(140))          # canopy body
+    t.disc(cx - 2, cy - 2, 9, gray(172))   # lit upper-left mass
+    for (lx, ly, r, v) in ((10, 10, 4, 188), (21, 12, 4, 162), (14, 8, 3, 198),
+                           (21, 19, 4, 150), (11, 20, 3, 150), (16, 14, 3, 178)):
+        t.disc(lx, ly, r, gray(v))
+    t.speckle(4, 3, 28, 27, gray(205), 0.06)  # leaf glints
+    t.speckle(4, 3, 28, 27, gray(105), 0.06)  # leaf shadows
+    t.fill(15, 25, 18, 31, gray(78))          # trunk hint
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
@@ -510,9 +527,10 @@ ORDER = [
     ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
     ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
     ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep), ("dog", t_dog),
-    ("weapon", t_weapon),
+    ("weapon", t_weapon), ("tree", t_tree),
 ]
-TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder", "seed", "crop"]
+TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
+          "seed", "crop", "tree"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS
