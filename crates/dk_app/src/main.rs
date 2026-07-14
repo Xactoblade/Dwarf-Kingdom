@@ -3118,6 +3118,15 @@ fn tile_visual(
         // A tree standing on the surface, its canopy turning with the season —
         // green in the warm months, ablaze in autumn (each wood its own hue),
         // bare in winter — unless it's an evergreen. Amber once marked to fell.
+        // Its silhouette follows its species: a spiky conifer, a weeping
+        // willow, a slender birch, or the broad round canopy of the rest.
+        let mat = raws.materials.get(species);
+        glyph = match mat.id.as_str() {
+            "pine" => "tree_conifer",
+            "willow" => "tree_willow",
+            "birch" => "tree_birch",
+            _ => "tree",
+        };
         let marked = matches!(
             sim.designations.get(&here).map(|d| d.kind),
             Some(DesignationKind::Chop)
@@ -3125,7 +3134,6 @@ fn tile_visual(
         if marked {
             rgb = mix(rgb, [0.85, 0.5, 0.12], 0.75);
         } else {
-            let mat = raws.materials.get(species);
             let wood = mat.color;
             let wood = [wood[0] as f32 / 255.0, wood[1] as f32 / 255.0, wood[2] as f32 / 255.0];
             let evergreen = mat.id == "pine";
@@ -3150,7 +3158,6 @@ fn tile_visual(
             };
             rgb = mix(rgb, canopy, 0.8);
         }
-        glyph = "tree";
     }
     if sim.shrub_at(here) {
         // A wild berry shrub — low and berry-red, or amber once a forager has

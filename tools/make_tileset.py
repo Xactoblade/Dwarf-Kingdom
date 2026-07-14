@@ -520,6 +520,63 @@ def t_tree():
     t.fill(15, 25, 18, 31, gray(78))          # trunk hint
     return t
 
+def spike(t, cx, cy, tx, ty, w, c):
+    # A tapering spoke from (cx, cy) out to (tx, ty): width w at the base,
+    # narrowing to a point at the tip.
+    n = max(abs(tx - cx), abs(ty - cy), 1)
+    for i in range(n + 1):
+        f = i / n
+        x = round(cx + (tx - cx) * f)
+        y = round(cy + (ty - cy) * f)
+        ww = max(0, int(round(w * (1 - f))))
+        t.fill(x - ww, y - ww, x + ww + 1, y + ww + 1, c)
+
+def t_conifer():
+    t = Tile(88)
+    # A conifer from above: a tight, spiky radial crown of dark needles.
+    cx, cy = 16, 16
+    for (tx, ty) in ((16, 1), (16, 31), (1, 16), (31, 16),
+                     (5, 5), (27, 5), (5, 27), (27, 27)):
+        spike(t, cx, cy, tx, ty, 3, gray(112))
+    t.disc(cx, cy + 1, 7, gray(80))       # shaded core
+    t.disc(cx, cy, 7, gray(138))          # dense crown centre
+    t.disc(cx - 1, cy - 1, 4, gray(168))  # lit peak
+    t.speckle(4, 4, 28, 28, gray(96), 0.10)
+    t.fill(15, 29, 18, 31, gray(70))      # trunk hint
+    return t
+
+def t_willow():
+    t = Tile(99)
+    # A weeping willow: a broad canopy with long drooping tendrils.
+    cx, cy = 16, 12
+    t.disc(cx, cy + 1, 11, gray(85))
+    t.disc(cx, cy, 11, gray(140))
+    t.disc(cx - 2, cy - 2, 7, gray(172))
+    for x0 in (7, 11, 16, 21, 25):
+        x = x0
+        for i in range(9):
+            t.set(x, cy + 8 + i, gray(max(70, 130 - i * 6)))
+            if i % 3 == 2:
+                x += 1 if x0 > 16 else -1
+    t.speckle(4, 2, 28, 22, gray(182), 0.05)
+    t.speckle(4, 2, 28, 22, gray(104), 0.05)
+    return t
+
+def t_birch():
+    t = Tile(120)
+    # A slender birch: a small high canopy on a thin, pale, dappled trunk.
+    cx, cy = 16, 11
+    t.fill(15, 12, 18, 31, gray(198))
+    for yy in range(15, 30, 4):
+        t.set(15, yy, gray(88)); t.set(17, yy + 1, gray(88))  # bark marks
+    t.disc(cx, cy + 1, 8, gray(118))
+    t.disc(cx, cy, 8, gray(158))
+    t.disc(cx - 1, cy - 1, 5, gray(190))
+    for (lx, ly, r, v) in ((10, 8, 3, 176), (21, 9, 3, 150), (15, 5, 3, 196), (19, 15, 3, 150)):
+        t.disc(lx, ly, r, gray(v))
+    t.speckle(6, 2, 26, 19, gray(202), 0.06)
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
@@ -527,10 +584,11 @@ ORDER = [
     ("meal", t_meal), ("drink", t_drink), ("artifact", t_artifact),
     ("still", t_still), ("kitchen", t_kitchen), ("lever", t_lever),
     ("tomb", t_tomb), ("cow", t_cow), ("sheep", t_sheep), ("dog", t_dog),
-    ("weapon", t_weapon), ("tree", t_tree),
+    ("weapon", t_weapon), ("tree", t_tree), ("tree_conifer", t_conifer),
+    ("tree_willow", t_willow), ("tree_birch", t_birch),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
-          "seed", "crop", "tree"]
+          "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS
