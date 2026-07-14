@@ -252,10 +252,64 @@ pub enum SurfaceStyle {
     Loamy,
 }
 
-/// Generate a region with the default (mixed) surface. Kept as the stable
-/// entry point so every existing caller and test is byte-for-byte unchanged.
+/// How dramatic a region's surface relief is, driven by its overworld biome.
+/// Scales the heightfield AFTER the noise is drawn (so the RNG stream is
+/// untouched) and, for mountains, bares the upper rock. `Rolling` reproduces
+/// the original terrain exactly, keeping every existing caller/test identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relief {
+    /// Near-flat plains and grassland.
+    Flat,
+    /// The classic gentle roll (the original, byte-identical terrain).
+    Rolling,
+    /// Moderate, hummocky ground — hills.
+    Hilly,
+    /// Tall, steep ground that climbs many levels and sheds soil to bare rock
+    /// on its heights — mountains.
+    Mountainous,
+}
+
+impl Relief {
+    /// Multiplier on the heightfield amplitude. `Rolling` is 1.0 so the terrain
+    /// is unchanged from before reliefs existed.
+    fn amplitude(self) -> f32 {
+        match self {
+            Relief::Flat => 0.4,
+            Relief::Rolling => 1.0,
+            Relief::Hilly => 1.8,
+            Relief::Mountainous => 2.8,
+        }
+    }
+
+    /// Depth of soil atop a column of the given surface height. Only mountains
+    /// differ: their higher, steeper ground wears down to bare stone.
+    fn soil_depth(self, surface: usize, base: usize) -> usize {
+        const FULL: usize = 3;
+        match self {
+            Relief::Mountainous => {
+                if surface >= base + 6 {
+                    0
+                } else if surface >= base + 3 {
+                    1
+                } else {
+                    FULL
+                }
+            }
+            _ => FULL,
+        }
+    }
+}
+
+/// Generate a region with the default (mixed) surface and gentle rolling
+/// relief. Kept as the stable entry point so every existing caller and test is
+/// byte-for-byte unchanged.
 pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64) -> Map {
-    generate_styled(reg, rng, width, height, depth, seed, SurfaceStyle::Default)
+    generate_terrain(reg, rng, width, height, depth, seed, SurfaceStyle::Default, Relief::Rolling)
+}
+
+/// Generate with a chosen surface soil style and gentle rolling relief.
+pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle) -> Map {
+    generate_terrain(reg, rng, width, height, depth, seed, surface, Relief::Rolling)
 }
 
 /// Cut a winding river across an already-generated map: a flat-bottomed
@@ -314,7 +368,7 @@ pub fn carve_river(map: &mut Map, seed: u64) {
     }
 }
 
-pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle) -> Map {
+pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle, relief: Relief) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(
         width >= 16 && height >= 16 && depth >= 12,
@@ -350,7 +404,9 @@ pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usiz
             let g = |gx: usize, gy: usize| grid[gy * gw + gx];
             let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
             let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
-            let off = top * (1.0 - ty) + bot * ty;
+            // Scale AFTER the noise is drawn — the RNG stream is unchanged, so
+            // Rolling (amplitude 1.0) reproduces the original heights exactly.
+            let off = (top * (1.0 - ty) + bot * ty) * relief.amplitude();
             heights[y * width + x] =
                 ((base as f32 + off).round() as i64).clamp(4, depth as i64 - 2) as usize;
         }
@@ -398,11 +454,14 @@ pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usiz
             let surface = height_at(x, y);
             let soil_mat = fixed_soil.unwrap_or_else(|| soils[(x / 7 + y / 9) % soils.len()]);
             let sed_mat = sedimentary[(x / 11 + y / 6) % sedimentary.len()];
+            // Mountains bare their heights to rock; other reliefs keep full soil.
+            let soil_depth = relief.soil_depth(surface, base);
+            let mut top_mat = soil_mat;
             for z in 0..=surface {
                 let below_surface = surface - z;
-                let mat = if below_surface < SOIL_DEPTH {
+                let mat = if below_surface < soil_depth {
                     soil_mat
-                } else if below_surface < SOIL_DEPTH + SEDIMENTARY_DEPTH {
+                } else if below_surface < soil_depth + SEDIMENTARY_DEPTH {
                     sed_mat
                 } else if !metamorphic.is_empty() && z % 9 == 0 {
                     metamorphic[z / 9 % metamorphic.len()]
@@ -410,8 +469,14 @@ pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usiz
                     igneous[(z / 5) % igneous.len()]
                 };
                 map.set(x, y, z, Tile::solid(mat));
+                if z == surface {
+                    top_mat = mat;
+                }
             }
-            map.set(x, y, surface + 1, Tile::floor(soil_mat));
+            // The walkable ground reads as its topmost material — soil where
+            // there's soil, bare rock on a stripped mountainside (so no grass
+            // grows there).
+            map.set(x, y, surface + 1, Tile::floor(top_mat));
         }
     }
 
@@ -629,6 +694,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn mountainous_relief_climbs_higher_and_bares_rock() {
+        use rand::SeedableRng;
+        let reg = strata_reg();
+        let spread = |relief: Relief| {
+            let mut rng = ChaCha8Rng::seed_from_u64(42);
+            let m = generate_terrain(&reg, &mut rng, 48, 48, 32, 42, SurfaceStyle::Default, relief);
+            let (mut lo, mut hi, mut bare_rock) = (usize::MAX, 0usize, 0u32);
+            for y in 0..48 {
+                for x in 0..48 {
+                    let wz = m.walk_surface_z(x, y).unwrap();
+                    lo = lo.min(wz);
+                    hi = hi.max(wz);
+                    if reg.get(m.get(x, y, wz - 1).material).category != MaterialCategory::Soil {
+                        bare_rock += 1;
+                    }
+                }
+            }
+            (hi - lo, bare_rock)
+        };
+        let (roll_spread, roll_rock) = spread(Relief::Rolling);
+        let (mtn_spread, mtn_rock) = spread(Relief::Mountainous);
+        assert!(
+            mtn_spread > roll_spread + 3,
+            "mountains climb far higher: rolling {roll_spread} vs mountainous {mtn_spread}"
+        );
+        assert_eq!(roll_rock, 0, "rolling ground is soil all over");
+        assert!(mtn_rock > 0, "mountain heights are bared to rock");
     }
 
     #[test]

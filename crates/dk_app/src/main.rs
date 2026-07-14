@@ -641,12 +641,27 @@ fn has_river(biome: dk_history::Biome) -> bool {
     matches!(biome, Biome::Grassland | Biome::Forest | Biome::Swamp)
 }
 
+/// How dramatic a region's local terrain relief is — so a mountain embark
+/// climbs steep bare rock, hills roll, and the plains lie nearly flat.
+fn relief_for(biome: dk_history::Biome) -> dk_world::Relief {
+    use dk_history::Biome;
+    use dk_world::Relief;
+    match biome {
+        Biome::Mountains => Relief::Mountainous,
+        Biome::Hills => Relief::Hilly,
+        Biome::Grassland | Biome::Desert => Relief::Flat,
+        _ => Relief::Rolling,
+    }
+}
+
 fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::Map {
     let seed = world.seed ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
     let biome = world.overworld.get(region.0, region.1).biome;
     let style = surface_style(biome);
-    let mut map = dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style);
+    let mut map = dk_world::generate_terrain(
+        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(biome),
+    );
     if has_river(biome) {
         dk_world::carve_river(&mut map, seed);
     }
@@ -659,7 +674,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     let mut rng = dk_core::rng_from_seed(seed);
     let biome = world.overworld.get(region.0, region.1).biome;
     let style = surface_style(biome);
-    let mut map = dk_world::generate_styled(&raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style);
+    let mut map = dk_world::generate_terrain(
+        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(biome),
+    );
     // A river runs through wetter lands — carved after gen; it draws no RNG,
     // so the dwarves rolled below are unchanged.
     if has_river(biome) {
@@ -742,7 +759,25 @@ fn main() {
     // DK_SHOT_SCREEN=embark verifies the embark map instead of the fort.
     let shot_embark = std::env::var("DK_SHOT_SCREEN").is_ok_and(|v| v == "embark");
     let (screen, sim) = if screenshot_mode_on() && !shot_embark {
-        let mut sim = embark(&world, &raws, default_region(&world));
+        // DK_SHOT_BIOME=mountain embarks in the highest-elevation region so the
+        // mountainous terrain can be captured (screenshot builds only).
+        let region = if std::env::var("DK_SHOT_BIOME").is_ok_and(|v| v == "mountain") {
+            let mut best = default_region(&world);
+            let mut best_e = -1.0f32;
+            for y in 0..OW {
+                for x in 0..OW {
+                    let r = world.overworld.get(x, y);
+                    if r.biome.embarkable() && r.elevation > best_e {
+                        best_e = r.elevation;
+                        best = (x, y);
+                    }
+                }
+            }
+            best
+        } else {
+            default_region(&world)
+        };
+        let mut sim = embark(&world, &raws, region);
         demo_scenario(&mut sim, &raws);
         // DK_SHOT_SEASON=spring|summer|autumn|winter jumps the clock into that
         // season so the seasonal look can be captured (screenshot builds only).
@@ -3319,6 +3354,18 @@ fn redraw_tiles(
             let region = world.0.overworld.get(rx.min(OW - 1), ry.min(OW - 1));
             let [r, g, b] = region.biome.color();
             let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+            // Shade by elevation so the land reads as relief: valleys sit
+            // darker, high ground brightens, and the highest peaks catch a
+            // dusting of snow — mountains stand out at a glance.
+            if !matches!(region.biome, dk_history::Biome::Ocean) {
+                let e = region.elevation;
+                let shade = (0.72 + 0.5 * (e - 0.35)).clamp(0.55, 1.15);
+                rgb = [rgb[0] * shade, rgb[1] * shade, rgb[2] * shade];
+                if e > 0.78 {
+                    let snow = ((e - 0.78) / 0.22).clamp(0.0, 0.6);
+                    rgb = mix(rgb, [0.92, 0.94, 0.98], snow);
+                }
+            }
             let mut glyph = "block";
             // Mark civilization sites.
             if world.0.sites.iter().any(|st| st.region == (rx, ry) && !st.ruined) {
