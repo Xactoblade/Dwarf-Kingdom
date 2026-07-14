@@ -218,6 +218,7 @@ enum UiKind {
     Burrow,
     Library,
     Chop,
+    Gather,
     Cancel,
 }
 
@@ -238,6 +239,7 @@ impl UiKind {
             UiKind::Burrow => "BURROW",
             UiKind::Library => "LIBRARY",
             UiKind::Chop => "CHOP",
+            UiKind::Gather => "GATHER",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -356,7 +358,7 @@ struct StocksPanelText;
 
 /// The fort's goods, grouped for the Stocks panel (label, the item kinds in it).
 const STOCK_GROUPS: &[(&str, &[ItemKind])] = &[
-    ("Food & Drink", &[ItemKind::Meal, ItemKind::Drink, ItemKind::Crop, ItemKind::Seed]),
+    ("Food & Drink", &[ItemKind::Meal, ItemKind::Drink, ItemKind::Crop, ItemKind::Berry, ItemKind::Seed]),
     (
         "Raw materials",
         &[
@@ -425,6 +427,7 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Rect(UiKind::Stairs), label: "Stairs", key: "x", tip: "Carve stairs up and down between z-levels", cat: 0 },
     ToolButton { tool: Tool::Rect(UiKind::Channel), label: "Channel", key: "h", tip: "Dig a channel: opens the floor, water pours in", cat: 0 },
     ToolButton { tool: Tool::Rect(UiKind::Chop), label: "Chop", key: "\u{21e7}X", tip: "Fell trees for logs (drag over a stand of trees)", cat: 0 },
+    ToolButton { tool: Tool::Rect(UiKind::Gather), label: "Gather", key: "\u{21e7}G", tip: "Forage wild shrubs for edible berries (drag over a berry patch)", cat: 0 },
     ToolButton { tool: Tool::Wall, label: "Wall", key: "\u{21e7}B", tip: "Plan a constructed wall; masons haul stone and raise it", cat: 0 },
     ToolButton { tool: Tool::Engrave, label: "Engrave", key: "\u{21e7}D", tip: "Smooth a wall and carve a scene from the fort's history", cat: 0 },
     // --- Zones (cat 1)
@@ -677,6 +680,19 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
         }
     };
     sim.plant_trees(trees);
+    // Scatter wild berry shrubs too — thickest where it's green and wet, bare
+    // in the desert. Foragers gather them (Shift+G) for berries the fort can
+    // eat straight, and a tended patch reseeds itself.
+    let shrubs = {
+        use dk_history::Biome;
+        match biome {
+            Biome::Forest | Biome::Swamp => 90,
+            Biome::Grassland | Biome::Hills => 60,
+            Biome::Desert | Biome::Mountains => 8,
+            _ => 30,
+        }
+    };
+    sim.plant_shrubs(shrubs);
     // Rarely (about one fort in ten), one of the founding seven keeps a dark
     // secret — a vampire, indistinguishable from any other dwarf until
     // fort-mates start turning up drained of blood.
@@ -1420,6 +1436,9 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
         UiKind::Chop => {
             sim.designate_rect(DesignationKind::Chop, a, b);
         }
+        UiKind::Gather => {
+            sim.designate_rect(DesignationKind::Gather, a, b);
+        }
         UiKind::Stockpile => sim.add_stockpile(a, b),
         UiKind::Farm => {
             sim.add_farm(a, b, 0);
@@ -1897,6 +1916,7 @@ fn item_kind_name(k: ItemKind) -> &'static str {
         ItemKind::Meal => "prepared meals",
         ItemKind::Drink => "drinks",
         ItemKind::Crop => "crops",
+        ItemKind::Berry => "foraged berries",
         ItemKind::Seed => "seeds",
         ItemKind::Boulder => "stone boulders",
         ItemKind::Bar => "metal bars",
@@ -2442,6 +2462,9 @@ fn handle_input(
                     UiKind::Chop => {
                         sim.0.designate_rect(DesignationKind::Chop, anchor, here);
                     }
+                    UiKind::Gather => {
+                        sim.0.designate_rect(DesignationKind::Gather, anchor, here);
+                    }
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -2489,6 +2512,19 @@ fn handle_input(
                 mode.0 = None;
             }
             _ => mode.0 = Some((UiKind::Chop, here)),
+        }
+        dirty.0 = true;
+    }
+    // Shift+G: designate wild shrubs for foraging (two-press rectangle; only
+    // tiles with a berry shrub are marked).
+    if shift && keys.just_pressed(KeyCode::KeyG) {
+        let here = cursor.pos(view_z.0);
+        match mode.0 {
+            Some((UiKind::Gather, anchor)) if anchor.z == here.z => {
+                sim.0.designate_rect(DesignationKind::Gather, anchor, here);
+                mode.0 = None;
+            }
+            _ => mode.0 = Some((UiKind::Gather, here)),
         }
         dirty.0 = true;
     }
@@ -3015,6 +3051,17 @@ fn tile_visual(
         rgb = mix(rgb, tint, 0.75);
         glyph = "crop";
     }
+    if sim.shrub_at(here) {
+        // A wild berry shrub — low and berry-red, or amber once a forager has
+        // marked it to be gathered.
+        let marked = matches!(
+            sim.designations.get(&here).map(|d| d.kind),
+            Some(DesignationKind::Gather)
+        );
+        let tint = if marked { [0.85, 0.5, 0.12] } else { [0.5, 0.18, 0.32] };
+        rgb = mix(rgb, tint, 0.7);
+        glyph = "crop";
+    }
     if let Some(b) = sim.building_at(here) {
         let tint = match b.kind {
             BuildingKind::Still => [0.85, 0.5, 0.22],
@@ -3212,6 +3259,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Boulder => format!("{} boulder", raws.materials.get(it.stuff).name),
         ItemKind::Seed => format!("{} seeds", raws.plants.get(it.stuff).name),
         ItemKind::Crop => raws.plants.get(it.stuff).name.clone(),
+        ItemKind::Berry => "berries".to_string(),
         ItemKind::Meal => "prepared meal".to_string(),
         ItemKind::Drink => "mug of drink".to_string(),
         ItemKind::Artifact => it.name.clone().unwrap_or_else(|| "artifact".to_string()),
@@ -3250,6 +3298,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
     match kind {
         ItemKind::Boulder => lighten(raws.materials.get(stuff).color),
         ItemKind::Seed | ItemKind::Crop => lighten(raws.plants.get(stuff).color),
+        ItemKind::Berry => Color::srgb(0.72, 0.16, 0.42),
         ItemKind::Meal => Color::srgb(0.9, 0.62, 0.3),
         ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
         ItemKind::Artifact => Color::srgb(1.0, 0.85, 0.25),
@@ -3426,6 +3475,7 @@ fn sync_agent_sprites(
                             ItemKind::Boulder => "boulder",
                             ItemKind::Seed => "seed",
                             ItemKind::Crop => "crop",
+                            ItemKind::Berry => "crop",
                             ItemKind::Meal => "meal",
                             ItemKind::Drink => "drink",
                             ItemKind::Artifact => "artifact",
@@ -3770,6 +3820,7 @@ fn update_hud(
             ItemKind::Boulder => format!("{} boulder", reg.0.materials.get(it.stuff).name),
             ItemKind::Seed => format!("{} seeds", reg.0.plants.get(it.stuff).name),
             ItemKind::Crop => reg.0.plants.get(it.stuff).name.clone(),
+            ItemKind::Berry => "a heap of berries".to_string(),
             ItemKind::Meal => "prepared meal".to_string(),
             ItemKind::Drink => "mug of drink".to_string(),
             ItemKind::Artifact => it

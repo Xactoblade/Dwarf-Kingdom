@@ -24,6 +24,12 @@ pub const MINE_WORK: u16 = 40;
 pub const HARVEST_WORK: u16 = 60;
 /// Ticks of work (at speed 1) to fell a tree.
 pub const CHOP_WORK: u16 = 120;
+/// Ticks of work (at speed 1) to forage a wild shrub for berries. Quicker than
+/// felling a tree — you only stoop and pick.
+pub const GATHER_WORK: u16 = 50;
+/// A foraged shrub regrows on this cadence: once a day, a living shrub may cast
+/// a seed to an open neighbour, so a tended berry patch is a renewable food.
+pub const SHRUB_REGROW_INTERVAL: u64 = TICKS_PER_DAY;
 /// Ticks of work at a workshop to brew/cook.
 pub const CRAFT_WORK: u16 = 150;
 /// Ticks between two steps of a walking dwarf.
@@ -126,6 +132,8 @@ pub enum DesignationKind {
     Smooth,
     /// Fell a tree standing on this tile, yielding a log.
     Chop,
+    /// Forage a wild shrub standing on this tile, yielding edible berries.
+    Gather,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -199,6 +207,10 @@ pub enum ItemKind {
     Hide,
     /// Tanned leather. `stuff` unused. A fine trade good worked from a hide.
     Leather,
+    /// Foraged berries and wild roots, gathered from a shrub on the surface.
+    /// `stuff` unused. Directly edible with no cooking — the fort's simplest
+    /// food — and a modest trade good.
+    Berry,
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -786,6 +798,8 @@ pub enum Task {
     Shelter { spot: Pos, path: Vec<Pos> },
     /// Walk to a marked tree and fell it for a log.
     Chop { tree: Pos, path: Vec<Pos>, progress: u16 },
+    /// Walk to a marked shrub and forage it for berries.
+    Gather { shrub: Pos, path: Vec<Pos>, progress: u16 },
     /// Walk to a well and drink clean water (a fallback when brewed drink is
     /// gone).
     DrinkWell { spot: Pos, path: Vec<Pos> },
@@ -887,6 +901,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::MakeInstrument, .. } => "making an instrument",
             Task::Craft { kind: CraftKind::TanHide, .. } => "tanning leather",
             Task::Chop { .. } => "chopping wood",
+            Task::Gather { .. } => "gathering plants",
             Task::DrinkWell { .. } => "drawing water",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
             Task::Fight { .. } => "attacking",
@@ -946,6 +961,8 @@ pub struct SimStats {
     pub clothes_sewn: u32,
     /// Trees felled by woodcutters.
     pub trees_felled: u32,
+    /// Wild shrubs foraged for berries.
+    pub foraged: u32,
     /// Barrels worked from logs at the carpenter's shop.
     pub barrels_made: u32,
     /// Statues carved at the mason's workshop.
@@ -1089,6 +1106,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Hide => 6,
         // Tanned leather: a fine, renewable trade good.
         ItemKind::Leather => 30,
+        // Foraged berries: cheap wild food, but food all the same.
+        ItemKind::Berry => 4,
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
@@ -1148,6 +1167,13 @@ pub struct Sim {
     /// Trees standing on the surface. Passable, but a woodcutter can fell one
     /// (designate Chop) for a log. Empty unless a map is planted with them.
     pub trees: BTreeSet<Pos>,
+    /// Wild berry shrubs on the surface. Passable; a forager can gather one
+    /// (designate Gather) for edible berries, and a tended patch reseeds itself
+    /// over time. Empty unless a map is planted with them.
+    pub shrubs: BTreeSet<Pos>,
+    /// Ceiling on natural shrub regrowth, set when a map is seeded — a berry
+    /// patch spreads but never overruns the map.
+    pub shrub_cap: usize,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -1263,6 +1289,8 @@ impl Sim {
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
             trees: BTreeSet::new(),
+            shrubs: BTreeSet::new(),
+            shrub_cap: 0,
             engravings: BTreeMap::new(),
             constructions: BTreeMap::new(),
             stats: SimStats::default(),
@@ -1339,6 +1367,8 @@ impl Sim {
                     }
                     // Fell a tree standing on this tile.
                     DesignationKind::Chop => self.trees.contains(&p),
+                    // Forage a wild shrub standing on this tile.
+                    DesignationKind::Gather => self.shrubs.contains(&p),
                 };
                 // Never dig away a tile that carries a building (an open
                 // floodgate is a plain Floor, but its Building persists).
@@ -1385,6 +1415,7 @@ impl Sim {
                         // — cancelling must actually cancel (Chop was missing).
                         if matches!(self.dwarves[i].task, Task::Mine { target, .. } if target == p)
                             || matches!(self.dwarves[i].task, Task::Chop { tree, .. } if tree == p)
+                            || matches!(self.dwarves[i].task, Task::Gather { shrub, .. } if shrub == p)
                         {
                             self.abandon_task(i);
                         }
@@ -1895,6 +1926,72 @@ impl Sim {
         }
     }
 
+    /// Is there a berry shrub standing on this tile?
+    pub fn shrub_at(&self, p: Pos) -> bool {
+        self.shrubs.contains(&p)
+    }
+
+    /// May a wild shrub stand on this tile? Open, walkable surface, clear of
+    /// trees, buildings, farms, water, and another shrub.
+    fn can_plant_shrub(&self, p: Pos) -> bool {
+        !self.shrubs.contains(&p)
+            && !self.trees.contains(&p)
+            && self.building_at(p).is_none()
+            && !self.farms.contains_key(&p)
+            && self.map.water_at(p) == 0
+    }
+
+    /// Scatter `count` wild berry shrubs across walkable surface tiles, and set
+    /// the regrowth ceiling to half again their number. Deterministic given the
+    /// sim's rng; called at embark (like the trees) so headless forts that don't
+    /// ask for foraging stay byte-identical.
+    pub fn plant_shrubs(&mut self, count: usize) {
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        let mut placed = 0;
+        for _ in 0..(count * 20) {
+            if placed >= count {
+                break;
+            }
+            let x = self.rng.gen_range(0..w);
+            let y = self.rng.gen_range(0..h);
+            let Some(z) = self.map.walk_surface_z(x as usize, y as usize) else { continue };
+            let p = Pos::new(x, y, z as i32);
+            if !self.can_plant_shrub(p) {
+                continue;
+            }
+            self.shrubs.insert(p);
+            placed += 1;
+        }
+        // A patch may spread to half again its planted size, then holds.
+        self.shrub_cap = self.shrubs.len() + self.shrubs.len() / 2;
+    }
+
+    /// A tended berry patch reseeds itself: once a day a living shrub may cast a
+    /// seed to an open neighbour, up to the patch's ceiling. Wholly gated on a
+    /// shrub already existing — a fort with none draws no rng and is untouched,
+    /// so the headless suite stays byte-identical.
+    fn tick_regrowth(&mut self) {
+        if self.shrubs.is_empty() || self.shrubs.len() >= self.shrub_cap {
+            return;
+        }
+        if self.clock.tick % SHRUB_REGROW_INTERVAL != 0 {
+            return;
+        }
+        let n = self.shrubs.len();
+        let parent = *self.shrubs.iter().nth(self.rng.gen_range(0..n)).unwrap();
+        const DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+        let (dx, dy) = DIRS[self.rng.gen_range(0..4)];
+        let (nx, ny) = (parent.x + dx, parent.y + dy);
+        if nx < 0 || ny < 0 || nx >= self.map.width as i32 || ny >= self.map.height as i32 {
+            return;
+        }
+        let Some(z) = self.map.walk_surface_z(nx as usize, ny as usize) else { return };
+        let np = Pos::new(nx, ny, z as i32);
+        if self.can_plant_shrub(np) && !self.designations.contains_key(&np) {
+            self.shrubs.insert(np);
+        }
+    }
+
     /// App/embark only: curse one of the founding seven as a secret vampire.
     /// Deliberately kept out of `add_embark_supplies` — the many headless tests
     /// that build a fort by hand must stay byte-identical, so a fort only
@@ -2390,6 +2487,8 @@ impl Sim {
         self.engravings.clear();
         self.constructions.clear();
         self.trees.clear();
+        self.shrubs.clear();
+        self.shrub_cap = 0;
         self.caravan = None;
         self.water = WaterSim::default();
         if let Some(spring) = natural_spring(&self.map) {
@@ -2678,6 +2777,11 @@ impl Sim {
         self.spawn_item(ItemKind::Corpse, 0, pos);
     }
 
+    /// Drop an arbitrary item on the ground (scenarios/tests).
+    pub fn debug_spawn_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos) {
+        self.spawn_item(kind, stuff, pos);
+    }
+
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
     /// by citizens in index order, so this dresses the fort's first citizens.
     pub fn debug_spawn_clothes(&mut self, pos: Pos) {
@@ -2797,6 +2901,7 @@ impl Sim {
         self.tick_vampires();
         self.tick_werebeasts();
         self.tick_necromancers(raws);
+        self.tick_regrowth();
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
         }
@@ -4267,6 +4372,7 @@ impl Sim {
             Build { site: Pos, input: usize },
             Fish { spot: Pos },
             Chop { tree: Pos },
+            Gather { shrub: Pos },
         }
         let mut best: Option<(u32, Cand)> = None;
         let consider = |dist: u32, c: Cand, best: &mut Option<(u32, Cand)>| {
@@ -4281,11 +4387,16 @@ impl Sim {
             if des.assigned || des.retry_at > tick {
                 continue;
             }
-            // Chopping: the woodcutter stands on the (passable) tree tile
-            // itself, rather than working a wall from an adjacent square.
-            if des.kind == DesignationKind::Chop {
+            // Chopping and foraging: the worker stands on the (passable) tree
+            // or shrub tile itself, rather than working from an adjacent square.
+            if des.kind == DesignationKind::Chop || des.kind == DesignationKind::Gather {
                 if self.regions.id(target) == my_region {
-                    consider(target.manhattan(dwarf_pos), Cand::Chop { tree: target }, &mut best);
+                    let cand = if des.kind == DesignationKind::Chop {
+                        Cand::Chop { tree: target }
+                    } else {
+                        Cand::Gather { shrub: target }
+                    };
+                    consider(target.manhattan(dwarf_pos), cand, &mut best);
                 }
                 continue;
             }
@@ -4522,6 +4633,17 @@ impl Sim {
                     }
                 }
             }
+            Cand::Gather { shrub } => {
+                match path::astar(&self.map, dwarf_pos, shrub, MAX_ASTAR_NODES) {
+                    Some(p) => {
+                        self.designations.get_mut(&shrub).unwrap().assigned = true;
+                        self.dwarves[i].task = Task::Gather { shrub, path: p, progress: 0 };
+                    }
+                    None => {
+                        self.designations.get_mut(&shrub).unwrap().retry_at = tick + RETRY_DELAY;
+                    }
+                }
+            }
             Cand::Plant { tile, seed } => {
                 let seed_pos = self.items[seed].pos;
                 if let Some(p) = path::astar(&self.map, dwarf_pos, seed_pos, MAX_ASTAR_NODES) {
@@ -4621,6 +4743,10 @@ impl Sim {
     fn nearest_food(&self, near: Pos, region: u32, hunger: f32) -> Option<usize> {
         if let Some(meal) = self.nearest_kind(ItemKind::Meal, near, region) {
             return Some(meal);
+        }
+        // Foraged berries are eaten straight from the heap, no kitchen needed.
+        if let Some(berry) = self.nearest_kind(ItemKind::Berry, near, region) {
+            return Some(berry);
         }
         let has_kitchen = self
             .buildings
@@ -5532,6 +5658,36 @@ impl Sim {
                 self.spawn_item(ItemKind::Log, 0, tree);
                 self.stats.trees_felled += 1;
                 self.add_xp(i, Skill::Mining, 25);
+                self.push_thought(i, ThoughtKind::HarvestedCrop);
+                self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+            }
+            Task::Gather { shrub, mut path, progress } => {
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::Gather { shrub, path, progress };
+                    } else {
+                        self.abandon_task(i);
+                    }
+                    return;
+                }
+                // The shrub may have been foraged or cancelled while walking over.
+                if !self.shrubs.contains(&shrub) {
+                    self.abandon_task(i);
+                    return;
+                }
+                let speed = 1 + self.dwarves[i].skill_level(Skill::Farming) as u16 / 2;
+                let progress = progress + speed;
+                if progress < GATHER_WORK {
+                    self.dwarves[i].task = Task::Gather { shrub, path, progress };
+                    return;
+                }
+                // The shrub is picked clean, leaving a heap of berries where it
+                // stood. (A tended patch reseeds itself over time.)
+                self.shrubs.remove(&shrub);
+                self.designations.remove(&shrub);
+                self.spawn_item(ItemKind::Berry, 0, shrub);
+                self.stats.foraged += 1;
+                self.add_xp(i, Skill::Farming, 20);
                 self.push_thought(i, ThoughtKind::HarvestedCrop);
                 self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
@@ -6985,6 +7141,7 @@ impl Sim {
             }
             DesignationKind::Smooth => unreachable!("smoothing handled above"),
             DesignationKind::Chop => unreachable!("chopping handled in Task::Chop"),
+            DesignationKind::Gather => unreachable!("foraging handled in Task::Gather"),
         }
         // Digging the wall away destroys any scene engraved on it.
         self.engravings.remove(&target);
@@ -7022,7 +7179,9 @@ impl Sim {
     /// drop anything carried, and go idle. Safe to call in any state.
     fn abandon_task(&mut self, i: usize) {
         match self.dwarves[i].task.clone() {
-            Task::Mine { target, .. } | Task::Chop { tree: target, .. } => {
+            Task::Mine { target, .. }
+            | Task::Chop { tree: target, .. }
+            | Task::Gather { shrub: target, .. } => {
                 if let Some(des) = self.designations.get_mut(&target) {
                     des.assigned = false;
                     des.retry_at = self.clock.tick + RETRY_DELAY;
@@ -7161,7 +7320,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 54;
+const SAVE_VERSION: u32 = 55;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
