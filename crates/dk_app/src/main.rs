@@ -2985,6 +2985,22 @@ fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
 }
 
 /// Color and glyph for a map position as seen from `view_z`.
+/// The meadow's grass palettes — base greens laid out in soft patches, each
+/// shaded further by a per-tile mottle.
+const GRASS_TYPES: [[f32; 3]; 4] = [
+    [0.20, 0.42, 0.16], // meadow green
+    [0.14, 0.38, 0.14], // lush deep green
+    [0.32, 0.40, 0.15], // dry olive
+    [0.18, 0.44, 0.26], // cool fescue
+];
+/// Wildflower colors sprinkled sparsely through the grass.
+const FLOWER_COLORS: [[f32; 3]; 4] = [
+    [0.85, 0.22, 0.24], // red poppy
+    [0.95, 0.82, 0.28], // yellow buttercup
+    [0.64, 0.36, 0.80], // violet
+    [0.93, 0.93, 0.88], // white daisy
+];
+
 fn tile_visual(
     sim: &Sim,
     raws: &Raws,
@@ -3031,17 +3047,35 @@ fn tile_visual(
     }
 
     let here = Pos::new(x, y, view_z);
-    // Grassy groundcover: a soft, mottled green over open grass-bearing soil
-    // (loam and clay of the plains and forests — never the bare desert sand),
-    // so the living surface reads as turf rather than dirt. Purely cosmetic;
-    // trees, farms, zones and buildings all paint over it.
+    // Grassy groundcover over open, grass-bearing soil (loam and clay of the
+    // plains and forests — never the bare desert sand): a meadow of a few grass
+    // types, dappled here and there with wildflowers. Purely cosmetic and
+    // deterministic per-tile; trees, farms, zones and buildings all paint over
+    // it. (x, y are in-bounds and non-negative here, so the hashes stay small
+    // and positive.)
     if sim.map.water_at(here) == 0 && sim.map.walkable(here) {
         if let Some(t) = sim.map.tile_at(here) {
             let m = raws.materials.get(t.material);
             if m.category == MaterialCategory::Soil && m.id != "sand" {
-                let mottle = ((x * 7919 + y * 104729).rem_euclid(8)) as f32 / 7.0;
-                let green = [0.18 + 0.06 * mottle, 0.40 + 0.10 * mottle, 0.15 + 0.05 * mottle];
+                // Four grass types laid out in soft patches, each shaded a
+                // little by a finer mottle so no two tufts read the same.
+                let kind = (x * 6151 + y * 3079).rem_euclid(4) as usize;
+                let mottle = (x * 7919 + y * 104729).rem_euclid(8) as f32 / 7.0;
+                let base = GRASS_TYPES[kind];
+                let green = [
+                    base[0] + 0.05 * mottle,
+                    base[1] + 0.09 * mottle,
+                    base[2] + 0.04 * mottle,
+                ];
                 rgb = mix(rgb, green, 0.42);
+                // Wildflowers: a sparse scatter of little blooms in a few
+                // colors, a bright fleck among the grass.
+                let f = x * 1_299_709 + y * 1301;
+                if f.rem_euclid(13) == 0 {
+                    let bloom = FLOWER_COLORS[(f / 13).rem_euclid(FLOWER_COLORS.len() as i32) as usize];
+                    rgb = mix(rgb, bloom, 0.55);
+                    glyph = "crop";
+                }
             }
         }
     }
