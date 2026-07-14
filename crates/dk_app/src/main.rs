@@ -3147,9 +3147,16 @@ fn tile_visual(
                 rgb = mix(rgb, green, cover);
                 if is_floor {
                     glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
-                    // Wildflowers bloom only in the warm seasons — a sparse
-                    // scatter of blooms, a bright fleck in the grass.
-                    if matches!(season, Season::Spring | Season::Summer) {
+                    // Ground clutter breaks up the meadow: the odd leafy bush or
+                    // a couple of stones, and in the warm seasons wildflowers.
+                    let c = (x * 769 + y * 1109).rem_euclid(17);
+                    if c == 0 || c == 1 {
+                        glyph = "bush";
+                        rgb = mix(rgb, [0.13, 0.32, 0.12], 0.5);
+                    } else if c == 2 {
+                        glyph = "stone";
+                        rgb = mix(rgb, [0.50, 0.48, 0.44], 0.6);
+                    } else if matches!(season, Season::Spring | Season::Summer) {
                         let f = x * 1_299_709 + y * 1301;
                         if f.rem_euclid(13) == 0 {
                             let bloom = FLOWER_COLORS
@@ -3161,12 +3168,17 @@ fn tile_visual(
                 }
             } else if is_floor {
                 // Bare ground keeps the terrain's own colour but gains texture:
-                // pebbled earth on soil/sand, cracked stone on rock.
+                // pebbled earth on soil/sand, cracked stone on rock — with the
+                // occasional loose stone scattered on top.
                 glyph = if m.category == MaterialCategory::Soil {
                     DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize]
                 } else {
                     ROCK_SPRITES[(x * 15_731 + y * 789).rem_euclid(2) as usize]
                 };
+                if (x * 769 + y * 1109).rem_euclid(19) == 0 {
+                    glyph = "stone";
+                    rgb = mix(rgb, [0.52, 0.50, 0.46], 0.45);
+                }
             }
         }
     }

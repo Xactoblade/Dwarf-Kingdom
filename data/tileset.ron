@@ -14,7 +14,7 @@ TilesetDef(
     image: "tileset.png",
     tile_px: 32,
     columns: 6,
-    rows: 6,
+    rows: 7,
     glyphs: {
         "wall": 0, "floor": 1, "stairs": 2, "ramp": 3, "gate": 4, "farm": 5,
         "block": 6, "boulder": 7, "seed": 8, "crop": 9, "dwarf": 10,
@@ -23,10 +23,10 @@ TilesetDef(
         "dog": 21, "weapon": 22, "tree": 23, "tree_conifer": 24,
         "tree_willow": 25, "tree_birch": 26, "grass_a": 27, "grass_b": 28,
         "grass_c": 29, "dirt_a": 30, "dirt_b": 31, "rock_a": 32, "rock_b": 33,
-        "water": 34,
+        "water": 34, "bush": 35, "stone": 36,
     },
     tinted: ["wall", "floor", "stairs", "ramp", "gate", "farm", "block",
              "boulder", "seed", "crop", "tree", "tree_conifer",
              "tree_willow", "tree_birch", "grass_a", "grass_b", "grass_c",
-             "dirt_a", "dirt_b", "rock_a", "rock_b", "water"],
+             "dirt_a", "dirt_b", "rock_a", "rock_b", "water", "bush", "stone"],
 )

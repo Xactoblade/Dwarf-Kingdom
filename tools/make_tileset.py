@@ -663,6 +663,26 @@ def _rock(seed):
 def t_rock_a(): return _rock(221)
 def t_rock_b(): return _rock(222)
 
+def t_bush():
+    t = Tile(140)
+    # A low leafy shrub — a rounded clump of foliage on tiny stems.
+    for (lx, ly, r, v) in ((16, 18, 7, 122), (12, 15, 5, 148), (20, 14, 5, 140),
+                           (16, 11, 5, 162), (10, 20, 4, 132), (22, 20, 4, 132)):
+        t.disc(lx, ly, r, gray(v))
+    t.speckle(6, 5, 26, 26, gray(185), 0.09)
+    t.speckle(6, 5, 26, 26, gray(96), 0.08)
+    t.fill(15, 24, 18, 29, gray(82))
+    return t
+
+def t_stone():
+    t = Tile(150)
+    # A couple of rocks resting on the ground, lit from the upper-left.
+    for (cx, cy, r) in ((13, 18, 5), (21, 20, 4), (18, 12, 3)):
+        t.disc(cx, cy + 1, r, gray(84))       # ground shadow
+        t.disc(cx, cy, r, gray(120))
+        t.disc(cx - 1, cy - 1, max(1, r - 2), gray(178))
+    return t
+
 ORDER = [
     ("wall", t_wall), ("floor", t_floor), ("stairs", t_stairs), ("ramp", t_ramp),
     ("gate", t_gate), ("farm", t_farm), ("block", t_block), ("boulder", t_boulder),
@@ -674,12 +694,12 @@ ORDER = [
     ("tree_willow", t_willow), ("tree_birch", t_birch),
     ("grass_a", t_grass_a), ("grass_b", t_grass_b), ("grass_c", t_grass_c),
     ("dirt_a", t_dirt_a), ("dirt_b", t_dirt_b), ("rock_a", t_rock_a), ("rock_b", t_rock_b),
-    ("water", t_water),
+    ("water", t_water), ("bush", t_bush), ("stone", t_stone),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
           "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
           "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b",
-          "water"]
+          "water", "bush", "stone"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS
