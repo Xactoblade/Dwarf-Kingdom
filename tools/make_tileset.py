@@ -62,22 +62,42 @@ def gray(v, a=255):
 
 def t_wall():
     t = Tile(11)
+    # A rough natural rock face (this is dug stone, not masonry): irregular
+    # blocky facets with lit tops and shadowed undersides, veined with cracks.
+    t.fill(0, 0, PX, PX, gray(138))
+    for _ in range(15):
+        fx = int(t.rand() * (PX - 5))
+        fy = int(t.rand() * (PX - 5))
+        fw = 5 + int(t.rand() * 9)
+        fh = 5 + int(t.rand() * 9)
+        v = 118 + int(t.rand() * 66)
+        x1, y1 = min(PX, fx + fw), min(PX, fy + fh)
+        t.fill(fx, fy, x1, y1, gray(v))
+        t.fill(fx, fy, x1, fy + 1, gray(min(v + 42, 236)))       # lit top edge
+        t.fill(fx, y1 - 1, x1, y1, gray(max(v - 46, 44)))        # shadowed base
+    for _ in range(4):                                            # cracks
+        x = int(t.rand() * PX)
+        y = 0
+        while y < PX:
+            t.set(x, y, gray(70))
+            y += 1 + int(t.rand() * 2)
+            x = max(0, min(PX - 1, x + (-1 if t.rand() < 0.5 else 1)))
+    t.speckle(0, 0, PX, PX, gray(108), 0.10)
+    t.speckle(0, 0, PX, PX, gray(178), 0.06)
+    return t
+
+def t_water():
+    t = Tile(55)
+    # Rippled water: banded ripple lines with the odd bright glint. Grayscale,
+    # tinted to a depth-graded blue at runtime.
     t.fill(0, 0, PX, PX, gray(150))
-    # Bricks with mortar lines and per-brick value jitter.
-    bh, bw = 8, 16
-    for row in range(PX // bh):
-        off = (row % 2) * (bw // 2)
-        for col in range(-1, PX // bw + 1):
-            x0 = col * bw + off
-            shade = 130 + int(t.rand() * 55)
-            t.fill(x0 + 1, row * bh + 1, x0 + bw, row * bh + bh, gray(shade))
-            # top highlight / bottom shadow per brick
-            t.fill(x0 + 1, row * bh + 1, x0 + bw, row * bh + 2, gray(min(shade + 45, 235)))
-            t.fill(x0 + 1, row * bh + bh - 1, x0 + bw, row * bh + bh, gray(max(shade - 45, 40)))
-    # Mortar
-    for row in range(PX // bh):
-        t.fill(0, row * bh, PX, row * bh + 1, gray(85))
-    t.speckle(0, 0, PX, PX, gray(105), 0.05)
+    for y in range(0, PX, 4):
+        t.fill(0, y, PX, y + 1, gray(120))
+        t.fill(0, y + 2, PX, y + 3, gray(186))
+    for _ in range(26):
+        x = int(t.rand() * (PX - 4))
+        y = int(t.rand() * PX)
+        t.fill(x, y, x + 3 + int(t.rand() * 2), y + 1, gray(212))
     return t
 
 def t_floor():
@@ -654,10 +674,12 @@ ORDER = [
     ("tree_willow", t_willow), ("tree_birch", t_birch),
     ("grass_a", t_grass_a), ("grass_b", t_grass_b), ("grass_c", t_grass_c),
     ("dirt_a", t_dirt_a), ("dirt_b", t_dirt_b), ("rock_a", t_rock_a), ("rock_b", t_rock_b),
+    ("water", t_water),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
           "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
-          "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b"]
+          "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b",
+          "water"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS

@@ -3084,6 +3084,16 @@ fn tile_visual(
             TileShape::Floor => 0.55,
             TileShape::Empty => unreachable!(),
         };
+        // Water fills its tile wherever it's found — including a river sunk a
+        // level or two below the surface — depth-graded from pale shallows to
+        // dark blue, dimmed by how far down it lies.
+        if tile.water > 0 {
+            let d = (tile.water as f32 / 7.0).min(1.0);
+            let wcol = mix([0.36, 0.62, 0.68], [0.07, 0.22, 0.62], d);
+            rgb = [wcol[0] * factor, wcol[1] * factor, wcol[2] * factor];
+            glyph = "water";
+            break;
+        }
         glyph = match tile.shape {
             TileShape::Solid => "wall",
             TileShape::Gate => "gate",
@@ -3282,11 +3292,6 @@ fn tile_visual(
             let f = 1.0 - shade;
             rgb = [rgb[0] * f, rgb[1] * f, rgb[2] * f];
         }
-    }
-    let water = sim.map.water_at(here);
-    if water > 0 {
-        let k = 0.25 + 0.08 * water as f32;
-        rgb = mix(rgb, [0.15, 0.35, 0.9], k.min(0.85));
     }
     let magma = sim.map.magma_at(here);
     if magma > 0 {
