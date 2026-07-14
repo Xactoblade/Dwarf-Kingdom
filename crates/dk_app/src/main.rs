@@ -3036,10 +3036,10 @@ fn mix(base: [f32; 3], tint: [f32; 3], k: f32) -> [f32; 3] {
 /// The meadow's grass palettes — base greens laid out in soft patches, each
 /// shaded further by a per-tile mottle.
 const GRASS_TYPES: [[f32; 3]; 4] = [
-    [0.28, 0.58, 0.22], // meadow green
-    [0.20, 0.52, 0.20], // lush deep green
-    [0.42, 0.54, 0.20], // dry olive
-    [0.26, 0.60, 0.34], // cool fescue
+    [0.27, 0.56, 0.22], // meadow green
+    [0.23, 0.53, 0.21], // lush deep green
+    [0.33, 0.55, 0.21], // dry olive
+    [0.26, 0.57, 0.28], // cool fescue
 ];
 /// Textured ground sprites, chosen per-tile so the field doesn't read as a
 /// flat colored grid. Grass, bare earth, and stone each have a few variants.
@@ -3054,6 +3054,24 @@ const FLOWER_COLORS: [[f32; 3]; 4] = [
     [0.64, 0.36, 0.80], // violet
     [0.93, 0.93, 0.88], // white daisy
 ];
+
+/// The topmost non-empty tile of a neighbouring column at or just below
+/// `view_z` — its material and water. Lets the renderer bleed that terrain
+/// across the seam (a river sunk a level below still counts as a wet edge).
+fn surface_at(sim: &Sim, x: i32, y: i32, view_z: i32) -> Option<(u16, u8)> {
+    for dz in 0..4 {
+        let z = view_z - dz;
+        if z < 0 {
+            break;
+        }
+        if let Some(t) = sim.map.tile_at(Pos::new(x, y, z)) {
+            if t.shape != TileShape::Empty {
+                return Some((t.material, t.water));
+            }
+        }
+    }
+    None
+}
 
 fn tile_visual(
     sim: &Sim,
@@ -3127,16 +3145,18 @@ fn tile_visual(
             // the colour below.
             let is_floor = t.shape == TileShape::Floor;
             if m.category == MaterialCategory::Soil && m.id != "sand" {
-                // Grass: a few types in soft patches, each finely mottled, taking
-                // the season's cast — and in winter a snow blanket that all but
-                // hides it, so it covers far more heavily.
-                let kind = (x * 6151 + y * 3079).rem_euclid(4) as usize;
-                let mottle = (x * 7919 + y * 104729).rem_euclid(8) as f32 / 7.0;
+                // Grass: its colour varies in broad, soft PATCHES (coarse
+                // coords, not per-tile) so the meadow reads as a cohesive field
+                // rather than a checkerboard, while the sprite texture still
+                // varies tile to tile. Takes the season's cast — and in winter a
+                // snow blanket that all but hides it.
+                let kind = ((x / 5) * 6151 + (y / 5) * 3079).rem_euclid(4) as usize;
+                let mottle = ((x / 3) * 7919 + (y / 3) * 1049).rem_euclid(8) as f32 / 7.0;
                 let base = GRASS_TYPES[kind];
                 let green = [
-                    base[0] + 0.05 * mottle,
-                    base[1] + 0.09 * mottle,
-                    base[2] + 0.04 * mottle,
+                    base[0] + 0.03 * mottle,
+                    base[1] + 0.05 * mottle,
+                    base[2] + 0.03 * mottle,
                 ];
                 let (green, cover) = match season {
                     Season::Spring => (mix(green, [0.40, 0.72, 0.32], 0.28), 0.72),
@@ -3148,12 +3168,13 @@ fn tile_visual(
                 if is_floor {
                     glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
                     // Ground clutter breaks up the meadow: the odd leafy bush or
-                    // a couple of stones, and in the warm seasons wildflowers.
-                    let c = (x * 769 + y * 1109).rem_euclid(17);
-                    if c == 0 || c == 1 {
+                    // a stone, and in the warm seasons wildflowers — sparse, so
+                    // it dapples rather than crowds.
+                    let c = (x * 769 + y * 1109).rem_euclid(27);
+                    if c == 0 {
                         glyph = "bush";
-                        rgb = mix(rgb, [0.13, 0.32, 0.12], 0.5);
-                    } else if c == 2 {
+                        rgb = mix(rgb, [0.14, 0.33, 0.13], 0.5);
+                    } else if c == 1 {
                         glyph = "stone";
                         rgb = mix(rgb, [0.50, 0.48, 0.44], 0.6);
                     } else if matches!(season, Season::Spring | Season::Summer) {
@@ -3178,6 +3199,34 @@ fn tile_visual(
                 if (x * 769 + y * 1109).rem_euclid(19) == 0 {
                     glyph = "stone";
                     rgb = mix(rgb, [0.52, 0.50, 0.46], 0.45);
+                }
+            }
+            // De-box: bleed neighbouring terrain across the seam so the hard
+            // tile boundaries between grass, earth, rock and water soften into
+            // ragged, organic edges. Only plain floors, and only some tiles (a
+            // per-tile roll), so the bleed is uneven and natural — a damp sandy
+            // bank where water laps the shore, a wash of the other stone or
+            // soil where two grounds meet.
+            if t.shape == TileShape::Floor && (x * 271 + y * 331).rem_euclid(7) < 4 {
+                let here_cat = m.category;
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let Some((nmat, nwater)) = surface_at(sim, x + dx, y + dy, view_z) else {
+                        continue;
+                    };
+                    if nwater > 0 {
+                        rgb = mix(rgb, [0.60, 0.55, 0.42], 0.30);
+                    } else {
+                        let nm = raws.materials.get(nmat);
+                        if nm.category != here_cat {
+                            let c = nm.color;
+                            let nc = [
+                                c[0] as f32 / 255.0 * 0.55,
+                                c[1] as f32 / 255.0 * 0.55,
+                                c[2] as f32 / 255.0 * 0.55,
+                            ];
+                            rgb = mix(rgb, nc, 0.22);
+                        }
+                    }
                 }
             }
         }
