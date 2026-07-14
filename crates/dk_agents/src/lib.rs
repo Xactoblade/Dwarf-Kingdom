@@ -1395,6 +1395,8 @@ impl Sim {
             || self.farms.contains_key(&p)
             || self.designations.contains_key(&p)
             || self.constructions.contains_key(&p)
+            // A wall raised over a standing shrub would seal it in for good.
+            || self.shrubs.contains(&p)
         {
             return false;
         }
@@ -1932,12 +1934,15 @@ impl Sim {
     }
 
     /// May a wild shrub stand on this tile? Open, walkable surface, clear of
-    /// trees, buildings, farms, water, and another shrub.
+    /// trees, buildings, farms, water, another shrub, and any planned wall (a
+    /// shrub seeded onto a construction tile would be sealed inside the raised
+    /// wall and could never be foraged).
     fn can_plant_shrub(&self, p: Pos) -> bool {
         !self.shrubs.contains(&p)
             && !self.trees.contains(&p)
             && self.building_at(p).is_none()
             && !self.farms.contains_key(&p)
+            && !self.constructions.contains_key(&p)
             && self.map.water_at(p) == 0
     }
 
@@ -2667,7 +2672,7 @@ impl Sim {
             let snack = self.items.iter().position(|it| {
                 it.pos == me
                     && self.item_takeable(it)
-                    && matches!(it.kind, ItemKind::Meal | ItemKind::Crop)
+                    && matches!(it.kind, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry)
             });
             if let Some(idx) = snack {
                 self.items[idx].consumed = true;
@@ -4033,7 +4038,9 @@ impl Sim {
         if alive == 0 || alive >= POP_CAP {
             return;
         }
-        let food = self.count_kind(ItemKind::Meal) + self.count_kind(ItemKind::Crop);
+        let food = self.count_kind(ItemKind::Meal)
+            + self.count_kind(ItemKind::Crop)
+            + self.count_kind(ItemKind::Berry);
         let drink = self.count_kind(ItemKind::Drink);
         if food < alive || drink < alive {
             return; // word gets out that the fort is starving (or dry)
@@ -5943,6 +5950,9 @@ impl Sim {
                         );
                         self.displace_water(site, tile.water);
                         self.constructions.remove(&site);
+                        // A shrub can't reach a planned tile (guarded both ways),
+                        // but never leave one sealed inside the new wall.
+                        self.shrubs.remove(&site);
                         self.regions.dirty = true;
                         self.map_changed = true;
                         self.water.wake(site);

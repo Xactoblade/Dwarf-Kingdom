@@ -111,6 +111,39 @@ fn a_fort_with_no_shrubs_never_forages() {
 }
 
 #[test]
+fn a_player_hero_eats_berries_on_the_spot() {
+    // Regression (forage review, MEDIUM): the player-mode auto-snack matched
+    // only Meal|Crop, so an adventurer would starve standing on a berry heap.
+    use dk_agents::PlayerAction;
+    let (mut sim, raws) = forage_fort(4406, 3);
+    let hero = sim.begin_adventure(&raws).expect("a hero sets out");
+    let hpos = sim.dwarves[hero].pos;
+    sim.dwarves[hero].hunger = 80.0;
+    sim.debug_spawn_item(ItemKind::Berry, 0, hpos);
+    assert_eq!(sim.count_kind(ItemKind::Berry), 1);
+
+    assert!(sim.player_step(PlayerAction::Wait, &raws), "the hero lives");
+    assert_eq!(sim.count_kind(ItemKind::Berry), 0, "the hero ate the berries underfoot");
+    assert!(sim.dwarves[hero].hunger < 50.0, "and the hunger eased");
+}
+
+#[test]
+fn a_wall_is_never_planned_over_a_shrub() {
+    // Regression (forage review, LOW): a wall raised over a standing shrub
+    // would seal it in as an ungatherable phantom. Planning is refused; and a
+    // shrub can't regrow onto a planned tile (can_plant_shrub excludes them).
+    let (mut sim, _raws) = forage_fort(4407, 4);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (shrub, _) = sim.find_flat_patch(cx, cy).expect("a flat tile for a shrub");
+    sim.shrubs.insert(shrub);
+    assert!(
+        !sim.designate_construction(shrub),
+        "no wall may be planned on a shrub tile"
+    );
+}
+
+#[test]
 fn a_tended_berry_patch_reseeds_itself() {
     // Regrowth: planted shrubs spread to open neighbours over the days, up to
     // the patch's ceiling — so berries are a renewable food, not a one-time
