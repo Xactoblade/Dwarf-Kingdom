@@ -13,6 +13,10 @@ pub enum MaterialCategory {
     Igneous,
     Metamorphic,
     Ore,
+    /// Wood species. Never placed in the ground by mapgen (which only draws
+    /// from the geological categories) — these exist purely as the material of
+    /// logs and the wooden goods worked from them.
+    Wood,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

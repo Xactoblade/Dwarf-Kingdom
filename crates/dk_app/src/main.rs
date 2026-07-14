@@ -30,7 +30,7 @@ use dk_agents::{
     SiegeLeader, SiegeRoster, Sim,
 };
 use dk_history::World;
-use dk_raws::Raws;
+use dk_raws::{MaterialCategory, Raws};
 use dk_world::path::Pos;
 use dk_world::TileShape;
 use std::path::{Path, PathBuf};
@@ -679,7 +679,7 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
             _ => 60,
         }
     };
-    sim.plant_trees(trees);
+    sim.plant_trees(trees, raws);
     // Scatter wild berry shrubs too — thickest where it's green and wet, bare
     // in the desert. Foragers gather them (Shift+G) for berries the fort can
     // eat straight, and a tended patch reseeds itself.
@@ -3031,6 +3031,20 @@ fn tile_visual(
     }
 
     let here = Pos::new(x, y, view_z);
+    // Grassy groundcover: a soft, mottled green over open grass-bearing soil
+    // (loam and clay of the plains and forests — never the bare desert sand),
+    // so the living surface reads as turf rather than dirt. Purely cosmetic;
+    // trees, farms, zones and buildings all paint over it.
+    if sim.map.water_at(here) == 0 && sim.map.walkable(here) {
+        if let Some(t) = sim.map.tile_at(here) {
+            let m = raws.materials.get(t.material);
+            if m.category == MaterialCategory::Soil && m.id != "sand" {
+                let mottle = ((x * 7919 + y * 104729).rem_euclid(8)) as f32 / 7.0;
+                let green = [0.18 + 0.06 * mottle, 0.40 + 0.10 * mottle, 0.15 + 0.05 * mottle];
+                rgb = mix(rgb, green, 0.42);
+            }
+        }
+    }
     if let Some(farm) = sim.farms.get(&here) {
         let (tint, k) = match farm.state {
             FarmState::Fallow => ([0.3, 0.4, 0.18], 0.4),
@@ -3040,15 +3054,23 @@ fn tile_visual(
         rgb = mix(rgb, tint, k);
         glyph = "farm";
     }
-    if sim.tree_at(here) {
-        // A tree standing on the surface — leafy green, or amber once a
-        // woodcutter has marked it to be felled.
+    if let Some(species) = sim.tree_species(here) {
+        // A tree standing on the surface — leafy green shaded toward its own
+        // wood, or amber once a woodcutter has marked it to be felled.
         let marked = matches!(
             sim.designations.get(&here).map(|d| d.kind),
             Some(DesignationKind::Chop)
         );
-        let tint = if marked { [0.85, 0.5, 0.12] } else { [0.16, 0.5, 0.14] };
-        rgb = mix(rgb, tint, 0.75);
+        if marked {
+            rgb = mix(rgb, [0.85, 0.5, 0.12], 0.75);
+        } else {
+            // Canopy green, tinged by the species' wood color so an oakwood and
+            // a mahogany stand read differently.
+            let wood = raws.materials.get(species).color;
+            let wood = [wood[0] as f32 / 255.0, wood[1] as f32 / 255.0, wood[2] as f32 / 255.0];
+            let canopy = mix([0.16, 0.5, 0.14], wood, 0.3);
+            rgb = mix(rgb, canopy, 0.75);
+        }
         glyph = "crop";
     }
     if sim.shrub_at(here) {
@@ -3275,7 +3297,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Armor => format!("{} armor", raws.materials.get(it.stuff).name),
         ItemKind::Bed => format!("{} bed", raws.materials.get(it.stuff).name),
         ItemKind::Clothes => "set of clothes".to_string(),
-        ItemKind::Log => "wooden log".to_string(),
+        ItemKind::Log => format!("{} log", raws.materials.get(it.stuff).name),
         ItemKind::Barrel => "wooden barrel".to_string(),
         ItemKind::Statue => format!("{} statue", raws.materials.get(it.stuff).name),
         ItemKind::Instrument => "musical instrument".to_string(),
@@ -3317,7 +3339,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Armor => Color::srgb(0.62, 0.66, 0.78),
         ItemKind::Bed => item_material_color(raws, stuff),
         ItemKind::Clothes => Color::srgb(0.85, 0.5, 0.7),
-        ItemKind::Log => Color::srgb(0.5, 0.35, 0.18),
+        ItemKind::Log => item_material_color(raws, stuff),
         ItemKind::Barrel => Color::srgb(0.62, 0.44, 0.24),
         ItemKind::Statue => item_material_color(raws, stuff),
         ItemKind::Instrument => Color::srgb(0.72, 0.52, 0.3),
@@ -3842,7 +3864,7 @@ fn update_hud(
             ItemKind::Armor => format!("{} armor", reg.0.materials.get(it.stuff).name),
             ItemKind::Bed => format!("{} bed (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Clothes => "set of clothes (trade good)".to_string(),
-            ItemKind::Log => "wooden log".to_string(),
+            ItemKind::Log => format!("{} log", reg.0.materials.get(it.stuff).name),
             ItemKind::Barrel => "wooden barrel (trade good)".to_string(),
             ItemKind::Statue => format!("{} statue (a work of art)", reg.0.materials.get(it.stuff).name),
             ItemKind::Instrument => "musical instrument (trade good)".to_string(),

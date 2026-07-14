@@ -15,6 +15,9 @@ pub fn test_raws() -> Raws {
         m("limestone", MaterialCategory::Sedimentary),
         m("granite", MaterialCategory::Igneous),
         m("hematite", MaterialCategory::Ore),
+        // Two wood species so tests can exercise the wooden-goods chain.
+        m("oak", MaterialCategory::Wood),
+        m("pine", MaterialCategory::Wood),
     ])
     .unwrap();
     let plants = PlantRegistry::from_defs(vec![

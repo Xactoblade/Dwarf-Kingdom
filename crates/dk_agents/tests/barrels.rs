@@ -56,10 +56,11 @@ fn the_whole_wood_chain_yields_a_barrel() {
     let (ca, _) = sim.find_flat_patch(cx, cy).expect("carpenter site");
     assert!(sim.add_building(BuildingKind::Carpenter, ca));
     // A small stand of trees to fell, each on reachable flat ground.
+    let oak = raws.materials.indices_in_category(dk_raws::MaterialCategory::Wood)[0];
     for _ in 0..4 {
         if let Some((t, _)) = sim.find_flat_patch(cx, cy) {
             if !sim.tree_at(t) {
-                sim.trees.insert(t);
+                sim.trees.insert(t, oak);
                 sim.designate_rect(DesignationKind::Chop, t, t);
             }
         }

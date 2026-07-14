@@ -118,8 +118,9 @@ fn obsidian_never_seals_in_a_tree_or_shrub() {
     sim.invasions = false;
     sim.rebuild_caches();
     // Blanket the meeting line with vegetation (cap stays 0 -> no regrowth).
+    let oak = raws.materials.indices_in_category(dk_raws::MaterialCategory::Wood)[0];
     for x in 4..=9 {
-        sim.trees.insert(Pos::new(x, 8, 1));
+        sim.trees.insert(Pos::new(x, 8, 1), oak);
         sim.shrubs.insert(Pos::new(x, 8, 1));
     }
 
@@ -133,7 +134,7 @@ fn obsidian_never_seals_in_a_tree_or_shrub() {
         sim.log.iter().any(|(_, msg)| msg.contains("obsidian")),
         "obsidian must form for this test to mean anything"
     );
-    for &p in &sim.trees {
+    for &p in sim.trees.keys() {
         assert!(
             !sim.map.get(p.x as usize, p.y as usize, p.z as usize).is_solid(),
             "a tree is sealed inside solid obsidian at {p:?}"

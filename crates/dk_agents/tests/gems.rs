@@ -29,10 +29,13 @@ fn designate_big_dig(sim: &mut Sim) {
     for z in room_z..=wz {
         sim.designate_rect(DesignationKind::Stairs, Pos::new(cx, cy, z), Pos::new(cx, cy, z));
     }
+    // A wide room: enough boulders that the 1-in-22 gem strike is near-certain
+    // for any seed (13x13 tiles => P(no gem) well under a percent), so the test
+    // doesn't hinge on one lucky seed's exact rng stream.
     sim.designate_rect(
         DesignationKind::Mine,
-        Pos::new(cx - 3, cy - 3, room_z),
-        Pos::new(cx + 3, cy + 3, room_z),
+        Pos::new(cx - 6, cy - 6, room_z),
+        Pos::new(cx + 6, cy + 6, room_z),
     );
 }
 

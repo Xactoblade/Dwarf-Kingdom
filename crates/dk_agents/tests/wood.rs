@@ -7,6 +7,12 @@
 mod common;
 
 use dk_agents::{DesignationKind, ItemKind, Sim};
+use dk_raws::MaterialCategory;
+
+/// The first wood species in the test raws — a valid `stuff` for a tree/log.
+fn oak(raws: &dk_raws::Raws) -> u16 {
+    raws.materials.indices_in_category(MaterialCategory::Wood)[0]
+}
 
 fn wood_fort(seed: u64) -> (Sim, dk_raws::Raws) {
     let raws = common::test_raws();
@@ -29,7 +35,7 @@ fn a_woodcutter_fells_a_tree_for_a_log() {
 
     // A tree standing on a reachable flat tile, marked to be felled.
     let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile for a tree");
-    sim.trees.insert(tree);
+    sim.trees.insert(tree, oak(&raws));
     assert!(sim.tree_at(tree));
     assert_eq!(sim.designate_rect(DesignationKind::Chop, tree, tree), 1);
     assert_eq!(sim.count_kind(ItemKind::Log), 0, "nothing felled yet");
@@ -56,7 +62,7 @@ fn cancelling_a_chop_spares_the_tree() {
     let cx = sim.map.width as i32 / 2;
     let cy = sim.map.height as i32 / 2;
     let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile for a tree");
-    sim.trees.insert(tree);
+    sim.trees.insert(tree, oak(&raws));
     sim.designate_rect(DesignationKind::Chop, tree, tree);
 
     // Let a cutter get assigned and start walking, then cancel the designation.
@@ -90,10 +96,10 @@ fn a_treeless_fort_grows_no_logs() {
 fn planting_scatters_trees_on_open_ground() {
     // plant_trees drops trees only on walkable surface tiles, never in water or
     // on a building, and is deterministic for a given seed.
-    let (mut sim, _raws) = wood_fort(3303);
-    sim.plant_trees(40);
+    let (mut sim, raws) = wood_fort(3303);
+    sim.plant_trees(40, &raws);
     assert!(!sim.trees.is_empty(), "some trees should take root");
-    for &t in &sim.trees {
+    for &t in sim.trees.keys() {
         assert!(sim.map.walkable(t), "a tree stands on walkable ground");
         assert_eq!(sim.map.water_at(t), 0, "no tree grows in open water");
     }
@@ -104,11 +110,11 @@ fn a_planted_forest_regrows_over_time() {
     // plant_trees sets tree_cap above the planted count, so a felled woodland
     // grows fresh saplings toward that ceiling over the seasons.
     let (mut sim, raws) = wood_fort(3305);
-    sim.plant_trees(30);
+    sim.plant_trees(30, &raws);
     let planted = sim.trees.len();
     assert!(planted > 0 && sim.tree_cap > planted, "there is room to regrow");
     // Thin the forest, leaving room under the cap for regrowth.
-    let doomed: Vec<_> = sim.trees.iter().take(planted / 2).copied().collect();
+    let doomed: Vec<_> = sim.trees.keys().take(planted / 2).copied().collect();
     for t in doomed {
         sim.trees.remove(&t);
     }
@@ -135,7 +141,7 @@ fn a_hand_planted_tree_never_regrows() {
     let cx = sim.map.width as i32 / 2;
     let cy = sim.map.height as i32 / 2;
     let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile");
-    sim.trees.insert(tree);
+    sim.trees.insert(tree, oak(&raws));
     assert_eq!(sim.tree_cap, 0, "no cap without plant_trees");
 
     for _ in 0..(dk_core::TICKS_PER_DAY as usize * 60) {
@@ -147,10 +153,10 @@ fn a_hand_planted_tree_never_regrows() {
 #[test]
 fn a_wall_is_never_planned_over_a_tree() {
     // A wall raised over a standing tree would seal it inside the masonry.
-    let (mut sim, _raws) = wood_fort(3307);
+    let (mut sim, raws) = wood_fort(3307);
     let cx = sim.map.width as i32 / 2;
     let cy = sim.map.height as i32 / 2;
     let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile");
-    sim.trees.insert(tree);
+    sim.trees.insert(tree, oak(&raws));
     assert!(!sim.designate_construction(tree), "no wall may be planned on a tree");
 }

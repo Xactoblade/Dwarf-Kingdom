@@ -760,6 +760,12 @@ pub enum CraftKind {
     TanHide,
     /// Melt a boulder into a piece of blown glass.
     MakeGlass,
+    /// Work a log into a wooden bed at the carpenter's shop — furniture in the
+    /// log's own wood.
+    MakeWoodBed,
+    /// Carve a log into a wooden statue at the carpenter's shop — art in the
+    /// log's own wood.
+    CarveWoodStatue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -907,6 +913,8 @@ impl Dwarf {
             Task::Gather { .. } => "gathering plants",
             Task::DrinkWell { .. } => "drawing water",
             Task::Craft { kind: CraftKind::MakeGlass, .. } => "blowing glass",
+            Task::Craft { kind: CraftKind::MakeWoodBed, .. } => "building a wooden bed",
+            Task::Craft { kind: CraftKind::CarveWoodStatue, .. } => "carving a wooden statue",
             Task::Fight { .. } => "attacking",
             Task::Tantrum { .. } => "throwing a tantrum",
             Task::Sulk { .. } => "sulking",
@@ -997,6 +1005,8 @@ struct Wants {
     statues: bool,
     instruments: bool,
     leather: bool,
+    wood_beds: bool,
+    wood_statues: bool,
 }
 
 // -------------------------------------------------------------- adventure
@@ -1098,7 +1108,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         // Sewn clothes: worth well more than the bolt of cloth they're made of.
         ItemKind::Clothes => 40,
         // A felled log: cheap raw wood.
-        ItemKind::Log => 10,
+        // A felled log, valued by its wood — a fine hardwood is worth more.
+        ItemKind::Log => raws.materials.get(item.stuff).value * 2 + 6,
         // A barrel: a fine wooden good, worth several logs.
         ItemKind::Barrel => 45,
         // A statue: a precious work of art, the fort's finest furnishing.
@@ -1167,9 +1178,11 @@ pub struct Sim {
     /// `true` once a builder has claimed it. A dwarf hauls a boulder over and
     /// raises the wall.
     pub constructions: BTreeMap<Pos, bool>,
-    /// Trees standing on the surface. Passable, but a woodcutter can fell one
-    /// (designate Chop) for a log. Empty unless a map is planted with them.
-    pub trees: BTreeSet<Pos>,
+    /// Trees standing on the surface, each mapped to its wood species (a
+    /// `MaterialCategory::Wood` material index). Passable, but a woodcutter can
+    /// fell one (designate Chop) for a log of that wood. Empty unless a map is
+    /// planted with them.
+    pub trees: BTreeMap<Pos, u16>,
     /// Ceiling on natural forest regrowth, set when a map is seeded — a felled
     /// woodland regrows toward this, but never past its original density. Zero
     /// unless `plant_trees` seeded the map, so hand-built test forts never
@@ -1296,7 +1309,7 @@ impl Sim {
             buildings: Vec::new(),
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
-            trees: BTreeSet::new(),
+            trees: BTreeMap::new(),
             tree_cap: 0,
             shrubs: BTreeSet::new(),
             shrub_cap: 0,
@@ -1375,7 +1388,7 @@ impl Sim {
                         tile.is_solid() && !self.engravings.contains_key(&p)
                     }
                     // Fell a tree standing on this tile.
-                    DesignationKind::Chop => self.trees.contains(&p),
+                    DesignationKind::Chop => self.trees.contains_key(&p),
                     // Forage a wild shrub standing on this tile.
                     DesignationKind::Gather => self.shrubs.contains(&p),
                 };
@@ -1406,7 +1419,7 @@ impl Sim {
             || self.constructions.contains_key(&p)
             // A wall raised over a standing shrub or tree would seal it in.
             || self.shrubs.contains(&p)
-            || self.trees.contains(&p)
+            || self.trees.contains_key(&p)
         {
             return false;
         }
@@ -1906,14 +1919,19 @@ impl Sim {
 
     /// Is there a tree standing on this tile?
     pub fn tree_at(&self, p: Pos) -> bool {
-        self.trees.contains(&p)
+        self.trees.contains_key(&p)
+    }
+
+    /// The wood species of the tree on this tile, if any.
+    pub fn tree_species(&self, p: Pos) -> Option<u16> {
+        self.trees.get(&p).copied()
     }
 
     /// May a tree stand on this tile? Open walkable surface, clear of another
     /// tree, a shrub, a building, a farm, water, and any planned wall (a tree
     /// grown onto a construction tile would be sealed inside the raised wall).
     fn can_plant_tree(&self, p: Pos) -> bool {
-        !self.trees.contains(&p)
+        !self.trees.contains_key(&p)
             && !self.shrubs.contains(&p)
             && self.building_at(p).is_none()
             && !self.farms.contains_key(&p)
@@ -1921,11 +1939,12 @@ impl Sim {
             && self.map.water_at(p) == 0
     }
 
-    /// Scatter `count` trees across walkable surface tiles, and set the regrowth
-    /// ceiling to half again their number. Deterministic given the sim's rng;
-    /// called at embark (like the starting dogs) so headless tests that don't
-    /// ask for a forest stay byte-identical.
-    pub fn plant_trees(&mut self, count: usize) {
+    /// Scatter `count` trees across walkable surface tiles, each a random wood
+    /// species, and set the regrowth ceiling to half again their number.
+    /// Deterministic given the sim's rng; called at embark (like the starting
+    /// dogs) so headless tests that don't ask for a forest stay byte-identical.
+    pub fn plant_trees(&mut self, count: usize, raws: &Raws) {
+        let woods = raws.materials.indices_in_category(MaterialCategory::Wood);
         let (w, h) = (self.map.width as i32, self.map.height as i32);
         let mut placed = 0;
         // Bounded attempts so a map with little open ground can't spin forever.
@@ -1940,7 +1959,12 @@ impl Sim {
             if !self.can_plant_tree(p) {
                 continue;
             }
-            self.trees.insert(p);
+            let species = if woods.is_empty() {
+                0
+            } else {
+                woods[self.rng.gen_range(0..woods.len())]
+            };
+            self.trees.insert(p, species);
             placed += 1;
         }
         // A felled woodland regrows toward half again its planted size.
@@ -1958,7 +1982,7 @@ impl Sim {
     /// wall and could never be foraged).
     fn can_plant_shrub(&self, p: Pos) -> bool {
         !self.shrubs.contains(&p)
-            && !self.trees.contains(&p)
+            && !self.trees.contains_key(&p)
             && self.building_at(p).is_none()
             && !self.farms.contains_key(&p)
             && !self.constructions.contains_key(&p)
@@ -2024,16 +2048,17 @@ impl Sim {
                 }
             }
         }
-        // Forests regrow more slowly: a sapling takes root near a standing tree.
+        // Forests regrow more slowly: a sapling of the same wood takes root
+        // near a standing tree.
         if self.clock.tick % TREE_REGROW_INTERVAL == 0
             && !self.trees.is_empty()
             && self.trees.len() < self.tree_cap
         {
             let n = self.trees.len();
-            let parent = *self.trees.iter().nth(self.rng.gen_range(0..n)).unwrap();
+            let (&parent, &species) = self.trees.iter().nth(self.rng.gen_range(0..n)).unwrap();
             if let Some(np) = self.random_surface_neighbour(parent) {
                 if self.can_plant_tree(np) && !self.designations.contains_key(&np) {
-                    self.trees.insert(np);
+                    self.trees.insert(np, species);
                 }
             }
         }
@@ -4143,6 +4168,8 @@ impl Sim {
         let mut pending_statues = 0usize;
         let mut pending_instruments = 0usize;
         let mut pending_leather = 0usize;
+        let mut pending_wood_beds = 0usize;
+        let mut pending_wood_statues = 0usize;
         for d in &self.dwarves {
             if d.alive {
                 match d.task {
@@ -4159,6 +4186,8 @@ impl Sim {
                     Task::Craft { kind: CraftKind::CarveStatue, .. } => pending_statues += 1,
                     Task::Craft { kind: CraftKind::MakeInstrument, .. } => pending_instruments += 1,
                     Task::Craft { kind: CraftKind::TanHide, .. } => pending_leather += 1,
+                    Task::Craft { kind: CraftKind::MakeWoodBed, .. } => pending_wood_beds += 1,
+                    Task::Craft { kind: CraftKind::CarveWoodStatue, .. } => pending_wood_statues += 1,
                     _ => {}
                 }
             }
@@ -4249,17 +4278,28 @@ impl Sim {
                 let want_clothes = has_clothier
                     && cloth > pending_clothes
                     && clothes + pending_clothes < alive + 2;
-                // Work logs into barrels while there's spare wood on hand.
+                // Logs are the carpenter's one stock, shared across every wooden
+                // good: barrels, instruments, wooden beds, and wooden statues.
                 let logs = self.count_kind(ItemKind::Log);
+                let log_jobs =
+                    pending_barrels + pending_instruments + pending_wood_beds + pending_wood_statues;
                 let barrels = self.count_kind(ItemKind::Barrel);
-                let want_barrels = has_carpenter
-                    && logs > pending_barrels + pending_instruments
-                    && barrels + pending_barrels < alive + 2;
+                let want_barrels =
+                    has_carpenter && logs > log_jobs && barrels + pending_barrels < alive + 2;
                 // Craft an instrument or two so the fort can make music.
                 let instruments = self.count_kind(ItemKind::Instrument);
-                let want_instruments = has_carpenter
-                    && logs > pending_barrels + pending_instruments
-                    && instruments + pending_instruments < 2;
+                let want_instruments =
+                    has_carpenter && logs > log_jobs && instruments + pending_instruments < 2;
+                // Furnish the fort in wood too: a carpenter builds wooden beds
+                // from logs, each in its own species. Shares the bed target with
+                // the mason's stone beds so the two don't overshoot together.
+                let want_wood_beds = has_carpenter
+                    && logs > log_jobs
+                    && beds + pending_furniture + pending_wood_beds < alive + 2;
+                // And wooden art: carve the odd wooden statue from a spare log.
+                let want_wood_statues = has_carpenter
+                    && logs > log_jobs
+                    && statues + pending_statues + pending_wood_statues < 3;
                 // Tan any hides on hand into leather at the tanner's shop.
                 let hides = self.count_kind(ItemKind::Hide);
                 let want_leather = has_tanner && hides > pending_leather;
@@ -4277,6 +4317,8 @@ impl Sim {
                     statues: want_statues,
                     instruments: want_instruments,
                     leather: want_leather,
+                    wood_beds: want_wood_beds,
+                    wood_statues: want_wood_statues,
                 };
                 match self.assign_one(i, raws, wants) {
                     Some(CraftKind::Brew) => pending_brews += 1,
@@ -4292,6 +4334,8 @@ impl Sim {
                     Some(CraftKind::CarveStatue) => pending_statues += 1,
                     Some(CraftKind::MakeInstrument) => pending_instruments += 1,
                     Some(CraftKind::TanHide) => pending_leather += 1,
+                    Some(CraftKind::MakeWoodBed) => pending_wood_beds += 1,
+                    Some(CraftKind::CarveWoodStatue) => pending_wood_statues += 1,
                     Some(CraftKind::Weave) | Some(CraftKind::CutGem) | None => {}
                 }
             }
@@ -4579,6 +4623,20 @@ impl Sim {
             if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeInstrument }, &mut best);
+            }
+        }
+        // Wooden furniture: work a log into a bed at the carpenter's shop.
+        if w.wood_beds {
+            if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeWoodBed }, &mut best);
+            }
+        }
+        // Wooden art: carve a log into a statue at the carpenter's shop.
+        if w.wood_statues {
+            if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::CarveWoodStatue }, &mut best);
             }
         }
         // Tanning: tan a raw hide into leather at the tanner's shop.
@@ -5697,20 +5755,20 @@ impl Sim {
                     return;
                 }
                 // The tree may have been felled or cancelled while walking over.
-                if !self.trees.contains(&tree) {
+                let Some(&species) = self.trees.get(&tree) else {
                     self.abandon_task(i);
                     return;
-                }
+                };
                 let speed = 1 + self.dwarves[i].skill_level(Skill::Mining) as u16 / 2;
                 let progress = progress + speed;
                 if progress < CHOP_WORK {
                     self.dwarves[i].task = Task::Chop { tree, path, progress };
                     return;
                 }
-                // Timber! The tree falls, leaving a log where it stood.
+                // Timber! The tree falls, leaving a log of its wood where it stood.
                 self.trees.remove(&tree);
                 self.designations.remove(&tree);
-                self.spawn_item(ItemKind::Log, 0, tree);
+                self.spawn_item(ItemKind::Log, species, tree);
                 self.stats.trees_felled += 1;
                 self.add_xp(i, Skill::Mining, 25);
                 self.push_thought(i, ThoughtKind::HarvestedCrop);
@@ -5792,7 +5850,9 @@ impl Sim {
                             | CraftKind::MakeBarrel
                             | CraftKind::CarveStatue
                             | CraftKind::MakeInstrument
-                            | CraftKind::TanHide => Skill::Crafting,
+                            | CraftKind::TanHide
+                            | CraftKind::MakeWoodBed
+                            | CraftKind::CarveWoodStatue => Skill::Crafting,
                         };
                         let speed = 1 + self.dwarves[i].skill_level(skill) as u16 / 2;
                         let progress = progress + speed;
@@ -5902,6 +5962,18 @@ impl Sim {
                                 // valued as a fine good on its own.
                                 self.stats.leather_tanned += 1;
                                 self.spawn_quality_item(ItemKind::Leather, 0, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::MakeWoodBed => {
+                                // The log's wood carries into the bed.
+                                self.stats.furniture_made += 1;
+                                self.spawn_quality_item(ItemKind::Bed, stuff, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::CarveWoodStatue => {
+                                // The log's wood carries into the statue.
+                                self.stats.statues_carved += 1;
+                                self.spawn_quality_item(ItemKind::Statue, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                         }
@@ -7379,7 +7451,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 56;
+const SAVE_VERSION: u32 = 57;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -7455,13 +7527,15 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Bar
             | ItemKind::Armor
             | ItemKind::Bed
+            // A log and everything worked from it (see also Barrel/Instrument
+            // below stay flat) carries a wood-material index.
+            | ItemKind::Log
             | ItemKind::Statue => remap_one(&mat_remap, item.stuff, "material")?,
             // These carry no raws index (dwarf index, gem type, or nothing).
             ItemKind::Corpse
             | ItemKind::Wool
             | ItemKind::Cloth
             | ItemKind::Clothes
-            | ItemKind::Log
             | ItemKind::Barrel
             | ItemKind::Instrument
             | ItemKind::Hide
@@ -7482,6 +7556,11 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
     }
     for farm in sim.farms.values_mut() {
         farm.crop = remap_one(&plant_remap, farm.crop, "plant")?;
+    }
+    // A tree's stored species is a wood-material index — remap it like any other.
+    let old_trees = std::mem::take(&mut sim.trees);
+    for (pos, species) in old_trees {
+        sim.trees.insert(pos, remap_one(&mat_remap, species, "material")?);
     }
     sim.rebuild_caches();
     Ok(sim)

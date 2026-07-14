@@ -1,0 +1,13 @@
+// Dwarf Kingdom wood raws — the species a forest can yield.
+// Never placed in the ground by mapgen (Wood is not a geological category);
+// these are the material of logs and every wooden good worked from them, so a
+// bed or statue made from a log is named and valued by its wood.
+// Colors are sRGB display colors; value is a relative trade multiplier.
+[
+    MaterialDef(id: "oak",      name: "Oak",      category: Wood, color: (150, 111, 66),  value: 3),
+    MaterialDef(id: "pine",     name: "Pine",     category: Wood, color: (196, 164, 106), value: 2),
+    MaterialDef(id: "birch",    name: "Birch",    category: Wood, color: (222, 210, 176), value: 2),
+    MaterialDef(id: "willow",   name: "Willow",   category: Wood, color: (150, 168, 120), value: 3),
+    MaterialDef(id: "maple",    name: "Maple",    category: Wood, color: (188, 132, 92),  value: 4),
+    MaterialDef(id: "mahogany", name: "Mahogany", category: Wood, color: (122, 62, 46),   value: 6),
+]
