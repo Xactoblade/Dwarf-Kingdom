@@ -30,6 +30,9 @@ pub const GATHER_WORK: u16 = 50;
 /// A foraged shrub regrows on this cadence: once a day, a living shrub may cast
 /// a seed to an open neighbour, so a tended berry patch is a renewable food.
 pub const SHRUB_REGROW_INTERVAL: u64 = TICKS_PER_DAY;
+/// Forests regrow far more slowly than berries: a sapling takes root near a
+/// standing tree only every few days, so a felled woodland recovers over time.
+pub const TREE_REGROW_INTERVAL: u64 = 3 * TICKS_PER_DAY;
 /// Ticks of work at a workshop to brew/cook.
 pub const CRAFT_WORK: u16 = 150;
 /// Ticks between two steps of a walking dwarf.
@@ -1167,6 +1170,11 @@ pub struct Sim {
     /// Trees standing on the surface. Passable, but a woodcutter can fell one
     /// (designate Chop) for a log. Empty unless a map is planted with them.
     pub trees: BTreeSet<Pos>,
+    /// Ceiling on natural forest regrowth, set when a map is seeded — a felled
+    /// woodland regrows toward this, but never past its original density. Zero
+    /// unless `plant_trees` seeded the map, so hand-built test forts never
+    /// regrow (keeping the headless suite byte-identical).
+    pub tree_cap: usize,
     /// Wild berry shrubs on the surface. Passable; a forager can gather one
     /// (designate Gather) for edible berries, and a tended patch reseeds itself
     /// over time. Empty unless a map is planted with them.
@@ -1289,6 +1297,7 @@ impl Sim {
             farms: BTreeMap::new(),
             designations: BTreeMap::new(),
             trees: BTreeSet::new(),
+            tree_cap: 0,
             shrubs: BTreeSet::new(),
             shrub_cap: 0,
             engravings: BTreeMap::new(),
@@ -1395,8 +1404,9 @@ impl Sim {
             || self.farms.contains_key(&p)
             || self.designations.contains_key(&p)
             || self.constructions.contains_key(&p)
-            // A wall raised over a standing shrub would seal it in for good.
+            // A wall raised over a standing shrub or tree would seal it in.
             || self.shrubs.contains(&p)
+            || self.trees.contains(&p)
         {
             return false;
         }
@@ -1899,9 +1909,22 @@ impl Sim {
         self.trees.contains(&p)
     }
 
-    /// Scatter `count` trees across walkable surface tiles. Deterministic given
-    /// the sim's rng; called at embark (like the starting dogs) so headless
-    /// tests that don't ask for a forest stay byte-identical.
+    /// May a tree stand on this tile? Open walkable surface, clear of another
+    /// tree, a shrub, a building, a farm, water, and any planned wall (a tree
+    /// grown onto a construction tile would be sealed inside the raised wall).
+    fn can_plant_tree(&self, p: Pos) -> bool {
+        !self.trees.contains(&p)
+            && !self.shrubs.contains(&p)
+            && self.building_at(p).is_none()
+            && !self.farms.contains_key(&p)
+            && !self.constructions.contains_key(&p)
+            && self.map.water_at(p) == 0
+    }
+
+    /// Scatter `count` trees across walkable surface tiles, and set the regrowth
+    /// ceiling to half again their number. Deterministic given the sim's rng;
+    /// called at embark (like the starting dogs) so headless tests that don't
+    /// ask for a forest stay byte-identical.
     pub fn plant_trees(&mut self, count: usize) {
         let (w, h) = (self.map.width as i32, self.map.height as i32);
         let mut placed = 0;
@@ -1914,18 +1937,14 @@ impl Sim {
             let y = self.rng.gen_range(0..h);
             let Some(z) = self.map.walk_surface_z(x as usize, y as usize) else { continue };
             let p = Pos::new(x, y, z as i32);
-            // Keep trees off occupied ground so they never block a workshop,
-            // farm, stockpile tile, or another tree.
-            if self.trees.contains(&p)
-                || self.building_at(p).is_some()
-                || self.farms.contains_key(&p)
-                || self.map.water_at(p) > 0
-            {
+            if !self.can_plant_tree(p) {
                 continue;
             }
             self.trees.insert(p);
             placed += 1;
         }
+        // A felled woodland regrows toward half again its planted size.
+        self.tree_cap = self.trees.len() + self.trees.len() / 2;
     }
 
     /// Is there a berry shrub standing on this tile?
@@ -1971,29 +1990,52 @@ impl Sim {
         self.shrub_cap = self.shrubs.len() + self.shrubs.len() / 2;
     }
 
-    /// A tended berry patch reseeds itself: once a day a living shrub may cast a
-    /// seed to an open neighbour, up to the patch's ceiling. Wholly gated on a
-    /// shrub already existing — a fort with none draws no rng and is untouched,
-    /// so the headless suite stays byte-identical.
-    fn tick_regrowth(&mut self) {
-        if self.shrubs.is_empty() || self.shrubs.len() >= self.shrub_cap {
-            return;
-        }
-        if self.clock.tick % SHRUB_REGROW_INTERVAL != 0 {
-            return;
-        }
-        let n = self.shrubs.len();
-        let parent = *self.shrubs.iter().nth(self.rng.gen_range(0..n)).unwrap();
+    /// A random in-bounds walkable-surface cardinal neighbour of `parent`, or
+    /// `None` if the step runs off the map. DRAWS RNG (the direction) — only
+    /// call it past a feature's regrowth gate, never on a bare fort.
+    fn random_surface_neighbour(&mut self, parent: Pos) -> Option<Pos> {
         const DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
         let (dx, dy) = DIRS[self.rng.gen_range(0..4)];
         let (nx, ny) = (parent.x + dx, parent.y + dy);
         if nx < 0 || ny < 0 || nx >= self.map.width as i32 || ny >= self.map.height as i32 {
-            return;
+            return None;
         }
-        let Some(z) = self.map.walk_surface_z(nx as usize, ny as usize) else { return };
-        let np = Pos::new(nx, ny, z as i32);
-        if self.can_plant_shrub(np) && !self.designations.contains_key(&np) {
-            self.shrubs.insert(np);
+        let z = self.map.walk_surface_z(nx as usize, ny as usize)?;
+        Some(Pos::new(nx, ny, z as i32))
+    }
+
+    /// The living surface reseeds itself: a tended berry patch spreads once a
+    /// day, and a felled woodland grows a sapling every few days — each up to
+    /// its planted ceiling. Both branches are WHOLLY GATED on the plant already
+    /// existing AND under its cap (set only by plant_shrubs/plant_trees at
+    /// embark), so a bare or hand-built fort draws no rng and is untouched —
+    /// the headless suite stays byte-identical.
+    fn tick_regrowth(&mut self) {
+        // Berry shrubs reseed once a day.
+        if self.clock.tick % SHRUB_REGROW_INTERVAL == 0
+            && !self.shrubs.is_empty()
+            && self.shrubs.len() < self.shrub_cap
+        {
+            let n = self.shrubs.len();
+            let parent = *self.shrubs.iter().nth(self.rng.gen_range(0..n)).unwrap();
+            if let Some(np) = self.random_surface_neighbour(parent) {
+                if self.can_plant_shrub(np) && !self.designations.contains_key(&np) {
+                    self.shrubs.insert(np);
+                }
+            }
+        }
+        // Forests regrow more slowly: a sapling takes root near a standing tree.
+        if self.clock.tick % TREE_REGROW_INTERVAL == 0
+            && !self.trees.is_empty()
+            && self.trees.len() < self.tree_cap
+        {
+            let n = self.trees.len();
+            let parent = *self.trees.iter().nth(self.rng.gen_range(0..n)).unwrap();
+            if let Some(np) = self.random_surface_neighbour(parent) {
+                if self.can_plant_tree(np) && !self.designations.contains_key(&np) {
+                    self.trees.insert(np);
+                }
+            }
         }
     }
 
@@ -2492,6 +2534,7 @@ impl Sim {
         self.engravings.clear();
         self.constructions.clear();
         self.trees.clear();
+        self.tree_cap = 0;
         self.shrubs.clear();
         self.shrub_cap = 0;
         self.caravan = None;
@@ -5950,9 +5993,10 @@ impl Sim {
                         );
                         self.displace_water(site, tile.water);
                         self.constructions.remove(&site);
-                        // A shrub can't reach a planned tile (guarded both ways),
-                        // but never leave one sealed inside the new wall.
+                        // A shrub or tree can't reach a planned tile (guarded
+                        // both ways), but never leave one sealed in the new wall.
                         self.shrubs.remove(&site);
+                        self.trees.remove(&site);
                         self.regions.dirty = true;
                         self.map_changed = true;
                         self.water.wake(site);
@@ -7330,7 +7374,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 55;
+const SAVE_VERSION: u32 = 56;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

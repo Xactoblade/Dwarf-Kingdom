@@ -98,3 +98,59 @@ fn planting_scatters_trees_on_open_ground() {
         assert_eq!(sim.map.water_at(t), 0, "no tree grows in open water");
     }
 }
+
+#[test]
+fn a_planted_forest_regrows_over_time() {
+    // plant_trees sets tree_cap above the planted count, so a felled woodland
+    // grows fresh saplings toward that ceiling over the seasons.
+    let (mut sim, raws) = wood_fort(3305);
+    sim.plant_trees(30);
+    let planted = sim.trees.len();
+    assert!(planted > 0 && sim.tree_cap > planted, "there is room to regrow");
+    // Thin the forest, leaving room under the cap for regrowth.
+    let doomed: Vec<_> = sim.trees.iter().take(planted / 2).copied().collect();
+    for t in doomed {
+        sim.trees.remove(&t);
+    }
+    let thinned = sim.trees.len();
+
+    for _ in 0..(dk_core::TICKS_PER_DAY as usize * 120) {
+        sim.step(&raws);
+    }
+    assert!(
+        sim.trees.len() > thinned,
+        "the forest regrew: {} -> {}",
+        thinned,
+        sim.trees.len()
+    );
+    assert!(sim.trees.len() <= sim.tree_cap, "but never past its ceiling");
+}
+
+#[test]
+fn a_hand_planted_tree_never_regrows() {
+    // Regression / determinism guard: trees inserted directly (as the headless
+    // tests do) leave tree_cap at 0, so tick_regrowth draws no rng and grows
+    // nothing -- a fort that didn't embark-plant a forest stays byte-identical.
+    let (mut sim, raws) = wood_fort(3306);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile");
+    sim.trees.insert(tree);
+    assert_eq!(sim.tree_cap, 0, "no cap without plant_trees");
+
+    for _ in 0..(dk_core::TICKS_PER_DAY as usize * 60) {
+        sim.step(&raws);
+    }
+    assert_eq!(sim.trees.len(), 1, "a lone hand-planted tree never spreads");
+}
+
+#[test]
+fn a_wall_is_never_planned_over_a_tree() {
+    // A wall raised over a standing tree would seal it inside the masonry.
+    let (mut sim, _raws) = wood_fort(3307);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (tree, _) = sim.find_flat_patch(cx, cy).expect("a flat tile");
+    sim.trees.insert(tree);
+    assert!(!sim.designate_construction(tree), "no wall may be planned on a tree");
+}
