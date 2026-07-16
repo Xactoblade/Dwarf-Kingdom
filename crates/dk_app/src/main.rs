@@ -212,6 +212,8 @@ struct SimControl {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiKind {
     Mine,
+    /// A stockpile told what it is for.
+    Pile(dk_agents::StockCategory),
     Stairs,
     Channel,
     Stockpile,
@@ -236,6 +238,7 @@ impl UiKind {
             UiKind::Stairs => "STAIRS",
             UiKind::Channel => "CHANNEL",
             UiKind::Stockpile => "STOCKPILE",
+            UiKind::Pile(_) => "PILE",
             UiKind::Farm => "FARM",
             UiKind::Pasture => "PASTURE",
             UiKind::Tavern => "TAVERN",
@@ -325,7 +328,7 @@ struct CategoryButton(u8);
 struct WasPressed(bool);
 
 /// The category names, indexed by the `cat` field on each tool.
-const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders"];
+const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders", "Piles"];
 
 /// The dwarf whose info sheet is open (clicked with no tool selected).
 #[derive(Resource, Default)]
@@ -448,6 +451,17 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Rect(UiKind::Barracks), label: "Barracks", key: "\u{21e7}I", tip: "Soldiers drill here to become veterans", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Burrow), label: "Burrow", key: "\u{21e7}Z", tip: "A safe room civilians flee to when the alarm sounds", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Library), label: "Library", key: "\u{21e7}L", tip: "Scholars write treatises here", cat: 1 },
+    // Piles: a stockpile told what it is for. The generic one above takes
+    // anything; these take one class each, so the larder stays a larder.
+    ToolButton { tool: Tool::Rect(UiKind::Stockpile), label: "Any", key: "p", tip: "A pile that takes whatever is brought to it", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Food)), label: "Food", key: "", tip: "Meals, drink, crops, seeds — barrels stand here", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Stone)), label: "Stone", key: "", tip: "Boulders, for the mason's reach", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Wood)), label: "Wood", key: "", tip: "Felled logs, for the carpenter's reach", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Bars)), label: "Bars", key: "", tip: "Smelted metal — bins stand here", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Goods)), label: "Goods", key: "", tip: "Crafts, cloth, leather, gems, glass — bins stand here", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Military)), label: "Arms", key: "", tip: "Weapons and armor for the squad", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Furniture)), label: "Furniture", key: "", tip: "Beds, statues, and empty casks", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Refuse)), label: "Refuse", key: "", tip: "The dead, until they are buried", cat: 4 },
     // --- Workshops (cat 2)
     ToolButton { tool: Tool::Build(BuildingKind::Still), label: "Still", key: "v", tip: "Brews crops into drink", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Kitchen), label: "Kitchen", key: "k", tip: "Cooks meals", cat: 2 },
@@ -1601,6 +1615,7 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
             sim.designate_rect(DesignationKind::Gather, a, b);
         }
         UiKind::Stockpile => sim.add_stockpile(a, b),
+        UiKind::Pile(cat) => sim.add_filtered_stockpile(a, b, dk_agents::StockFilter::only(&[cat])),
         UiKind::Farm => {
             sim.add_farm(a, b, 0);
         }
@@ -2093,6 +2108,27 @@ fn apply_embark_action(
         }
         // Chose an unembarkable tile (ocean/mountains) — no-op, like the key.
         _ => {}
+    }
+}
+
+/// The colour a stockpile paints its floor: one hue per class of goods, so a
+/// glance at the fort tells you where the larder ends and the stoneyard
+/// begins. A pile that takes everything keeps the plain blue it always had.
+fn pile_tint(accepts: dk_agents::StockFilter) -> [f32; 3] {
+    use dk_agents::StockCategory as C;
+    if accepts.takes_everything() {
+        return [0.25, 0.45, 0.9];
+    }
+    match accepts.categories().first() {
+        Some(C::Food) => [0.35, 0.75, 0.35],
+        Some(C::Stone) => [0.55, 0.55, 0.6],
+        Some(C::Wood) => [0.55, 0.38, 0.2],
+        Some(C::Bars) => [0.75, 0.7, 0.35],
+        Some(C::Goods) => [0.75, 0.5, 0.85],
+        Some(C::Military) => [0.85, 0.3, 0.3],
+        Some(C::Furniture) => [0.4, 0.65, 0.8],
+        Some(C::Refuse) => [0.45, 0.35, 0.3],
+        None => [0.3, 0.3, 0.3],
     }
 }
 
@@ -2638,6 +2674,9 @@ fn handle_input(
                         sim.0.designate_rect(DesignationKind::Channel, anchor, here);
                     }
                     UiKind::Stockpile => sim.0.add_stockpile(anchor, here),
+                    UiKind::Pile(cat) => {
+                        sim.0.add_filtered_stockpile(anchor, here, dk_agents::StockFilter::only(&[cat]))
+                    }
                     UiKind::Farm => {
                         sim.0.add_farm(anchor, here, 0);
                     }
@@ -3595,8 +3634,11 @@ fn tile_visual(
     if sim.constructions.contains_key(&here) {
         rgb = mix(rgb, [0.4, 0.55, 0.7], 0.5);
     }
-    if sim.stockpile_at(here).is_some() {
-        rgb = mix(rgb, [0.25, 0.45, 0.9], 0.35);
+    // A pile is tinted by what it is for, so a fort's storage reads at a
+    // glance: the larder green, the stoneyard grey, the armoury red. An
+    // undirected pile keeps the old blue.
+    if let Some(s) = sim.stockpile_at(here) {
+        rgb = mix(rgb, pile_tint(sim.stockpiles[s].accepts), 0.35);
     }
     if sim.pastures.iter().any(|p| p.contains(here)) {
         rgb = mix(rgb, [0.35, 0.6, 0.25], 0.3);
@@ -4323,6 +4365,22 @@ fn update_hud(
     }
     if let Some(b) = sim.0.building_at(here) {
         under = format!("{under} · {}", b.kind.name());
+    }
+    // Say what a pile is for — "stockpile (food)" — so the player can tell
+    // their larder from their stoneyard without guessing at the tint.
+    if let Some(s) = sim.0.stockpile_at(here) {
+        let accepts = sim.0.stockpiles[s].accepts;
+        let what = if accepts.takes_everything() {
+            "anything".to_string()
+        } else {
+            accepts
+                .categories()
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        under = format!("{under} · stockpile ({what})");
     }
     if let Some(scene) = sim.0.engravings.get(&here) {
         under = format!("{under} · {scene}");

@@ -222,6 +222,40 @@ pub enum ItemKind {
     Berry,
 }
 
+impl ItemKind {
+    /// Every kind there is. The compiler cannot hand us this, so adding a kind
+    /// means adding it here too — `every_kind_is_listed_and_filed` fails loudly
+    /// if you forget.
+    pub const ALL: [ItemKind; 26] = [
+        ItemKind::Boulder,
+        ItemKind::Seed,
+        ItemKind::Crop,
+        ItemKind::Meal,
+        ItemKind::Drink,
+        ItemKind::Artifact,
+        ItemKind::Corpse,
+        ItemKind::Craft,
+        ItemKind::Wool,
+        ItemKind::Cloth,
+        ItemKind::RoughGem,
+        ItemKind::CutGem,
+        ItemKind::Weapon,
+        ItemKind::Glass,
+        ItemKind::Bar,
+        ItemKind::Armor,
+        ItemKind::Bed,
+        ItemKind::Clothes,
+        ItemKind::Log,
+        ItemKind::Barrel,
+        ItemKind::Bin,
+        ItemKind::Statue,
+        ItemKind::Instrument,
+        ItemKind::Hide,
+        ItemKind::Leather,
+        ItemKind::Berry,
+    ];
+}
+
 /// The sky's mood, cycling with the seasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Weather {
@@ -451,7 +485,7 @@ pub struct FarmTile {
 
 /// An axis-aligned rectangle of tiles on one z-level. Used for stockpiles
 /// and pastures alike.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rect {
     pub z: i32,
     pub x0: i32,
@@ -476,8 +510,147 @@ impl Rect {
     }
 }
 
-/// Kept for API stability; stockpiles are `Rect`s.
-pub type Stockpile = Rect;
+/// The classes of goods a stockpile can be told to hold. Every item kind
+/// belongs to exactly one (see `stock_category`), so a pile's filter is a set
+/// of these — Dwarf Fortress's stockpile categories, pared to the goods our
+/// fort actually produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum StockCategory {
+    /// Meals, drink, crops, berries, seeds — everything a barrel takes.
+    Food,
+    /// Boulders: the mason's and mechanic's stock.
+    Stone,
+    /// Logs, before the carpenter has his way with them.
+    Wood,
+    /// Smelted bars.
+    Bars,
+    /// Worked goods: crafts, cloth, leather, gems, glass, clothes, instruments.
+    Goods,
+    /// Weapons and armor.
+    Military,
+    /// Beds, statues, and the fort's empty containers.
+    Furniture,
+    /// The dead, until they are buried.
+    Refuse,
+}
+
+impl StockCategory {
+    pub const ALL: [StockCategory; 8] = [
+        StockCategory::Food,
+        StockCategory::Stone,
+        StockCategory::Wood,
+        StockCategory::Bars,
+        StockCategory::Goods,
+        StockCategory::Military,
+        StockCategory::Furniture,
+        StockCategory::Refuse,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            StockCategory::Food => "food",
+            StockCategory::Stone => "stone",
+            StockCategory::Wood => "wood",
+            StockCategory::Bars => "bars",
+            StockCategory::Goods => "goods",
+            StockCategory::Military => "arms",
+            StockCategory::Furniture => "furniture",
+            StockCategory::Refuse => "refuse",
+        }
+    }
+
+    fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
+}
+
+/// Which pile a kind of item belongs in. One category per kind — a stockpile
+/// filter is then just a set of these.
+pub fn stock_category(kind: ItemKind) -> StockCategory {
+    match kind {
+        ItemKind::Meal | ItemKind::Drink | ItemKind::Crop | ItemKind::Berry | ItemKind::Seed => {
+            StockCategory::Food
+        }
+        ItemKind::Boulder => StockCategory::Stone,
+        ItemKind::Log => StockCategory::Wood,
+        ItemKind::Bar => StockCategory::Bars,
+        ItemKind::Craft
+        | ItemKind::Cloth
+        | ItemKind::Wool
+        | ItemKind::Hide
+        | ItemKind::Leather
+        | ItemKind::RoughGem
+        | ItemKind::CutGem
+        | ItemKind::Glass
+        | ItemKind::Clothes
+        | ItemKind::Instrument
+        | ItemKind::Artifact => StockCategory::Goods,
+        ItemKind::Weapon | ItemKind::Armor => StockCategory::Military,
+        ItemKind::Bed | ItemKind::Statue | ItemKind::Barrel | ItemKind::Bin => {
+            StockCategory::Furniture
+        }
+        ItemKind::Corpse => StockCategory::Refuse,
+    }
+}
+
+/// The set of categories a stockpile will take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StockFilter(u16);
+
+impl StockFilter {
+    /// A pile that takes anything — what an undirected stockpile has always
+    /// been, and still is unless the player says otherwise.
+    pub fn any() -> Self {
+        StockFilter(u16::MAX)
+    }
+
+    pub fn only(cats: &[StockCategory]) -> Self {
+        StockFilter(cats.iter().fold(0, |m, c| m | c.bit()))
+    }
+
+    pub fn allows(self, cat: StockCategory) -> bool {
+        self.0 & cat.bit() != 0
+    }
+
+    /// The categories this pile takes, for describing it to the player.
+    pub fn categories(self) -> Vec<StockCategory> {
+        StockCategory::ALL.into_iter().filter(|&c| self.allows(c)).collect()
+    }
+
+    pub fn takes_everything(self) -> bool {
+        StockCategory::ALL.iter().all(|&c| self.allows(c))
+    }
+}
+
+/// A stockpile: a rectangle of floor, and the classes of goods it will take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stockpile {
+    pub rect: Rect,
+    pub accepts: StockFilter,
+}
+
+impl Stockpile {
+    pub fn contains(&self, p: Pos) -> bool {
+        self.rect.contains(p)
+    }
+
+    pub fn cells(&self) -> impl Iterator<Item = Pos> + '_ {
+        self.rect.cells()
+    }
+
+    /// Would this pile take that item? A container belongs wherever the goods
+    /// it carries belong — a barrel stands in the food pile it serves, not off
+    /// in the furniture pile with the beds — so it is judged by its cargo.
+    pub fn takes(&self, kind: ItemKind) -> bool {
+        if is_container(kind) {
+            return ItemKind::ALL
+                .iter()
+                .any(|&k| container_capacity(kind, k) > 0 && self.accepts.allows(stock_category(k)))
+                || self.accepts.allows(StockCategory::Furniture);
+        }
+        self.accepts.allows(stock_category(kind))
+    }
+}
 
 // ----------------------------------------------------------------- animals
 
@@ -1545,14 +1718,24 @@ impl Sim {
         removed
     }
 
+    /// A pile that takes whatever is brought to it.
     pub fn add_stockpile(&mut self, a: Pos, b: Pos) {
+        self.add_filtered_stockpile(a, b, StockFilter::any());
+    }
+
+    /// A pile told what it is for: a food pile takes no boulders, and a stone
+    /// pile is no place for a meal.
+    pub fn add_filtered_stockpile(&mut self, a: Pos, b: Pos, accepts: StockFilter) {
         assert_eq!(a.z, b.z);
         self.stockpiles.push(Stockpile {
-            z: a.z,
-            x0: a.x.min(b.x),
-            y0: a.y.min(b.y),
-            x1: a.x.max(b.x),
-            y1: a.y.max(b.y),
+            rect: Rect {
+                z: a.z,
+                x0: a.x.min(b.x),
+                y0: a.y.min(b.y),
+                x1: a.x.max(b.x),
+                y1: a.y.max(b.y),
+            },
+            accepts,
         });
     }
 
@@ -2387,7 +2570,7 @@ impl Sim {
             let overlaps = self
                 .stockpiles
                 .iter()
-                .any(|s| x <= s.x1 && s.x0 <= x1 && y <= s.y1 && s.y0 <= y1);
+                .any(|s| x <= s.rect.x1 && s.rect.x0 <= x1 && y <= s.rect.y1 && s.rect.y0 <= y1);
             let blocked = (y..=y1).any(|yy| {
                 (x..=x1).any(|xx| {
                     let p = Pos::new(xx, yy, z);
@@ -2460,9 +2643,14 @@ impl Sim {
             .any(|d| d.alive && matches!(d.task, Task::Haul { dest, .. } if dest == cell))
     }
 
-    fn find_free_cell(&self, near: Pos, from_region: u32) -> Option<Pos> {
+    /// The nearest free cell of a pile that will TAKE this kind. A fort that
+    /// has told its piles what they are for does not want boulders in the
+    /// larder — and a good no pile accepts simply stays where it lies, which
+    /// is how a player says "leave that there".
+    fn find_free_cell(&self, kind: ItemKind, near: Pos, from_region: u32) -> Option<Pos> {
         self.stockpiles
             .iter()
+            .filter(|s| s.takes(kind))
             .flat_map(|s| s.cells())
             .filter(|&c| self.regions.id(c) == from_region && self.cell_free(c))
             .min_by_key(|&c| c.manhattan(near))
@@ -2615,6 +2803,13 @@ impl Sim {
                     && matches!(it.state, ItemState::Stored { .. })
                     && self.regions.id(it.pos) == region
                     && self.container_accepts(*c, kind)
+                    // The pile the cask stands in must be one that wants this
+                    // cargo. Otherwise an empty barrel parked among the beds
+                    // would quietly swallow the fort's larder into the
+                    // furniture pile.
+                    && self
+                        .stockpile_at(it.pos)
+                        .is_some_and(|s| self.stockpiles[s].takes(kind))
             })
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(c, _)| c)
@@ -5208,7 +5403,7 @@ impl Sim {
                     // never be shuffled from one bare cell to another, or
                     // haulers would carry the larder in circles forever.
                     None if resting => None,
-                    None => self.find_free_cell(item.pos, my_region),
+                    None => self.find_free_cell(item.kind, item.pos, my_region),
                     some => some,
                 }
             } else {
@@ -6092,6 +6287,14 @@ impl Sim {
                                 && it.pos == here
                                 && is_container(it.kind)
                                 && self.container_accepts(*c, self.items[item].kind)
+                                // ...and standing in a pile that wants this
+                                // cargo, the same rule `find_container_for`
+                                // routed by. The two must agree.
+                                && self
+                                    .stockpile_at(here)
+                                    .is_some_and(|s| {
+                                        self.stockpiles[s].takes(self.items[item].kind)
+                                    })
                         })
                         .map(|(c, _)| c);
                     // Only resting items block a cell — creatures carrying
@@ -8092,7 +8295,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 60;
+const SAVE_VERSION: u32 = 61;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
