@@ -827,6 +827,25 @@ fn main() {
                 }
             }
             best
+        } else if shot_biome == "swamp" || shot_biome == "lake" {
+            let want_lake = shot_biome == "lake";
+            let c = OW as i32 / 2;
+            let mut best = default_region(&world);
+            let mut best_d = i32::MAX;
+            for y in 0..OW {
+                for x in 0..OW {
+                    let r = world.overworld.get(x, y);
+                    let hit = if want_lake { r.lake } else { r.biome == dk_history::Biome::Swamp };
+                    if hit {
+                        let d = (x as i32 - c).abs() + (y as i32 - c).abs();
+                        if d < best_d {
+                            best_d = d;
+                            best = (x, y);
+                        }
+                    }
+                }
+            }
+            best
         } else {
             default_region(&world)
         };
