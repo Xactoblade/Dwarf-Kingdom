@@ -227,6 +227,7 @@ enum UiKind {
     Burrow,
     Library,
     Bedroom,
+    DiningHall,
     Chop,
     Gather,
     Cancel,
@@ -250,6 +251,7 @@ impl UiKind {
             UiKind::Burrow => "BURROW",
             UiKind::Library => "LIBRARY",
             UiKind::Bedroom => "BEDROOM",
+            UiKind::DiningHall => "DINING HALL",
             UiKind::Chop => "CHOP",
             UiKind::Gather => "GATHER",
             UiKind::Cancel => "CANCEL",
@@ -454,6 +456,7 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Rect(UiKind::Burrow), label: "Burrow", key: "\u{21e7}Z", tip: "A safe room civilians flee to when the alarm sounds", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Library), label: "Library", key: "\u{21e7}L", tip: "Scholars write treatises here", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Bedroom), label: "Bedroom", key: "\u{21e7}R", tip: "Beds here become bedrooms — their owners wake happier", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::DiningHall), label: "Dining", key: "\u{21e7}E", tip: "Dwarves carry their food here and eat in company", cat: 1 },
     // Piles: a stockpile told what it is for. The generic one above takes
     // anything; these take one class each, so the larder stays a larder.
     ToolButton { tool: Tool::Rect(UiKind::Stockpile), label: "Any", key: "p", tip: "A pile that takes whatever is brought to it", cat: 4 },
@@ -1631,6 +1634,7 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
         UiKind::Burrow => sim.add_burrow(a, b),
         UiKind::Library => sim.add_library(a, b),
         UiKind::Bedroom => sim.add_bedroom(a, b),
+        UiKind::DiningHall => sim.add_dining_hall(a, b),
         UiKind::Cancel => {
             sim.cancel_rect(a, b);
         }
@@ -2693,6 +2697,7 @@ fn handle_input(
                     UiKind::Burrow => sim.0.add_burrow(anchor, here),
                     UiKind::Library => sim.0.add_library(anchor, here),
                     UiKind::Bedroom => sim.0.add_bedroom(anchor, here),
+                    UiKind::DiningHall => sim.0.add_dining_hall(anchor, here),
                     UiKind::Chop => {
                         sim.0.designate_rect(DesignationKind::Chop, anchor, here);
                     }
@@ -3650,6 +3655,9 @@ fn tile_visual(
     }
     if sim.bedroom_at(here) {
         rgb = mix(rgb, [0.85, 0.6, 0.4], 0.28);
+    }
+    if sim.dining_at(here) {
+        rgb = mix(rgb, [0.9, 0.78, 0.45], 0.28);
     }
     if sim.tavern_at(here) {
         rgb = mix(rgb, [0.7, 0.45, 0.75], 0.3);

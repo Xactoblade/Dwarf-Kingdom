@@ -880,6 +880,8 @@ pub enum ThoughtKind {
     SleptInBed,
     /// Woke on the bare stone, as no dwarf should have to.
     SleptOnFloor,
+    /// Ate in the hall, in company, like a dwarf and not a dog.
+    DinedInHall,
 }
 
 impl ThoughtKind {
@@ -912,6 +914,7 @@ impl ThoughtKind {
             ThoughtKind::SleptInOwnRoom => 5.0,
             ThoughtKind::SleptInBed => 2.0,
             ThoughtKind::SleptOnFloor => -4.0,
+            ThoughtKind::DinedInHall => 3.0,
         }
     }
 
@@ -947,6 +950,7 @@ impl ThoughtKind {
             ThoughtKind::SleptInOwnRoom => "slept in a fine bedroom of their own",
             ThoughtKind::SleptInBed => "slept in a bed",
             ThoughtKind::SleptOnFloor => "slept on the cold hard stone",
+            ThoughtKind::DinedInHall => "dined in the great hall",
         }
     }
 }
@@ -1024,6 +1028,8 @@ pub enum Task {
     Sleep { remaining: u16 },
     /// Trudging to one's own bed to sleep in it.
     GoToBed { bed: usize, path: Vec<Pos> },
+    /// Carrying a meal to the dining hall to eat it in company.
+    DineAt { item: usize, path: Vec<Pos> },
     Mine { target: Pos, path: Vec<Pos>, progress: u16 },
     Haul { item: usize, dest: Pos, path: Vec<Pos>, carrying: bool },
     Eat { item: usize, path: Vec<Pos> },
@@ -1145,6 +1151,7 @@ impl Dwarf {
             Task::Idle { .. } => "idle",
             Task::Sleep { .. } => "sleeping",
             Task::GoToBed { .. } => "going to bed",
+            Task::DineAt { .. } => "carrying food to the hall",
             Task::Mine { .. } => "mining",
             Task::Haul { .. } => "hauling",
             Task::Eat { .. } => "getting food",
@@ -1433,6 +1440,8 @@ pub struct Sim {
     /// Rooms set aside for sleeping. A bed inside one is a bedroom of its
     /// own, and its owner wakes the better for it.
     pub bedrooms: Vec<Rect>,
+    /// The hall where the fort eats together.
+    pub dining: Vec<Rect>,
     /// Scholarly works the fort has written — its accumulated knowledge.
     pub treatises: Vec<String>,
     pub fisheries: Vec<Rect>,
@@ -1574,6 +1583,7 @@ impl Sim {
             items: Vec::new(),
             stockpiles: Vec::new(),
             bedrooms: Vec::new(),
+            dining: Vec::new(),
             pastures: Vec::new(),
             taverns: Vec::new(),
             temples: Vec::new(),
@@ -1870,6 +1880,24 @@ impl Sim {
 
     pub fn bedroom_at(&self, p: Pos) -> bool {
         self.bedrooms.iter().any(|r| r.contains(p))
+    }
+
+    /// Set aside a hall for the fort to eat in. Dwarves carry their food here
+    /// rather than eat standing in the larder — company at a meal is worth
+    /// more to a dwarf than the meal is.
+    pub fn add_dining_hall(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.dining.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn dining_at(&self, p: Pos) -> bool {
+        self.dining.iter().any(|r| r.contains(p))
     }
 
     pub fn add_library(&mut self, a: Pos, b: Pos) {
@@ -3111,6 +3139,7 @@ impl Sim {
         self.alarm = false;
         self.library.clear();
         self.bedrooms.clear();
+        self.dining.clear();
         self.treatises.clear();
         self.poems.clear();
         self.songs.clear();
@@ -6298,6 +6327,38 @@ impl Sim {
                     self.dwarves[i].task = Task::Idle { wander_cd: cd };
                 }
             }
+            Task::DineAt { item, mut path } => {
+                if !self.items[item].active() {
+                    self.abandon_task(i);
+                    return;
+                }
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.carry_item_along(i);
+                        self.dwarves[i].task = Task::DineAt { item, path };
+                    } else {
+                        // The way to the hall closed: eat where you stand.
+                        self.dwarves[i].task = Task::Eat { item, path: Vec::new() };
+                    }
+                    return;
+                }
+                // At table.
+                let kind = self.items[item].kind;
+                self.items[item].consumed = true;
+                self.items[item].reserved_by = None;
+                self.dwarves[i].hunger = 0.0;
+                self.dwarves[i].starving_since = None;
+                self.push_thought(
+                    i,
+                    if kind == ItemKind::Meal {
+                        ThoughtKind::AteMeal
+                    } else {
+                        ThoughtKind::AteRawFood
+                    },
+                );
+                self.push_thought(i, ThoughtKind::DinedInHall);
+                self.dwarves[i].task = Task::Idle { wander_cd: 5 };
+            }
             Task::GoToBed { bed, mut path } => {
                 // The bed may have been sold or burned while its owner walked.
                 if !self.items[bed].active() {
@@ -6464,13 +6525,42 @@ impl Sim {
                     }
                     return;
                 }
-                // Consume on the spot.
                 let it = &self.items[item];
-                if !it.active() || it.pos != self.dwarves[i].pos || it.reserved_by != Some(i) {
+                let (ok, kind) = (
+                    it.active() && it.pos == self.dwarves[i].pos && it.reserved_by == Some(i),
+                    it.kind,
+                );
+                if !ok {
                     self.abandon_task(i);
                     return;
                 }
-                let kind = it.kind;
+                // Food goes to the hall to be eaten in company — but a dwarf
+                // on the edge of starving does not stand on ceremony, and
+                // drink is had where it is found.
+                if !drinking
+                    && !self.dining.is_empty()
+                    && !self.dining_at(self.dwarves[i].pos)
+                    && self.dwarves[i].hunger < 85.0
+                {
+                    let here = self.dwarves[i].pos;
+                    let seat = self
+                        .dining
+                        .iter()
+                        .flat_map(|r| r.cells())
+                        .filter(|&c| {
+                            self.map.walkable(c) && self.regions.id(c) == self.regions.id(here)
+                        })
+                        .min_by_key(|&c| c.manhattan(here));
+                    if let Some(seat) = seat {
+                        if let Some(p) = path::astar(&self.map, here, seat, MAX_ASTAR_NODES) {
+                            if self.take_item(i, item) {
+                                self.dwarves[i].task = Task::DineAt { item, path: p };
+                                return;
+                            }
+                        }
+                    }
+                }
+                // Consume on the spot.
                 self.items[item].consumed = true;
                 self.items[item].reserved_by = None;
                 if drinking {
@@ -8213,7 +8303,10 @@ impl Sim {
                     des.retry_at = self.clock.tick + RETRY_DELAY;
                 }
             }
-            Task::Haul { item, .. } | Task::Eat { item, .. } | Task::Drink { item, .. } => {
+            Task::Haul { item, .. }
+            | Task::Eat { item, .. }
+            | Task::Drink { item, .. }
+            | Task::DineAt { item, .. } => {
                 if self.items[item].reserved_by == Some(i) {
                     self.items[item].reserved_by = None;
                 }
