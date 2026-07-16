@@ -3114,6 +3114,25 @@ const GRASS_TYPES: [[f32; 3]; 4] = [
     [0.33, 0.55, 0.21], // dry olive
     [0.26, 0.57, 0.28], // cool fescue
 ];
+/// Coat colours so a herd isn't a rank of identical beasts.
+const COW_COATS: [[f32; 3]; 4] = [
+    [1.00, 0.96, 0.90], // pale
+    [0.72, 0.52, 0.36], // brown
+    [0.52, 0.44, 0.40], // dark
+    [0.90, 0.82, 0.70], // fawn
+];
+const SHEEP_COATS: [[f32; 3]; 3] = [
+    [1.00, 0.98, 0.94], // white
+    [0.80, 0.78, 0.74], // grey
+    [0.56, 0.53, 0.50], // black
+];
+const DOG_COATS: [[f32; 3]; 4] = [
+    [0.70, 0.52, 0.36], // brown
+    [0.47, 0.40, 0.36], // near-black
+    [0.90, 0.80, 0.62], // tan
+    [0.84, 0.84, 0.82], // grey
+];
+
 /// Gentle per-citizen tints (near white) so a fort's dwarves read as
 /// individuals in their own homespun rather than a rank of identical figures.
 const DWARF_TINTS: [[f32; 3]; 6] = [
@@ -3929,7 +3948,13 @@ fn sync_agent_sprites(
                 } else if a.war {
                     Color::srgb(0.6, 0.75, 1.0)
                 } else {
-                    Color::WHITE
+                    // Each beast wears its own coat, so a herd looks like one.
+                    let coat = match a.kind {
+                        AnimalKind::Cow => COW_COATS[i % COW_COATS.len()],
+                        AnimalKind::Sheep => SHEEP_COATS[i % SHEEP_COATS.len()],
+                        AnimalKind::Dog => DOG_COATS[i % DOG_COATS.len()],
+                    };
+                    Color::srgb(coat[0], coat[1], coat[2])
                 };
                 *vis = Visibility::Visible;
             }
