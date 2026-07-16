@@ -3168,6 +3168,7 @@ fn tile_visual(
     const DIM: [f32; 4] = [1.0, 0.55, 0.34, 0.20];
     let mut rgb = [0.02, 0.02, 0.03];
     let mut glyph = "block";
+    let season = sim.clock.season();
     for (levels_down, factor) in DIM.iter().enumerate() {
         let z = view_z - levels_down as i32;
         if z < 0 {
@@ -3191,7 +3192,23 @@ fn tile_visual(
         // dark blue, dimmed by how far down it lies.
         if tile.water > 0 {
             let d = (tile.water as f32 / 7.0).min(1.0);
-            let wcol = mix([0.36, 0.62, 0.68], [0.07, 0.22, 0.62], d);
+            let mut wcol = mix([0.36, 0.62, 0.68], [0.07, 0.22, 0.62], d);
+            // Shallows: water touching land is paler and greener at the shore.
+            let mut land = 0;
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                match surface_at(sim, x + dx, y + dy, z) {
+                    Some((_, nw)) if nw > 0 => {}
+                    Some(_) => land += 1,
+                    None => {}
+                }
+            }
+            if land > 0 {
+                wcol = mix(wcol, [0.44, 0.60, 0.50], 0.18 + 0.12 * land as f32);
+            }
+            // Winter locks the surface into pale ice.
+            if matches!(season, Season::Winter) {
+                wcol = mix(wcol, [0.74, 0.83, 0.89], 0.55);
+            }
             rgb = [wcol[0] * factor, wcol[1] * factor, wcol[2] * factor];
             glyph = "water";
             break;
@@ -3293,12 +3310,14 @@ fn tile_visual(
             // soil where two grounds meet.
             if t.shape == TileShape::Floor && (x * 271 + y * 331).rem_euclid(7) < 4 {
                 let here_cat = m.category;
+                let mut bank = false;
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                     let Some((nmat, nwater)) = surface_at(sim, x + dx, y + dy, view_z) else {
                         continue;
                     };
                     if nwater > 0 {
                         rgb = mix(rgb, [0.60, 0.55, 0.42], 0.30);
+                        bank = true;
                     } else {
                         let nm = raws.materials.get(nmat);
                         if nm.category != here_cat {
@@ -3311,6 +3330,16 @@ fn tile_visual(
                             rgb = mix(rgb, nc, 0.22);
                         }
                     }
+                }
+                // Reeds fringe a grassy bank (not the desert sand or bare rock),
+                // and die back to none under winter's ice.
+                let grassy_bank = bank
+                    && here_cat == MaterialCategory::Soil
+                    && m.id != "sand"
+                    && !matches!(season, Season::Winter);
+                if grassy_bank && (x * 457 + y * 613).rem_euclid(3) == 0 {
+                    glyph = "reed";
+                    rgb = mix(rgb, [0.19, 0.42, 0.18], 0.5);
                 }
             }
         }

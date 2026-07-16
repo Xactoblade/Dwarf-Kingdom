@@ -663,6 +663,26 @@ def _rock(seed):
 def t_rock_a(): return _rock(221)
 def t_rock_b(): return _rock(222)
 
+def t_reed():
+    t = Tile(160)
+    # Tall reeds and cattails at the water's edge — thin stalks with the odd
+    # dark seed-head. Grayscale, tinted green at runtime.
+    base = PX - 2
+    for _ in range(15):
+        bx = 3 + int(t.rand() * (PX - 6))
+        hh = 13 + int(t.rand() * 15)
+        v = 130 + int(t.rand() * 95)
+        x = bx
+        for i in range(hh):
+            t.set(x, base - i, gray(v))
+            t.set(x + 1, base - i, gray(min(255, v + 22)))
+            if i % 5 == 4:
+                x += -1 if t.rand() < 0.5 else 1
+        if t.rand() < 0.45:  # a cattail head
+            for k in range(4):
+                t.fill(x - 1, base - hh - k, x + 2, base - hh - k + 1, gray(96))
+    return t
+
 def t_bush():
     t = Tile(140)
     # A low leafy shrub — a rounded clump of foliage on tiny stems.
@@ -694,12 +714,12 @@ ORDER = [
     ("tree_willow", t_willow), ("tree_birch", t_birch),
     ("grass_a", t_grass_a), ("grass_b", t_grass_b), ("grass_c", t_grass_c),
     ("dirt_a", t_dirt_a), ("dirt_b", t_dirt_b), ("rock_a", t_rock_a), ("rock_b", t_rock_b),
-    ("water", t_water), ("bush", t_bush), ("stone", t_stone),
+    ("water", t_water), ("bush", t_bush), ("stone", t_stone), ("reed", t_reed),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
           "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
           "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b",
-          "water", "bush", "stone"]
+          "water", "bush", "stone", "reed"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS
