@@ -2906,10 +2906,51 @@ impl Sim {
         {
             out.push_str(&format!(" Lately they {}.", worst.text()));
         }
+        // A vampire betrays itself once the fort knows a killer walks among
+        // them: folk realise they've never seen this one eat, drink, or sleep.
+        if d.alive && d.vampire && self.stats.drained > 0 {
+            out.push_str(
+                " Unsettlingly, no one can recall ever seeing them eat, drink, or sleep \
+                 — and folk have begun to whisper.",
+            );
+        }
         if !d.alive {
             out.push_str(" They are gone now, and missed.");
         }
         out
+    }
+
+    /// Bring a suspected vampire to justice. If the accused truly is the fort's
+    /// secret vampire, they are put to death and the killings end; if not, an
+    /// innocent hangs, the fort is shaken by the miscarriage, and the true
+    /// horror walks free. Returns whether the accused was guilty.
+    pub fn accuse(&mut self, i: usize) -> bool {
+        if i >= self.dwarves.len()
+            || !self.dwarves[i].alive
+            || self.dwarves[i].faction != Faction::Fort
+        {
+            return false;
+        }
+        let guilty = self.dwarves[i].vampire;
+        let name = self.dwarves[i].name.clone();
+        self.kill_dwarf(i);
+        if guilty {
+            self.log_event(format!(
+                "{name} is dragged into the light — a vampire! Justice is done, \
+                 and the fort may sleep easy at last."
+            ));
+        } else {
+            self.log_event(format!(
+                "{name} is put to death on the fort's suspicion — but was no vampire. \
+                 An innocent is dead, and the true horror still walks among us."
+            ));
+            for j in 0..self.dwarves.len() {
+                if self.dwarves[j].alive && self.dwarves[j].faction == Faction::Fort {
+                    self.push_thought(j, ThoughtKind::SawPunishment);
+                }
+            }
+        }
+        guilty
     }
 
     // ------------------------------------------------------------- stepping

@@ -956,6 +956,7 @@ fn main() {
                     handle_mouse,
                     apply_active_tool,
                     select_dwarf,
+                    accuse_selected,
                     update_dwarf_panel,
                     apply_embark_action,
                     handle_input,
@@ -1838,6 +1839,30 @@ fn select_dwarf(
     }
 }
 
+/// Shift+A brings the selected dwarf to justice on suspicion of vampirism —
+/// the fort's one recourse against the hidden blood-drinker.
+fn accuse_selected(
+    keys: Res<ButtonInput<KeyCode>>,
+    screen: Res<ScreenRes>,
+    mut selected: ResMut<SelectedDwarf>,
+    mut sim: ResMut<SimRes>,
+    mut dirty: ResMut<MapDirty>,
+) {
+    if screen.0 != Screen::Playing {
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if !shift || !keys.just_pressed(KeyCode::KeyA) {
+        return;
+    }
+    let Some(i) = selected.0 else { return };
+    if let Some(sim) = sim.0.as_mut() {
+        sim.accuse(i);
+        selected.0 = None;
+        dirty.0 = true;
+    }
+}
+
 /// Populate and show/hide the dwarf info sheet.
 fn update_dwarf_panel(
     selected: Res<SelectedDwarf>,
@@ -1852,7 +1877,7 @@ fn update_dwarf_panel(
     let show = match (selected.0, sim.0.as_ref()) {
         (Some(i), Some(sim)) if i < sim.dwarves.len() => {
             if let Ok(mut t) = text.single_mut() {
-                t.0 = sim.biography(i, &reg.0);
+                t.0 = format!("{}\n\n[Shift+A] accuse of vampirism", sim.biography(i, &reg.0));
             }
             true
         }
