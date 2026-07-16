@@ -808,6 +808,23 @@ def i_barrel():
             t.set(xx, yy, gray(128))
     outline(t); return t
 
+def i_bin():
+    # A squared crate — flat lid, slatted sides, banded corners. Deliberately
+    # boxy so it never reads as the barrel's round cask at a glance.
+    t = Tile(419)
+    t.fill(6, 7, 26, 27, gray(150))
+    # Lid, catching the light.
+    t.fill(6, 7, 26, 12, gray(190))
+    t.fill(8, 9, 24, 11, gray(206))
+    # Slats down the body.
+    for yy in range(14, 26, 4):
+        t.fill(7, yy, 25, yy + 2, gray(122))
+    # Corner bands.
+    t.fill(6, 12, 9, 27, gray(104)); t.fill(23, 12, 26, 27, gray(104))
+    # A shadow where it meets the floor.
+    t.fill(6, 25, 26, 27, gray(96))
+    outline(t); return t
+
 def i_bed():
     t = Tile(404)
     t.fill(5, 16, 27, 24, gray(150))
@@ -963,7 +980,7 @@ ORDER = [
     ("ws_forge", t_ws_forge), ("ws_furnace", t_ws_furnace), ("ws_loom", t_ws_loom),
     ("ws_mason", t_ws_mason), ("ws_carpenter", t_ws_carpenter), ("ws_bench", t_ws_bench),
     ("ws_cloth", t_ws_cloth), ("ws_hides", t_ws_hides), ("ws_well", t_ws_well),
-    ("i_log", i_log), ("i_bar", i_bar), ("i_barrel", i_barrel), ("i_bed", i_bed),
+    ("i_log", i_log), ("i_bar", i_bar), ("i_barrel", i_barrel), ("i_bin", i_bin), ("i_bed", i_bed),
     ("i_clothes", i_clothes), ("i_statue", i_statue), ("i_instrument", i_instrument),
     ("i_armor", i_armor), ("i_gem", i_gem), ("i_cloth", i_cloth), ("i_leather", i_leather),
     ("i_wool", i_wool), ("i_glass", i_glass), ("i_craft", i_craft),
@@ -972,7 +989,7 @@ TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
           "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
           "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b",
           "water", "bush", "stone", "reed",
-          "i_log", "i_bar", "i_barrel", "i_bed", "i_clothes", "i_statue",
+          "i_log", "i_bar", "i_barrel", "i_bin", "i_bed", "i_clothes", "i_statue",
           "i_instrument", "i_armor", "i_gem", "i_cloth", "i_leather", "i_wool",
           "i_glass", "i_craft"]
 

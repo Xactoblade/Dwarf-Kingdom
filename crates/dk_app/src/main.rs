@@ -386,12 +386,12 @@ const STOCK_GROUPS: &[(&str, &[ItemKind])] = &[
             ItemKind::CutGem,
             ItemKind::RoughGem,
             ItemKind::Statue,
-            ItemKind::Barrel,
             ItemKind::Instrument,
             ItemKind::Clothes,
         ],
     ),
     ("Furniture", &[ItemKind::Bed]),
+    ("Containers", &[ItemKind::Barrel, ItemKind::Bin]),
     ("Military", &[ItemKind::Weapon, ItemKind::Armor]),
     ("Special", &[ItemKind::Artifact, ItemKind::Corpse]),
 ];
@@ -2117,6 +2117,7 @@ fn item_kind_name(k: ItemKind) -> &'static str {
         ItemKind::RoughGem => "rough gems",
         ItemKind::Statue => "statues",
         ItemKind::Barrel => "barrels",
+        ItemKind::Bin => "bins",
         ItemKind::Instrument => "instruments",
         ItemKind::Clothes => "sets of clothes",
         ItemKind::Bed => "beds",
@@ -3767,6 +3768,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Clothes => "set of clothes".to_string(),
         ItemKind::Log => format!("{} log", raws.materials.get(it.stuff).name),
         ItemKind::Barrel => "wooden barrel".to_string(),
+        ItemKind::Bin => "wooden bin".to_string(),
         ItemKind::Statue => format!("{} statue", raws.materials.get(it.stuff).name),
         ItemKind::Instrument => "musical instrument".to_string(),
         ItemKind::Hide => "raw hide".to_string(),
@@ -3809,6 +3811,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Clothes => Color::srgb(0.85, 0.5, 0.7),
         ItemKind::Log => item_material_color(raws, stuff),
         ItemKind::Barrel => Color::srgb(0.62, 0.44, 0.24),
+        ItemKind::Bin => Color::srgb(0.50, 0.37, 0.21),
         ItemKind::Statue => item_material_color(raws, stuff),
         ItemKind::Instrument => Color::srgb(0.72, 0.52, 0.3),
         ItemKind::Hide => Color::srgb(0.66, 0.5, 0.36),
@@ -3958,10 +3961,15 @@ fn sync_agent_sprites(
     for (i, &e) in pools.items.iter().enumerate() {
         let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
         match sim.0.items.get(i) {
+            // A packed item sits on its container's tile: draw the barrel, not
+            // the meals inside it. Carried goods ride out of sight too.
             Some(it)
                 if it.active()
                     && it.pos.z == view_z.0
-                    && !matches!(it.state, ItemState::Carried { .. }) =>
+                    && !matches!(
+                        it.state,
+                        ItemState::Carried { .. } | ItemState::Inside { .. }
+                    ) =>
             {
                 tf.translation.x = it.pos.x as f32 * TILE;
                 tf.translation.y = it.pos.y as f32 * TILE;
@@ -3988,6 +3996,7 @@ fn sync_agent_sprites(
                             ItemKind::Clothes => "i_clothes",
                             ItemKind::Log => "i_log",
                             ItemKind::Barrel => "i_barrel",
+                            ItemKind::Bin => "i_bin",
                             ItemKind::Statue => "i_statue",
                             ItemKind::Instrument => "i_instrument",
                             ItemKind::Hide => "i_leather",
@@ -4312,11 +4321,19 @@ fn update_hud(
         let mark = if a.marked { " [marked to cull]" } else { "" };
         under = format!("{under} · {}{}{}", a.kind.name(), stage, mark);
     }
-    if let Some(it) = sim
+    // A container and its contents share a tile, so describe the container —
+    // never one of the things packed inside it. Contents are summarized below.
+    if let Some((idx, it)) = sim
         .0
         .items
         .iter()
-        .find(|i| i.active() && i.pos == here && !matches!(i.state, ItemState::Carried { .. }))
+        .enumerate()
+        .filter(|(_, i)| {
+            i.active()
+                && i.pos == here
+                && !matches!(i.state, ItemState::Carried { .. } | ItemState::Inside { .. })
+        })
+        .min_by_key(|(_, i)| !dk_agents::is_container(i.kind))
     {
         let what = match it.kind {
             ItemKind::Boulder => format!("{} boulder", reg.0.materials.get(it.stuff).name),
@@ -4345,7 +4362,8 @@ fn update_hud(
             ItemKind::Bed => format!("{} bed (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Clothes => "set of clothes (trade good)".to_string(),
             ItemKind::Log => format!("{} log", reg.0.materials.get(it.stuff).name),
-            ItemKind::Barrel => "wooden barrel (trade good)".to_string(),
+            ItemKind::Barrel => "wooden barrel".to_string(),
+            ItemKind::Bin => "wooden bin".to_string(),
             ItemKind::Statue => format!("{} statue (a work of art)", reg.0.materials.get(it.stuff).name),
             ItemKind::Instrument => "musical instrument (trade good)".to_string(),
             ItemKind::Hide => "raw hide".to_string(),
@@ -4353,6 +4371,21 @@ fn update_hud(
         };
         let what = if it.quality > 0 && it.kind != ItemKind::Artifact {
             format!("{} {what}", dk_agents::quality_name(it.quality))
+        } else {
+            what
+        };
+        // "wooden barrel (12 prepared meals)" — a container is only as
+        // interesting as what it holds, so say so.
+        let what = if dk_agents::is_container(it.kind) {
+            let held = sim.0.contents_of(idx);
+            match held.first() {
+                Some(&f) => format!(
+                    "{what} ({} {})",
+                    held.len(),
+                    item_kind_name(sim.0.items[f].kind)
+                ),
+                None => format!("{what} (empty)"),
+            }
         } else {
             what
         };

@@ -196,9 +196,15 @@ pub enum ItemKind {
     /// A felled log. `stuff` unused. The carpenter's raw stock, and a modest
     /// trade good.
     Log,
-    /// A barrel worked from a log at the carpenter's shop. `stuff` unused. A
-    /// fine wooden trade good.
+    /// A barrel worked from a log at the carpenter's shop. `stuff` unused.
+    /// A CONTAINER: standing in a stockpile it swallows the fort's food and
+    /// drink, so one tile holds a larder instead of a single crop. Also a
+    /// fine wooden trade good — sold with whatever is inside it.
     Barrel,
+    /// A bin worked from a log at the carpenter's shop. `stuff` unused. The
+    /// barrel's counterpart for goods: bars, cloth, leather, gems, crafts and
+    /// arms. Never food — a bin is no place for a meal.
+    Bin,
     /// A carved statue. `stuff` = material index. A precious work of art that
     /// beautifies the fort — and a rich trade good.
     Statue,
@@ -258,6 +264,13 @@ pub enum ItemState {
     OnGround,
     Carried { by: usize },
     Stored { stockpile: usize },
+    /// Packed inside a barrel or bin (an item index). The item's `pos` mirrors
+    /// its container's tile, so a dwarf who wants it simply walks to the
+    /// container and takes it out — every "nearest X" query keeps working
+    /// unchanged. Containment is recorded HERE and nowhere else: a container
+    /// keeps no list of what it holds, so contents can never be orphaned by a
+    /// stale index. `contents_of` derives the list when it's needed.
+    Inside { container: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +290,56 @@ pub struct Item {
     /// Craftsdwarfship: 0 = ordinary, up to 5 = a masterwork. Set from the
     /// maker's skill; raises the item's worth.
     pub quality: u8,
+}
+
+/// How many of `holding` fit in one `container`, or 0 if that container will
+/// not take that kind at all. This is the whole rulebook for what goes where:
+/// barrels take food and drink, bins take goods, and neither takes the other.
+///
+/// The numbers are Dwarf Fortress's own (wiki: Barrel, Using bins and
+/// barrels): "Barrels can hold up to 60 prepared meals, plants, or cheeses,
+/// 30 pieces of meat or fish, any number of units of brewed alcohol (but only
+/// a single stack)"; "Each bin can store up to 12 bars or blocks, while 30 or
+/// more small crafts may fit into a single bin."
+///
+/// Drink follows DF's "any number of units of brewed alcohol (but only a
+/// single stack)". Our `Drink` is one unit a dwarf swallows, not a stack of
+/// five, so it's the "any number of units" half that applies — the "single
+/// stack" half is already covered by the one-kind-per-container rule. Capped
+/// at 60 like the rest of the larder so a barrel is never a bottomless pit.
+pub fn container_capacity(container: ItemKind, holding: ItemKind) -> usize {
+    match (container, holding) {
+        // A barrel is for food and drink.
+        (ItemKind::Barrel, ItemKind::Drink) => 60,
+        (ItemKind::Barrel, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry) => 60,
+        // DF keeps seeds in bags and the bags in barrels. We have no bags, so
+        // seeds ride in the barrel directly rather than inventing an item to
+        // stand between them.
+        (ItemKind::Barrel, ItemKind::Seed) => 60,
+        // A bin is for goods. Bars are the wiki's own 12; leather 45 and gems
+        // 305 come from its goods-storage table; the rest take the "30 or more
+        // small crafts" line as the house rule for a worked good.
+        (ItemKind::Bin, ItemKind::Bar) => 12,
+        (ItemKind::Bin, ItemKind::Leather | ItemKind::Hide) => 45,
+        (ItemKind::Bin, ItemKind::RoughGem | ItemKind::CutGem) => 305,
+        (ItemKind::Bin, ItemKind::Cloth | ItemKind::Wool) => 30,
+        (
+            ItemKind::Bin,
+            ItemKind::Craft
+            | ItemKind::Clothes
+            | ItemKind::Weapon
+            | ItemKind::Armor
+            | ItemKind::Glass,
+        ) => 30,
+        // Everything else — furniture, stone, logs, corpses, artifacts, and
+        // containers themselves — is stored loose, as in DF.
+        _ => 0,
+    }
+}
+
+/// Is this item a container others can be packed into?
+pub fn is_container(kind: ItemKind) -> bool {
+    matches!(kind, ItemKind::Barrel | ItemKind::Bin)
 }
 
 /// The adjective for a quality tier (0..=5), for describing crafted goods.
@@ -752,6 +815,8 @@ pub enum CraftKind {
     SewClothes,
     /// Work a log into a barrel at the carpenter's shop.
     MakeBarrel,
+    /// Work a log into a bin at the carpenter's shop.
+    MakeBin,
     /// Carve a stone boulder into a statue at the mason's workshop.
     CarveStatue,
     /// Work a log into a musical instrument at the carpenter's shop.
@@ -906,6 +971,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::MakeFurniture, .. } => "building furniture",
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
             Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
+            Task::Craft { kind: CraftKind::MakeBin, .. } => "making a bin",
             Task::Craft { kind: CraftKind::CarveStatue, .. } => "carving a statue",
             Task::Craft { kind: CraftKind::MakeInstrument, .. } => "making an instrument",
             Task::Craft { kind: CraftKind::TanHide, .. } => "tanning leather",
@@ -978,6 +1044,8 @@ pub struct SimStats {
     pub demons_loosed: u32,
     /// Barrels worked from logs at the carpenter's shop.
     pub barrels_made: u32,
+    /// Bins worked from logs at the carpenter's shop.
+    pub bins_made: u32,
     /// Statues carved at the mason's workshop.
     pub statues_carved: u32,
     /// Instruments crafted at the carpenter's shop.
@@ -1004,6 +1072,7 @@ struct Wants {
     furniture: bool,
     clothes: bool,
     barrels: bool,
+    bins: bool,
     statues: bool,
     instruments: bool,
     leather: bool,
@@ -1112,8 +1181,12 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         // A felled log: cheap raw wood.
         // A felled log, valued by its wood — a fine hardwood is worth more.
         ItemKind::Log => raws.materials.get(item.stuff).value * 2 + 6,
-        // A barrel: a fine wooden good, worth several logs.
+        // A barrel: a fine wooden good, worth several logs. What it holds is
+        // valued separately — see `stack_value`, which the trade screen uses
+        // so nobody sells a barrel of wine for the price of the barrel.
         ItemKind::Barrel => 45,
+        // A bin: plainer work than a barrel, and it need not hold water.
+        ItemKind::Bin => 30,
         // A statue: a precious work of art, the fort's finest furnishing.
         ItemKind::Statue => raws.materials.get(item.stuff).value * 15 + 40,
         // A musical instrument: a fine crafted good.
@@ -2359,14 +2432,178 @@ impl Sim {
             .min_by_key(|&c| c.manhattan(near))
     }
 
+    // ---------------------------------------------------------- containers
+
+    /// Every item a container holds. Derived by scanning, never stored — the
+    /// contained item's own state is the single truth about where it lives.
+    pub fn contents_of(&self, container: usize) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.active() && it.state == ItemState::Inside { container })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// How full a container is, and of what.
+    fn container_load(&self, container: usize) -> (usize, Option<ItemKind>) {
+        let held = self.contents_of(container);
+        let kind = held.first().map(|&i| self.items[i].kind);
+        (held.len(), kind)
+    }
+
+    /// Can this container take one more of `kind`?
+    ///
+    /// A container holds ONE kind at a time — a barrel of wine is a barrel of
+    /// wine, not a barrel of wine and fish. (Dwarf Fortress is explicit that a
+    /// drink barrel holds a single stack; whether its food barrels mix types is
+    /// undocumented, so we take the readable rule its naming implies.)
+    fn container_accepts(&self, container: usize, kind: ItemKind) -> bool {
+        let c = &self.items[container];
+        if !c.active() || c.reserved_by.is_some() {
+            return false;
+        }
+        // A container must be resting somewhere to be filled, and containers
+        // never nest — no bin inside a barrel.
+        if !matches!(c.state, ItemState::OnGround | ItemState::Stored { .. }) {
+            return false;
+        }
+        let cap = container_capacity(c.kind, kind);
+        if cap == 0 {
+            return false;
+        }
+        let (load, held) = self.container_load(container);
+        held.is_none_or(|h| h == kind) && load < cap
+    }
+
+    /// The nearest container in a stockpile that will take `kind`. Preferred
+    /// over an empty cell, so the fort packs its goods away instead of
+    /// carpeting the floor with them.
+    /// Would this container take one more of `kind`? Test/UI window onto the
+    /// containment rules.
+    pub fn container_accepts_kind(&self, container: usize, kind: ItemKind) -> bool {
+        self.container_accepts(container, kind)
+    }
+
+    /// Send a container and its contents out of the fort, as a trade does.
+    /// Exposed so tests can exercise the rule without staging a caravan.
+    pub fn debug_consume_with_contents(&mut self, container: usize) {
+        self.consume_with_contents(container);
+    }
+
+    /// How many barrels (or bins) the fort has use for. Every stack that could
+    /// be packed away but isn't becomes demand at that kind's capacity, plus
+    /// one empty spare standing ready for the next load — and never more than
+    /// the stockpiles could stand them on, which is Dwarf Fortress's own rule
+    /// that a pile takes as many containers as it has tiles.
+    fn containers_wanted(&self, container: ItemKind) -> usize {
+        let mut by_kind: Vec<(ItemKind, usize)> = Vec::new();
+        for it in self.items.iter().filter(|i| i.active()) {
+            if matches!(it.state, ItemState::Inside { .. })
+                || container_capacity(container, it.kind) == 0
+            {
+                continue;
+            }
+            match by_kind.iter_mut().find(|(k, _)| *k == it.kind) {
+                Some(e) => e.1 += 1,
+                None => by_kind.push((it.kind, 1)),
+            }
+        }
+        let need: usize = by_kind
+            .into_iter()
+            .map(|(k, n)| n.div_ceil(container_capacity(container, k).max(1)))
+            .sum();
+        if need == 0 {
+            // Nothing of this class to pack away: a fort with no cloth, bars
+            // or crafts has no business turning its logs into bins.
+            return 0;
+        }
+        let cells: usize = self.stockpiles.iter().map(|s| s.cells().count()).sum();
+        (need + 1).min(cells.max(1))
+    }
+
+    /// What an item is worth to a trader, contents and all. A barrel of wine
+    /// leaves with the wine, so it must be priced with the wine — otherwise a
+    /// caravan buys the fort's whole larder for the price of a barrel.
+    pub fn stack_value(&self, idx: usize, raws: &Raws) -> u32 {
+        let mut v = item_value(&self.items[idx], raws);
+        if is_container(self.items[idx].kind) {
+            for c in self.contents_of(idx) {
+                v += item_value(&self.items[c], raws);
+            }
+        }
+        v
+    }
+
+    fn find_container_for(&self, kind: ItemKind, near: Pos, region: u32) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(c, it)| {
+                it.active()
+                    && matches!(it.state, ItemState::Stored { .. })
+                    && self.regions.id(it.pos) == region
+                    && self.container_accepts(*c, kind)
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(c, _)| c)
+    }
+
+    /// Sell or destroy a container and everything packed inside it goes with
+    /// it — a barrel of wine leaves with the wine. Never leave contents
+    /// pointing at a container that no longer exists.
+    fn consume_with_contents(&mut self, container: usize) {
+        for i in self.contents_of(container) {
+            self.items[i].consumed = true;
+        }
+        self.items[container].consumed = true;
+    }
+
+    /// A contained item rides with its container. Called once a tick so the
+    /// invariant "contents sit on their container's tile" holds no matter who
+    /// moved the container — carried by a hauler, dropped, or walked to a new
+    /// region. Touches only `pos`, draws no RNG.
+    fn sync_container_contents(&mut self) {
+        for i in 0..self.items.len() {
+            let ItemState::Inside { container } = self.items[i].state else {
+                continue;
+            };
+            // A container that died out from under its contents (traded away,
+            // eaten by obsidian) spills them onto its last tile rather than
+            // leaving them referencing a corpse.
+            match self.items.get(container) {
+                Some(c) if c.active() => {
+                    let p = c.pos;
+                    self.items[i].pos = p;
+                }
+                _ => {
+                    self.items[i].state = ItemState::OnGround;
+                }
+            }
+        }
+    }
+
     pub fn pending_designations(&self) -> usize {
         self.designations.len()
     }
 
+    /// How many items the fort has put away — counting both those resting on
+    /// a stockpile tile and those packed into a barrel or bin standing on one.
+    /// (Packed goods are `Inside`, not `Stored`; counting only the latter would
+    /// report a fort that had just tidied its whole larder into barrels as
+    /// having stored nothing.)
+    /// How many items the fort has put away — counting both those resting on
+    /// a stockpile tile and those packed into a barrel or bin standing on one.
+    /// (Packed goods are `Inside`, not `Stored`; counting only the latter would
+    /// report a fort that had just tidied its whole larder into barrels as
+    /// having stored nothing.)
     pub fn stored_items(&self) -> usize {
         self.items
             .iter()
-            .filter(|i| i.active() && matches!(i.state, ItemState::Stored { .. }))
+            .filter(|i| {
+                i.active()
+                    && matches!(i.state, ItemState::Stored { .. } | ItemState::Inside { .. })
+            })
             .count()
     }
 
@@ -2400,10 +2637,18 @@ impl Sim {
     }
 
     /// Is an item claimable as a consumable/ingredient right now?
+    /// Can a dwarf walk up and take this item? Packed items count: they sit on
+    /// their container's tile, so "go to it and pick it up" works the same
+    /// whether it's lying on the floor or in a barrel. This one predicate gates
+    /// every larder, workshop and forge query in the fort — if a contained item
+    /// were not takeable here, dwarves would starve beside a full barrel.
     fn item_takeable(&self, it: &Item) -> bool {
         it.active()
             && it.reserved_by.is_none()
-            && matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
+            && matches!(
+                it.state,
+                ItemState::OnGround | ItemState::Stored { .. } | ItemState::Inside { .. }
+            )
     }
 
     /// Enter adventure mode: the first living fort dwarf becomes the
@@ -2963,6 +3208,8 @@ impl Sim {
 
     pub fn step(&mut self, raws: &Raws) {
         self.clock.advance();
+        // Whatever moved a container last tick, its contents ride with it.
+        self.sync_container_contents();
 
         // Fluids first: they change what is walkable this tick. Magma is
         // slow and heavy — it moves at a quarter of water's pace.
@@ -4066,7 +4313,8 @@ impl Sim {
                 return Err("no such caravan good".to_string());
             }
         }
-        let offered: u32 = offer.iter().map(|&i| item_value(&self.items[i], raws)).sum();
+        // A container is offered with its contents, so it is priced with them.
+        let offered: u32 = offer.iter().map(|&i| self.stack_value(i, raws)).sum();
         let asked: u32 = request
             .iter()
             .map(|&g| item_value(&caravan.goods[g], raws))
@@ -4088,7 +4336,8 @@ impl Sim {
             .map(|d| d.pos)
             .unwrap_or_else(|| self.dwarves[0].pos);
         for &i in offer {
-            self.items[i].consumed = true;
+            // The wagon takes the barrel and the wine in it.
+            self.consume_with_contents(i);
         }
         // Remove bought goods from the wagon (descending order keeps indices valid).
         let mut bought: Vec<usize> = request.to_vec();
@@ -4271,6 +4520,7 @@ impl Sim {
         let mut pending_furniture = 0usize;
         let mut pending_clothes = 0usize;
         let mut pending_barrels = 0usize;
+        let mut pending_bins = 0usize;
         let mut pending_statues = 0usize;
         let mut pending_instruments = 0usize;
         let mut pending_leather = 0usize;
@@ -4289,6 +4539,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::MakeFurniture, .. } => pending_furniture += 1,
                     Task::Craft { kind: CraftKind::SewClothes, .. } => pending_clothes += 1,
                     Task::Craft { kind: CraftKind::MakeBarrel, .. } => pending_barrels += 1,
+                    Task::Craft { kind: CraftKind::MakeBin, .. } => pending_bins += 1,
                     Task::Craft { kind: CraftKind::CarveStatue, .. } => pending_statues += 1,
                     Task::Craft { kind: CraftKind::MakeInstrument, .. } => pending_instruments += 1,
                     Task::Craft { kind: CraftKind::TanHide, .. } => pending_leather += 1,
@@ -4390,11 +4641,22 @@ impl Sim {
                 // Logs are the carpenter's one stock, shared across every wooden
                 // good: barrels, instruments, wooden beds, and wooden statues.
                 let logs = self.count_kind(ItemKind::Log);
-                let log_jobs =
-                    pending_barrels + pending_instruments + pending_wood_beds + pending_wood_statues;
+                let log_jobs = pending_barrels
+                    + pending_bins
+                    + pending_instruments
+                    + pending_wood_beds
+                    + pending_wood_statues;
+                // Barrels and bins are the fort's storage, not ornaments: it
+                // wants as many as it has goods to pack away (see
+                // `containers_wanted`), not a fixed few per head.
                 let barrels = self.count_kind(ItemKind::Barrel);
-                let want_barrels =
-                    has_carpenter && logs > log_jobs && barrels + pending_barrels < alive + 2;
+                let want_barrels = has_carpenter
+                    && logs > log_jobs
+                    && barrels + pending_barrels < self.containers_wanted(ItemKind::Barrel);
+                let bins = self.count_kind(ItemKind::Bin);
+                let want_bins = has_carpenter
+                    && logs > log_jobs
+                    && bins + pending_bins < self.containers_wanted(ItemKind::Bin);
                 // Craft an instrument or two so the fort can make music.
                 let instruments = self.count_kind(ItemKind::Instrument);
                 let want_instruments =
@@ -4423,6 +4685,7 @@ impl Sim {
                     furniture: want_furniture,
                     clothes: want_clothes,
                     barrels: want_barrels,
+                    bins: want_bins,
                     statues: want_statues,
                     instruments: want_instruments,
                     leather: want_leather,
@@ -4440,6 +4703,7 @@ impl Sim {
                     Some(CraftKind::MakeFurniture) => pending_furniture += 1,
                     Some(CraftKind::SewClothes) => pending_clothes += 1,
                     Some(CraftKind::MakeBarrel) => pending_barrels += 1,
+                    Some(CraftKind::MakeBin) => pending_bins += 1,
                     Some(CraftKind::CarveStatue) => pending_statues += 1,
                     Some(CraftKind::MakeInstrument) => pending_instruments += 1,
                     Some(CraftKind::TanHide) => pending_leather += 1,
@@ -4727,6 +4991,15 @@ impl Sim {
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeBarrel }, &mut best);
             }
         }
+        // Bins come after barrels deliberately: both are worked from the same
+        // log at the same bench, so they tie on distance, and `consider` keeps
+        // the first of a tie. Food before goods.
+        if w.bins {
+            if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::MakeBin }, &mut best);
+            }
+        }
         // Instrument-making: work a log into an instrument at the carpenter's shop.
         if w.instruments {
             if let Some((shop, input)) = self.craft_carpenter_pair(dwarf_pos, my_region) {
@@ -4821,7 +5094,12 @@ impl Sim {
                     .min_by_key(|b| b.pos.manhattan(item.pos))
                     .map(|b| b.pos)
             } else if !self.stockpiles.is_empty() {
-                self.find_free_cell(item.pos, my_region)
+                // A barrel or bin that will take this comes first — packing it
+                // away costs the same walk and spends no floor. Only when
+                // nothing will hold it does it claim a cell of its own.
+                self.find_container_for(item.kind, item.pos, my_region)
+                    .map(|c| self.items[c].pos)
+                    .or_else(|| self.find_free_cell(item.pos, my_region))
             } else {
                 None
             };
@@ -5689,6 +5967,22 @@ impl Sim {
                             return;
                         }
                     }
+                    // A container standing here that will take this swallows
+                    // it — that was the point of the walk. Re-checked on
+                    // arrival rather than trusted from when the job was
+                    // claimed: a barrel can fill up while a hauler crosses
+                    // the fort.
+                    let into = self
+                        .items
+                        .iter()
+                        .enumerate()
+                        .find(|(c, it)| {
+                            *c != item
+                                && it.pos == here
+                                && is_container(it.kind)
+                                && self.container_accepts(*c, self.items[item].kind)
+                        })
+                        .map(|(c, _)| c);
                     // Only resting items block a cell — creatures carrying
                     // things through the stockpile don't occupy it.
                     let taken = self.items.iter().enumerate().any(|(j, it)| {
@@ -5699,7 +5993,9 @@ impl Sim {
                     });
                     self.items[item].pos = here;
                     self.items[item].reserved_by = None;
-                    self.items[item].state = if !taken {
+                    self.items[item].state = if let Some(container) = into {
+                        ItemState::Inside { container }
+                    } else if !taken {
                         match self.stockpile_at(here) {
                             Some(s) => ItemState::Stored { stockpile: s },
                             None => ItemState::OnGround,
@@ -5957,6 +6253,7 @@ impl Sim {
                             | CraftKind::MakeFurniture
                             | CraftKind::SewClothes
                             | CraftKind::MakeBarrel
+                            | CraftKind::MakeBin
                             | CraftKind::CarveStatue
                             | CraftKind::MakeInstrument
                             | CraftKind::TanHide
@@ -6051,6 +6348,13 @@ impl Sim {
                                 // valued as a fine wooden good on its own.
                                 self.stats.barrels_made += 1;
                                 self.spawn_quality_item(ItemKind::Barrel, 0, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::MakeBin => {
+                                // A log carries no material index; the bin is
+                                // valued as a plain wooden good on its own.
+                                self.stats.bins_made += 1;
+                                self.spawn_quality_item(ItemKind::Bin, 0, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::CarveStatue => {
@@ -7083,12 +7387,21 @@ impl Sim {
     }
 
     /// Pick up an item the dwarf is standing on. Returns false if it's gone.
+    /// Pick an item up off the tile the dwarf is standing on — including out
+    /// of a barrel or bin resting there, which is how a brewer gets at a
+    /// packed crop. `item_takeable` decides whether a job may be CLAIMED;
+    /// this is the moment the hand closes on the thing, and the two must agree
+    /// on what is reachable, or dwarves walk to a barrel and give up in
+    /// silence.
     fn take_item(&mut self, i: usize, item: usize) -> bool {
         let it = &self.items[item];
         if !it.active()
             || it.pos != self.dwarves[i].pos
             || it.reserved_by != Some(i)
-            || !matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
+            || !matches!(
+                it.state,
+                ItemState::OnGround | ItemState::Stored { .. } | ItemState::Inside { .. }
+            )
         {
             return false;
         }
@@ -7650,7 +7963,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 59;
+const SAVE_VERSION: u32 = 60;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -7736,6 +8049,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Cloth
             | ItemKind::Clothes
             | ItemKind::Barrel
+            | ItemKind::Bin
             | ItemKind::Instrument
             | ItemKind::Hide
             | ItemKind::Leather
