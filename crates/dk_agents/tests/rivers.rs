@@ -11,7 +11,11 @@ fn map_with_river(seed: u64) -> (dk_world::Map, dk_raws::Raws) {
     let raws = common::test_raws();
     let mut rng = dk_core::rng_from_seed(seed);
     let mut map = dk_world::generate(&raws.materials, &mut rng, 48, 48, 16, seed);
-    dk_world::carve_river(&mut map, seed);
+    // A river running clean across the map, entering west and leaving east —
+    // the same edge-to-edge course the app cuts for a region whose overworld
+    // river flows W->E (see `edge_point` / `add_water_features`).
+    let (w, h) = (map.width, map.height);
+    dk_world::carve_river(&mut map, seed, (1, h / 2), (w - 2, h / 2));
     (map, raws)
 }
 
