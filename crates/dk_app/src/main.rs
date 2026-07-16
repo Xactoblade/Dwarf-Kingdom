@@ -554,13 +554,27 @@ fn world_seed_path() -> PathBuf {
     PathBuf::from("saves/world_seed")
 }
 
-/// The seed for this game's world. Persisted so a world is stable across
-/// launches (your saves stay valid); a fresh install — or the "new world"
-/// command — rolls a different one. Screenshot/CI mode always uses the fixed
-/// seed for reproducible verification.
+/// The seed for this game's world.
+///
+/// Persisted, so your world is the same world every launch and the fortresses
+/// saved in it stay valid — rolling a fresh one at startup would orphan them.
+/// That is also why a world "looks the same each time": it IS the same world.
+/// To leave it behind, forge a new one (`n` on the embark screen), which rolls
+/// a fresh seed and persists that instead.
+///
+/// `DK_WORLD_SEED=12345` plays one specific world without disturbing the saved
+/// one — Dwarf Fortress's trick of sharing a seed so two people can walk the
+/// same land. Screenshot/CI mode pins the fixed seed for reproducible runs.
 fn resolve_world_seed() -> u64 {
     if screenshot_mode_on() {
         return WORLD_SEED;
+    }
+    if let Some(v) = std::env::var_os("DK_WORLD_SEED") {
+        if let Some(seed) = v.to_str().and_then(|s| s.trim().parse::<u64>().ok()) {
+            info!("playing world seed {seed} (from DK_WORLD_SEED)");
+            return seed;
+        }
+        warn!("DK_WORLD_SEED is not a number; ignoring it");
     }
     if let Ok(s) = std::fs::read_to_string(world_seed_path()) {
         if let Ok(seed) = s.trim().parse::<u64>() {
@@ -653,10 +667,17 @@ fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
 fn surface_style(biome: dk_history::Biome) -> dk_world::SurfaceStyle {
     use dk_history::Biome;
     use dk_world::SurfaceStyle;
+    if biome.is_desert() {
+        return SurfaceStyle::Sandy;
+    }
+    if biome.is_wetland() {
+        return SurfaceStyle::Clayey;
+    }
+    if biome.is_grassy() || biome.is_forest() {
+        return SurfaceStyle::Loamy;
+    }
     match biome {
-        Biome::Desert => SurfaceStyle::Sandy,
-        Biome::Swamp => SurfaceStyle::Clayey,
-        Biome::Grassland | Biome::Forest | Biome::Hills => SurfaceStyle::Loamy,
+        Biome::Mountains | Biome::Glacier | Biome::Tundra => SurfaceStyle::Default,
         _ => SurfaceStyle::Default,
     }
 }
@@ -692,11 +713,16 @@ fn add_water_features(map: &mut dk_world::Map, region: &dk_history::Region, seed
         let r = w.min(h) as f32 * 0.17;
         dk_world::carve_lake(map, seed ^ 0xABCD, center.0, center.1, r);
     }
-    let ponds = match region.biome {
-        Biome::Swamp => 5,
-        Biome::Forest => 2,
-        Biome::Grassland | Biome::Hills | Biome::Tundra => 1,
-        _ => 0,
+    // Standing water gathers where it does not drain away — which is exactly
+    // what the swamps and marshes are.
+    let ponds = if region.biome.is_wetland() {
+        5
+    } else if region.biome.is_forest() {
+        2
+    } else if region.biome.is_grassy() || region.biome == Biome::Tundra {
+        1
+    } else {
+        0
     };
     if ponds > 0 {
         dk_world::carve_ponds(map, seed, ponds);
@@ -705,15 +731,22 @@ fn add_water_features(map: &mut dk_world::Map, region: &dk_history::Region, seed
 
 /// How dramatic a region's local terrain relief is — so a mountain embark
 /// climbs steep bare rock, hills roll, and the plains lie nearly flat.
-fn relief_for(biome: dk_history::Biome) -> dk_world::Relief {
+/// Takes the whole region, not just its biome: hills are drainage's doing, so
+/// whether a grassland rolls or lies flat is not something its name can tell
+/// you.
+fn relief_for(region: &dk_history::Region) -> dk_world::Relief {
     use dk_history::Biome;
     use dk_world::Relief;
-    match biome {
-        Biome::Mountains => Relief::Mountainous,
-        Biome::Hills => Relief::Hilly,
-        Biome::Grassland | Biome::Desert => Relief::Flat,
-        _ => Relief::Rolling,
+    if region.biome == Biome::Mountains {
+        return Relief::Mountainous;
     }
+    if region.hilly() {
+        return Relief::Hilly;
+    }
+    if region.biome.is_desert() || region.biome == Biome::Grassland {
+        return Relief::Flat;
+    }
+    Relief::Rolling
 }
 
 fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::Map {
@@ -722,7 +755,7 @@ fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::M
     let r = world.overworld.get(region.0, region.1);
     let style = surface_style(r.biome);
     let mut map = dk_world::generate_terrain(
-        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(r.biome),
+        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(r),
     );
     add_water_features(&mut map, r, seed);
     map
@@ -736,7 +769,7 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     let biome = r.biome;
     let style = surface_style(biome);
     let mut map = dk_world::generate_terrain(
-        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(biome),
+        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(r),
     );
     // Rivers, lakes and ponds — carved after gen; they don't disturb the embark
     // rng, so the dwarves rolled below are unchanged.
@@ -756,11 +789,14 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // plains, bare in the desert. Woodcutters fell them (Shift+X) for logs.
     let trees = {
         use dk_history::Biome;
-        match biome {
-            Biome::Forest => 240,
-            Biome::Grassland | Biome::Swamp | Biome::Hills => 120,
-            Biome::Desert | Biome::Mountains => 20,
-            _ => 60,
+        if biome.is_forest() {
+            240
+        } else if biome.is_grassy() || biome.is_wetland() {
+            120
+        } else if biome.is_desert() || matches!(biome, Biome::Mountains | Biome::Glacier) {
+            20
+        } else {
+            60
         }
     };
     sim.plant_trees(trees, raws);
@@ -769,11 +805,14 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // eat straight, and a tended patch reseeds itself.
     let shrubs = {
         use dk_history::Biome;
-        match biome {
-            Biome::Forest | Biome::Swamp => 90,
-            Biome::Grassland | Biome::Hills => 60,
-            Biome::Desert | Biome::Mountains => 8,
-            _ => 30,
+        if biome.is_forest() || biome.is_wetland() {
+            90
+        } else if biome.is_grassy() {
+            60
+        } else if biome.is_desert() || matches!(biome, Biome::Mountains | Biome::Glacier) {
+            8
+        } else {
+            30
         }
     };
     sim.plant_shrubs(shrubs);
@@ -833,7 +872,7 @@ fn main() {
         let shot_biome = std::env::var("DK_SHOT_BIOME").unwrap_or_default();
         let region = if shot_biome == "mountain" {
             let mut best = default_region(&world);
-            let mut best_e = -1.0f32;
+            let mut best_e = 0u16;
             for y in 0..OW {
                 for x in 0..OW {
                     let r = world.overworld.get(x, y);
@@ -3734,7 +3773,7 @@ fn redraw_tiles(
             // darker, high ground brightens, and the highest peaks catch a
             // dusting of snow — mountains stand out at a glance.
             if !matches!(region.biome, dk_history::Biome::Ocean) {
-                let e = region.elevation;
+                let e = region.elevation_frac();
                 let shade = (0.72 + 0.5 * (e - 0.35)).clamp(0.55, 1.15);
                 rgb = [rgb[0] * shade, rgb[1] * shade, rgb[2] * shade];
                 if e > 0.78 {
@@ -4181,13 +4220,40 @@ fn update_hud(
                 "Enter: embark here"
             };
             let resume = if has_save.0 { "   F9: continue your saved fortress" } else { "" };
+            // What Dwarf Fortress tells you about a candidate site, in its own
+            // vocabulary: the land, its surroundings, and what the water and
+            // the rock are doing. A player choosing an embark is reading this,
+            // not the map.
+            let hills = if region.hilly() { ", hilly" } else { "" };
+            let water = match (region.river, region.lake) {
+                (true, true) => "river, lake",
+                (true, false) => "river",
+                (false, true) => "lake",
+                (false, false) => "no surface water",
+            };
+            let trees = if region.biome.is_forest() {
+                "heavily wooded"
+            } else if region.biome.is_grassy() || region.biome.is_wetland() {
+                "some trees"
+            } else {
+                "sparse trees"
+            };
+            let volcano = if region.volcanism >= 100 { " · VOLCANO" } else { "" };
+            let neighbours = world
+                .0
+                .nearest_friendly_civ(rx, ry)
+                .map(|c| format!("neighbors: {} of the {}", c.name, c.race.name()))
+                .unwrap_or_else(|| "neighbors: none — you are alone".to_string());
             for mut text in &mut q {
                 text.0 = format!(
-                    "Dwarf Kingdom :: Choose your embark   (world seed {})\n\
+                    "Dwarf Kingdom :: Choose your embark   (world seed {} — n: forge a new world)\n\
                      {} years of history · {} civilizations · {} sites · {} named figures\n\
-                     region ({}, {}) — {}{}\n\
+                     region ({}, {}) — {}{}{}\n\
+                     surroundings: {} · temperature {}C · elevation {} · rainfall {} · drainage {}\n\
+                     {} · {}{}\n\
                      {}\n\
-                     arrows/click: move   y: Legends   n: forge a new world   {}{}",
+                     {}\n\
+                     arrows/click: move   y: Legends   {}{}",
                     world.0.seed,
                     world.0.years_simulated,
                     world.0.civs.len(),
@@ -4196,7 +4262,17 @@ fn update_hud(
                     rx,
                     ry,
                     region.biome.name(),
+                    hills,
                     site,
+                    region.surroundings(),
+                    region.temperature,
+                    region.elevation,
+                    region.rainfall,
+                    region.drainage,
+                    water,
+                    trees,
+                    volcano,
+                    neighbours,
                     enemy,
                     ok,
                     resume,

@@ -163,15 +163,19 @@ fn the_fort_always_keeps_a_named_enemy() {
 fn the_fort_hears_of_a_city_burning_in_the_world_it_knows() {
     // The payoff of a living world: a place the fort trades with is ground
     // down by a war the player never sees, and word of it reaches the gates.
-    let (mut sim, mut world, _raws) = fort_in_world(5);
-    skip_years(&mut sim, 20);
-    dk_agents::sync_world(&mut sim, &mut world);
-    assert!(
+    //
+    // Swept rather than pinned to one lucky seed: not every world burns a city
+    // the fort happens to know within twenty years, and a worldgen change would
+    // otherwise break this test for no good reason.
+    let heard = (0..14u64).any(|seed| {
+        let (mut sim, mut world, _raws) = fort_in_world(seed);
+        skip_years(&mut sim, 20);
+        dk_agents::sync_world(&mut sim, &mut world);
         sim.log
             .iter()
-            .any(|(_, m)| m.starts_with("Word arrives from afar:") && m.contains("razed")),
-        "seed 5 razes a city of a people the fort knows — the fort must hear of it"
-    );
+            .any(|(_, m)| m.starts_with("Word arrives from afar:") && m.contains("razed"))
+    });
+    assert!(heard, "a city of a people the fort knows burns, and the fort hears of it");
 }
 
 #[test]

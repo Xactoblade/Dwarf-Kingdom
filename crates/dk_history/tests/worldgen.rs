@@ -1,0 +1,219 @@
+//! Worldgen fidelity (BLUEPRINT.md §2.1): the world is built the way Dwarf
+//! Fortress builds one — six seeded fields, elevation deciding first, and then
+//! a drainage-by-rainfall table.
+//!
+//! The thresholds here are DF's, read off the wiki's biome distribution chart.
+//! Provenance caveat worth keeping: that chart is presented on a current-version
+//! page but sourced from a 40d-era analysis, so it is a strong default rather
+//! than a measured fact about the modern game.
+
+use dk_history::{Alignment, Biome, Overworld, Savagery, World};
+
+/// The table's own words: elevation first, then drainage x rainfall.
+#[test]
+fn elevation_decides_before_anything_else() {
+    // "any terrain with an elevation of 0-99 is ocean"
+    assert_eq!(Overworld::classify(0, 50, 50, 20), Biome::Ocean);
+    assert_eq!(Overworld::classify(99, 50, 50, 20), Biome::Ocean);
+    assert_ne!(Overworld::classify(100, 50, 50, 20), Biome::Ocean, "sea level is 100");
+    // "any terrain with an elevation of 300-400 is mountain"
+    assert_eq!(Overworld::classify(300, 50, 50, 20), Biome::Mountains);
+    assert_eq!(Overworld::classify(400, 0, 0, 20), Biome::Mountains);
+    assert_ne!(Overworld::classify(299, 50, 50, 20), Biome::Mountains);
+}
+
+#[test]
+fn the_deserts_are_told_apart_by_drainage() {
+    // Rainfall 0-9, split by drainage: sand / rocky wasteland / badlands.
+    assert_eq!(Overworld::classify(150, 0, 0, 20), Biome::SandDesert);
+    assert_eq!(Overworld::classify(150, 9, 32, 20), Biome::SandDesert);
+    assert_eq!(Overworld::classify(150, 5, 33, 20), Biome::RockyWasteland);
+    assert_eq!(Overworld::classify(150, 5, 65, 20), Biome::RockyWasteland);
+    assert_eq!(Overworld::classify(150, 5, 66, 20), Biome::Badlands);
+    assert_eq!(Overworld::classify(150, 5, 100, 20), Biome::Badlands);
+}
+
+#[test]
+fn rainfall_walks_the_land_from_grass_to_forest() {
+    // The chart's columns, at a drainage that keeps us out of the wetlands.
+    assert_eq!(Overworld::classify(150, 10, 60, 20), Biome::Grassland);
+    assert_eq!(Overworld::classify(150, 19, 60, 20), Biome::Grassland);
+    assert_eq!(Overworld::classify(150, 20, 60, 20), Biome::Savanna);
+    assert_eq!(Overworld::classify(150, 32, 60, 20), Biome::Savanna);
+    assert_eq!(Overworld::classify(150, 33, 60, 20), Biome::Shrubland);
+    assert_eq!(Overworld::classify(150, 65, 60, 20), Biome::Shrubland);
+    assert_eq!(Overworld::classify(150, 66, 60, 20), Biome::ConiferForest);
+    assert_eq!(Overworld::classify(150, 74, 60, 20), Biome::ConiferForest);
+    assert_eq!(Overworld::classify(150, 75, 60, 20), Biome::BroadleafForest);
+    assert_eq!(Overworld::classify(150, 100, 60, 20), Biome::BroadleafForest);
+}
+
+#[test]
+fn water_that_cannot_drain_away_makes_wetland() {
+    // Drainage 0-32 with real rain: marsh, then swamp as the rain rises.
+    assert_eq!(Overworld::classify(150, 33, 0, 20), Biome::Marsh);
+    assert_eq!(Overworld::classify(150, 65, 32, 20), Biome::Marsh);
+    assert_eq!(Overworld::classify(150, 66, 32, 20), Biome::Swamp);
+    assert_eq!(Overworld::classify(150, 100, 0, 20), Biome::Swamp);
+    // ...and the same rain on draining ground is forest instead.
+    assert_eq!(Overworld::classify(150, 100, 33, 20), Biome::BroadleafForest);
+}
+
+#[test]
+fn cold_freezes_whatever_the_land_was() {
+    // "at or below -5, all base biomes with drainage <75 become Tundra, and
+    // biomes with drainage 75+ become Glaciers"
+    assert_eq!(Overworld::classify(150, 100, 0, -5), Biome::Tundra);
+    assert_eq!(Overworld::classify(150, 0, 74, -20), Biome::Tundra);
+    assert_eq!(Overworld::classify(150, 50, 75, -5), Biome::Glacier);
+    assert_eq!(Overworld::classify(150, 50, 100, -40), Biome::Glacier);
+    // -4 is not cold enough.
+    assert_ne!(Overworld::classify(150, 100, 0, -4), Biome::Tundra);
+    // "Between -4 and 9 inclusive, Conifer Forests become Taiga."
+    assert_eq!(Overworld::classify(150, 70, 60, 9), Biome::Taiga);
+    assert_eq!(Overworld::classify(150, 70, 60, -4), Biome::Taiga);
+    assert_eq!(Overworld::classify(150, 70, 60, 10), Biome::ConiferForest);
+    // And a mountain stays a mountain however cold it gets.
+    assert_eq!(Overworld::classify(350, 50, 50, -40), Biome::Mountains);
+}
+
+#[test]
+fn hills_are_what_drainage_does_to_open_country() {
+    // DF's chart splits grassland/savanna/shrubland into flat and hilly at
+    // drainage 50 — hills are not a biome of their own.
+    let w = World::generate(4242, 48, 48, 5);
+    let mut flat = 0;
+    let mut hilly = 0;
+    for r in &w.overworld.regions {
+        if !r.biome.is_grassy() {
+            assert!(!r.hilly(), "only open country rumples into hills");
+            continue;
+        }
+        if r.hilly() {
+            hilly += 1;
+            assert!(r.drainage >= 50);
+        } else {
+            flat += 1;
+            assert!(r.drainage < 50);
+        }
+    }
+    assert!(flat > 0 && hilly > 0, "a world has both flat and hilly country ({flat}/{hilly})");
+}
+
+#[test]
+fn a_world_has_two_poles_and_a_warm_middle() {
+    // It used to have one: cold in the north, hot in the south, no equator.
+    let w = World::generate(77, 48, 48, 5);
+    let row_temp = |y: usize| -> i32 {
+        let sum: i32 = (0..w.overworld.width)
+            .map(|x| w.overworld.get(x, y).temperature as i32)
+            .sum();
+        sum / w.overworld.width as i32
+    };
+    let north = row_temp(1);
+    let middle = row_temp(w.overworld.height / 2);
+    let south = row_temp(w.overworld.height - 2);
+    assert!(middle > north + 20, "the middle is warmer than the north ({middle} vs {north})");
+    assert!(middle > south + 20, "and warmer than the south ({middle} vs {south})");
+    assert!((north - south).abs() < 25, "both poles are cold ({north} vs {south})");
+}
+
+#[test]
+fn the_six_fields_are_all_present_and_varied() {
+    // Elevation, rainfall, drainage, temperature, volcanism, savagery — DF's
+    // seeded six. A field that never varies is a field that does nothing.
+    let w = World::generate(99, 48, 48, 5);
+    let spread = |f: fn(&dk_history::Region) -> i32| -> i32 {
+        let vals: Vec<i32> = w.overworld.regions.iter().map(f).collect();
+        vals.iter().max().unwrap() - vals.iter().min().unwrap()
+    };
+    assert!(spread(|r| r.elevation as i32) > 200, "elevation ranges over the world");
+    assert!(spread(|r| r.rainfall as i32) > 50, "rainfall varies");
+    assert!(spread(|r| r.drainage as i32) > 50, "drainage varies");
+    assert!(spread(|r| r.temperature as i32) > 40, "temperature varies");
+    assert!(spread(|r| r.volcanism as i32) > 50, "volcanism varies");
+    assert!(spread(|r| r.savagery as i32) > 50, "savagery varies");
+}
+
+#[test]
+fn surroundings_read_the_way_dwarf_fortress_says_them() {
+    let mut w = World::generate(5, 48, 48, 5);
+    let r = &mut w.overworld.regions[0];
+    for (align, sav, want) in [
+        (Alignment::Good, 0u8, "Serene"),
+        (Alignment::Good, 50, "Mirthful"),
+        (Alignment::Good, 90, "Joyous Wilds"),
+        (Alignment::Neutral, 0, "Calm"),
+        (Alignment::Neutral, 50, "Wilderness"),
+        (Alignment::Neutral, 90, "Untamed Wilds"),
+        (Alignment::Evil, 0, "Sinister"),
+        (Alignment::Evil, 50, "Haunted"),
+        (Alignment::Evil, 90, "Terrifying"),
+    ] {
+        r.alignment = align;
+        r.savagery = sav;
+        assert_eq!(r.surroundings(), want, "{align:?} + savagery {sav}");
+    }
+    // And the classes behind them.
+    r.savagery = 32;
+    assert_eq!(r.savagery_class(), Savagery::Calm);
+    r.savagery = 33;
+    assert_eq!(r.savagery_class(), Savagery::Wilderness);
+    r.savagery = 66;
+    assert_eq!(r.savagery_class(), Savagery::Savage);
+}
+
+#[test]
+fn good_and_evil_are_painted_in_regions_not_scattered_per_tile() {
+    // DF paints alignment onto whole regions late in generation, so you feel
+    // the border when you cross it. Scattered single tiles would be noise.
+    let w = World::generate(2027, 48, 48, 5);
+    let evil = w.overworld.regions.iter().filter(|r| r.alignment == Alignment::Evil).count();
+    let good = w.overworld.regions.iter().filter(|r| r.alignment == Alignment::Good).count();
+    assert!(evil > 0, "somewhere in the world is wrong");
+    assert!(good > 0, "and somewhere is kindly");
+    let n = w.overworld.regions.len();
+    assert!(evil + good < n / 2, "but most of the world is indifferent");
+
+    // Aligned tiles have aligned neighbours — they come in blots, not specks.
+    let mut clustered = 0;
+    let mut lone = 0;
+    for y in 1..w.overworld.height - 1 {
+        for x in 1..w.overworld.width - 1 {
+            let a = w.overworld.get(x, y).alignment;
+            if a == Alignment::Neutral {
+                continue;
+            }
+            let friends = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)]
+                .iter()
+                .filter(|(dx, dy)| {
+                    w.overworld
+                        .get((x as i32 + dx) as usize, (y as i32 + dy) as usize)
+                        .alignment
+                        == a
+                })
+                .count();
+            if friends > 0 {
+                clustered += 1;
+            } else {
+                lone += 1;
+            }
+        }
+    }
+    assert!(clustered > lone * 4, "aligned land comes in stretches ({clustered} vs {lone} lone)");
+}
+
+#[test]
+fn the_same_seed_still_makes_the_same_world() {
+    let a = World::generate(31337, 48, 48, 40);
+    let b = World::generate(31337, 48, 48, 40);
+    assert_eq!(a.legends_lines(), b.legends_lines());
+    let fields = |w: &World| -> Vec<(u16, u8, u8, i16, u8, u8)> {
+        w.overworld
+            .regions
+            .iter()
+            .map(|r| (r.elevation, r.rainfall, r.drainage, r.temperature, r.volcanism, r.savagery))
+            .collect()
+    };
+    assert_eq!(fields(&a), fields(&b), "every field of every region matches");
+}

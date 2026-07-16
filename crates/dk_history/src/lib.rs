@@ -12,49 +12,163 @@ pub mod names;
 
 // ---------------------------------------------------------------- overworld
 
+/// The land a region is. Dwarf Fortress's base biome set, which falls out of
+/// elevation first and then a drainage-by-rainfall table (see `classify`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Biome {
     Ocean,
+    Lake,
     Mountains,
-    Hills,
-    Grassland,
-    Forest,
-    Desert,
-    Swamp,
+    /// Frozen wetland: tundra's drowned cousin, above drainage 75.
+    Glacier,
     Tundra,
+    /// The three deserts, told apart by drainage.
+    SandDesert,
+    RockyWasteland,
+    Badlands,
+    Grassland,
+    Savanna,
+    Shrubland,
+    /// The two wetlands: marsh is drier country than swamp.
+    Marsh,
+    Swamp,
+    ConiferForest,
+    /// A cold conifer forest.
+    Taiga,
+    BroadleafForest,
 }
 
 impl Biome {
     pub fn name(self) -> &'static str {
         match self {
             Biome::Ocean => "ocean",
+            Biome::Lake => "lake",
             Biome::Mountains => "mountains",
-            Biome::Hills => "hills",
-            Biome::Grassland => "grassland",
-            Biome::Forest => "forest",
-            Biome::Desert => "desert",
-            Biome::Swamp => "swamp",
+            Biome::Glacier => "glacier",
             Biome::Tundra => "tundra",
+            Biome::SandDesert => "sand desert",
+            Biome::RockyWasteland => "rocky wasteland",
+            Biome::Badlands => "badlands",
+            Biome::Grassland => "grassland",
+            Biome::Savanna => "savanna",
+            Biome::Shrubland => "shrubland",
+            Biome::Marsh => "marsh",
+            Biome::Swamp => "swamp",
+            Biome::ConiferForest => "conifer forest",
+            Biome::Taiga => "taiga",
+            Biome::BroadleafForest => "broadleaf forest",
         }
     }
 
-    /// Can a fortress embark here?
+    /// Can a fortress embark here? Not on open water, and not on a glacier —
+    /// there is nothing under the ice to dig a home out of.
     pub fn embarkable(self) -> bool {
-        !matches!(self, Biome::Ocean)
+        !matches!(self, Biome::Ocean | Biome::Lake | Biome::Glacier)
+    }
+
+    /// Woodland of any kind — where the trees are.
+    pub fn is_forest(self) -> bool {
+        matches!(
+            self,
+            Biome::ConiferForest | Biome::Taiga | Biome::BroadleafForest
+        )
+    }
+
+    /// Wet country: standing water, reeds, and clay underfoot.
+    pub fn is_wetland(self) -> bool {
+        matches!(self, Biome::Marsh | Biome::Swamp)
+    }
+
+    /// Dry country: sand and bare rock.
+    pub fn is_desert(self) -> bool {
+        matches!(
+            self,
+            Biome::SandDesert | Biome::RockyWasteland | Biome::Badlands
+        )
+    }
+
+    /// Open country under grass or scrub.
+    pub fn is_grassy(self) -> bool {
+        matches!(self, Biome::Grassland | Biome::Savanna | Biome::Shrubland)
     }
 
     /// Display color, sRGB 0-255.
     pub fn color(self) -> [u8; 3] {
         match self {
             Biome::Ocean => [24, 48, 110],
+            Biome::Lake => [38, 84, 160],
             Biome::Mountains => [128, 124, 120],
-            Biome::Hills => [110, 120, 72],
-            Biome::Grassland => [96, 140, 60],
-            Biome::Forest => [40, 96, 44],
-            Biome::Desert => [198, 174, 106],
-            Biome::Swamp => [64, 84, 58],
+            Biome::Glacier => [222, 236, 244],
             Biome::Tundra => [176, 188, 196],
+            Biome::SandDesert => [214, 194, 126],
+            Biome::RockyWasteland => [166, 150, 118],
+            Biome::Badlands => [172, 120, 78],
+            Biome::Grassland => [96, 140, 60],
+            Biome::Savanna => [154, 158, 72],
+            Biome::Shrubland => [118, 138, 66],
+            Biome::Marsh => [96, 122, 84],
+            Biome::Swamp => [64, 84, 58],
+            Biome::ConiferForest => [34, 82, 52],
+            Biome::Taiga => [56, 90, 76],
+            Biome::BroadleafForest => [40, 110, 44],
         }
+    }
+}
+
+/// How wild the land is — Dwarf Fortress's savagery, in its own words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Savagery {
+    Calm,
+    Wilderness,
+    Savage,
+}
+
+/// Whether the land itself is kindly, indifferent, or hates you. Not a mesh
+/// field in Dwarf Fortress — it is painted onto whole regions late in
+/// generation, so a named region is uniformly one thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Alignment {
+    Good,
+    Neutral,
+    Evil,
+}
+
+impl Region {
+    pub fn savagery_class(&self) -> Savagery {
+        match self.savagery {
+            0..=32 => Savagery::Calm,
+            33..=65 => Savagery::Wilderness,
+            _ => Savagery::Savage,
+        }
+    }
+
+    /// Dwarf Fortress's "surroundings": savagery crossed with alignment, and
+    /// the words a player actually reads on the embark screen. The matrix is
+    /// theirs — Serene through Terrifying.
+    pub fn surroundings(&self) -> &'static str {
+        match (self.alignment, self.savagery_class()) {
+            (Alignment::Good, Savagery::Calm) => "Serene",
+            (Alignment::Good, Savagery::Wilderness) => "Mirthful",
+            (Alignment::Good, Savagery::Savage) => "Joyous Wilds",
+            (Alignment::Neutral, Savagery::Calm) => "Calm",
+            (Alignment::Neutral, Savagery::Wilderness) => "Wilderness",
+            (Alignment::Neutral, Savagery::Savage) => "Untamed Wilds",
+            (Alignment::Evil, Savagery::Calm) => "Sinister",
+            (Alignment::Evil, Savagery::Wilderness) => "Haunted",
+            (Alignment::Evil, Savagery::Savage) => "Terrifying",
+        }
+    }
+
+    /// Hills are drainage's doing: past the halfway mark the water sinks away
+    /// and the land rumples. It is why Dwarf Fortress's biome chart splits
+    /// grassland, savanna and shrubland into flat and hilly at drainage 50.
+    pub fn hilly(&self) -> bool {
+        self.drainage >= 50 && self.biome.is_grassy()
+    }
+
+    /// Elevation as a 0..1 fraction, for shading and relief.
+    pub fn elevation_frac(&self) -> f32 {
+        self.elevation as f32 / Overworld::MAX_ELEVATION as f32
     }
 }
 
@@ -89,9 +203,24 @@ impl Dir {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Region {
-    pub elevation: f32, // 0..1, sea level ~0.35
-    pub temperature: f32, // 0..1 cold..hot
-    pub rainfall: f32, // 0..1
+    /// 0..400 on Dwarf Fortress's own scale: below 100 is ocean, 300 and up is
+    /// mountain, and everything between is decided by drainage and rainfall.
+    pub elevation: u16,
+    /// 0..100. Where the rain falls.
+    pub rainfall: u8,
+    /// 0..100. Whether it drains away or lies there — the field that decides
+    /// swamp from forest, and flat from hilly.
+    pub drainage: u8,
+    /// Degrees on a region scale (roughly Celsius). Below -5 the land freezes;
+    /// around 85 it turns tropical.
+    pub temperature: i16,
+    /// 0..100. Fire in the rock. Only a 100 makes a volcano.
+    pub volcanism: u8,
+    /// 0..100. How wild the beasts are. Not part of the biome table — this is
+    /// what the land does to you, not what grows on it.
+    pub savagery: u8,
+    /// Whether the land is kindly, indifferent, or hates you.
+    pub alignment: Alignment,
     pub biome: Biome,
     /// A river flows through this region (part of the downhill river network).
     pub river: bool,
@@ -111,8 +240,78 @@ pub struct Overworld {
 }
 
 impl Overworld {
+    /// Dwarf Fortress's elevation scale: 0..400, with the sea at 100 and the
+    /// mountains from 300 up.
+    pub const MAX_ELEVATION: u16 = 400;
+    pub const SEA_LEVEL: u16 = 100;
+    pub const MOUNTAIN_LEVEL: u16 = 300;
+
     pub fn get(&self, x: usize, y: usize) -> &Region {
         &self.regions[y * self.width + x]
+    }
+
+    /// What land this is. Dwarf Fortress's rule, in its order:
+    ///
+    /// > "When determining the biome, elevation comes first; any terrain with
+    /// > an elevation of 0-99 is ocean, while any terrain with an elevation of
+    /// > 300-400 is mountain. All other biomes lie in between these two
+    /// > extremes. The remaining base biomes are determined by the combination
+    /// > of drainage and rainfall."
+    ///
+    /// The drainage-by-rainfall grid below is theirs, read off the wiki's
+    /// biome distribution chart. Temperature is then laid over the top: cold
+    /// enough and anything becomes tundra, or glacier where the water lies.
+    ///
+    /// A caveat worth keeping: the wiki presents these thresholds on a current
+    /// page but sources them from a 40d-era analysis, so they are a strong
+    /// default rather than a measured fact about the modern game.
+    pub fn classify(elevation: u16, rainfall: u8, drainage: u8, temperature: i16) -> Biome {
+        if elevation < Self::SEA_LEVEL {
+            return Biome::Ocean;
+        }
+        if elevation >= Self::MOUNTAIN_LEVEL {
+            return Biome::Mountains;
+        }
+        // Frozen: "at or below -5, all base biomes with drainage <75 become
+        // Tundra, and biomes with drainage 75+ become Glaciers".
+        if temperature <= -5 {
+            return if drainage >= 75 { Biome::Glacier } else { Biome::Tundra };
+        }
+        let base = match rainfall {
+            0..=9 => match drainage {
+                0..=32 => Biome::SandDesert,
+                33..=65 => Biome::RockyWasteland,
+                _ => Biome::Badlands,
+            },
+            10..=19 => Biome::Grassland,
+            20..=32 => Biome::Savanna,
+            33..=65 => {
+                if drainage <= 32 {
+                    Biome::Marsh
+                } else {
+                    Biome::Shrubland
+                }
+            }
+            66..=74 => {
+                if drainage <= 32 {
+                    Biome::Swamp
+                } else {
+                    Biome::ConiferForest
+                }
+            }
+            _ => {
+                if drainage <= 32 {
+                    Biome::Swamp
+                } else {
+                    Biome::BroadleafForest
+                }
+            }
+        };
+        // "Between -4 and 9 inclusive, Conifer Forests become Taiga."
+        if base == Biome::ConiferForest && temperature <= 9 {
+            return Biome::Taiga;
+        }
+        base
     }
 
     fn generate(rng: &mut ChaCha8Rng, width: usize, height: usize) -> Self {
@@ -137,42 +336,48 @@ impl Overworld {
             }
             out
         };
+        // Dwarf Fortress seeds six fields and fills them in fractally:
+        // elevation, rainfall, temperature, drainage, volcanism, and
+        // wildness. Each gets its own coarseness, so mountains run in long
+        // ranges while rainfall varies over shorter distances.
         let elevation = field(rng, 16);
         let rainfall = field(rng, 12);
+        let drainage = field(rng, 10);
+        let volcanism = field(rng, 20);
+        let savagery = field(rng, 14);
         let temp_noise = field(rng, 24);
 
         let mut regions = Vec::with_capacity(width * height);
         for y in 0..height {
             for x in 0..width {
                 let i = y * width + x;
-                let elevation = elevation[i];
-                // Temperature: latitude gradient plus noise, colder uphill.
+                let elevation = (elevation[i] * Self::MAX_ELEVATION as f32) as u16;
+                // Two poles, as a world ought to have: cold at both edges,
+                // hot across the middle. (This world used to run cold in the
+                // north and hot in the south — one pole and no equator.)
                 let lat = y as f32 / height as f32;
-                let temperature =
-                    (lat * 0.7 + temp_noise[i] * 0.3 - (elevation - 0.35).max(0.0) * 0.5)
-                        .clamp(0.0, 1.0);
-                let rainfall = rainfall[i];
-                let biome = if elevation < 0.35 {
-                    Biome::Ocean
-                } else if elevation > 0.75 {
-                    Biome::Mountains
-                } else if temperature < 0.22 {
-                    Biome::Tundra
-                } else if rainfall < 0.25 {
-                    Biome::Desert
-                } else if rainfall > 0.75 && temperature > 0.5 {
-                    Biome::Swamp
-                } else if rainfall > 0.55 {
-                    Biome::Forest
-                } else if elevation > 0.6 {
-                    Biome::Hills
-                } else {
-                    Biome::Grassland
-                };
+                let from_equator = (lat - 0.5).abs() * 2.0; // 0 equator, 1 pole
+                // Roughly -30C at the poles to 45C at the equator, wobbled by
+                // noise, and colder the higher you stand.
+                let above_sea =
+                    (elevation.saturating_sub(Self::SEA_LEVEL)) as f32 / Self::MAX_ELEVATION as f32;
+                let temperature = (45.0 - from_equator * 75.0 + (temp_noise[i] - 0.5) * 20.0
+                    - above_sea * 40.0)
+                    .clamp(-60.0, 60.0) as i16;
+                let rainfall = (rainfall[i] * 100.0) as u8;
+                let drainage = (drainage[i] * 100.0) as u8;
+                let volcanism = (volcanism[i] * 100.0) as u8;
+                let savagery = (savagery[i] * 100.0) as u8;
+                let biome = Self::classify(elevation, rainfall, drainage, temperature);
                 regions.push(Region {
                     elevation,
                     temperature,
                     rainfall,
+                    drainage,
+                    volcanism,
+                    savagery,
+                    // Painted on later, once the land is known.
+                    alignment: Alignment::Neutral,
                     biome,
                     river: false,
                     river_in: None,
@@ -183,10 +388,51 @@ impl Overworld {
         }
         let mut world = Overworld { width, height, regions };
         world.trace_rivers();
+        world.place_alignment(rng);
         world
     }
 
-    const SEA_LEVEL: f32 = 0.35;
+    /// Paint good and evil onto the land.
+    ///
+    /// Dwarf Fortress does not seed alignment as a field with the other six —
+    /// it places it late, in whole regions, against target counts, so a stretch
+    /// of country is uniformly kindly or uniformly wrong and you can feel the
+    /// border when you cross it. Ours does the same: a few seed points, each
+    /// flooding out over the land that shares its nature.
+    ///
+    /// Drawn after the rivers deliberately: `trace_rivers` uses no RNG, so the
+    /// stream reaches this in a known state whatever the terrain did.
+    fn place_alignment(&mut self, rng: &mut ChaCha8Rng) {
+        let n = self.width * self.height;
+        let blots = (n / 260).max(2); // a handful of good and a handful of evil
+        for pass in 0..2 {
+            let align = if pass == 0 { Alignment::Good } else { Alignment::Evil };
+            for _ in 0..blots {
+                let cx = rng.gen_range(0..self.width);
+                let cy = rng.gen_range(0..self.height);
+                if !self.get(cx, cy).biome.embarkable() {
+                    continue;
+                }
+                let radius = rng.gen_range(2i32..5);
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                            continue;
+                        }
+                        // A rough blot, not a disc — the border should wander.
+                        if dx * dx + dy * dy > radius * radius {
+                            continue;
+                        }
+                        let i = y as usize * self.width + x as usize;
+                        if self.regions[i].biome.embarkable() {
+                            self.regions[i].alignment = align;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// Carve a river network into the overworld, derived PURELY from the
     /// elevation and rainfall fields (no rng), so a river only flows where the
@@ -210,7 +456,7 @@ impl Overworld {
                     continue;
                 }
                 let e = elev(i);
-                let mut best: Option<(f32, Dir)> = None;
+                let mut best: Option<(u16, Dir)> = None;
                 for d in Dir::ALL {
                     let (dx, dy) = d.delta();
                     let (nx, ny) = (x as i32 + dx, y as i32 + dy);
@@ -230,8 +476,11 @@ impl Overworld {
         // cell has passed its water down before we reach a cell. Each cell
         // starts with its own rainfall and adds it to its downhill neighbour.
         let mut order: Vec<usize> = (0..n).filter(|&i| land(&self.regions[i])).collect();
-        order.sort_by(|&a, &b| elev(b).partial_cmp(&elev(a)).unwrap_or(std::cmp::Ordering::Equal));
-        let mut acc: Vec<f32> = (0..n).map(|i| 0.3 + self.regions[i].rainfall).collect();
+        order.sort_by(|&a, &b| elev(b).cmp(&elev(a)));
+        // Each cell starts with its own rainfall (as a fraction) and hands it
+        // downhill.
+        let mut acc: Vec<f32> =
+            (0..n).map(|i| 0.3 + self.regions[i].rainfall as f32 / 100.0).collect();
         for &i in &order {
             if let Some(d) = flow[i] {
                 let (dx, dy) = d.delta();
@@ -313,12 +562,26 @@ impl Race {
         matches!(self, Race::Goblin)
     }
 
+    /// Where a people settles. Hills are no longer a biome of their own —
+    /// they are what drainage does to open country — so the hill-dwellers take
+    /// grassland and shrubland instead.
     fn home_biomes(self) -> &'static [Biome] {
         match self {
-            Race::Dwarven => &[Biome::Mountains, Biome::Hills],
-            Race::Human => &[Biome::Grassland, Biome::Hills],
-            Race::Elven => &[Biome::Forest],
-            Race::Goblin => &[Biome::Swamp, Biome::Desert, Biome::Hills, Biome::Tundra],
+            Race::Dwarven => &[Biome::Mountains, Biome::Shrubland],
+            Race::Human => &[Biome::Grassland, Biome::Savanna, Biome::Shrubland],
+            Race::Elven => &[
+                Biome::BroadleafForest,
+                Biome::ConiferForest,
+                Biome::Taiga,
+            ],
+            Race::Goblin => &[
+                Biome::Swamp,
+                Biome::Marsh,
+                Biome::SandDesert,
+                Biome::RockyWasteland,
+                Biome::Badlands,
+                Biome::Tundra,
+            ],
         }
     }
 }
