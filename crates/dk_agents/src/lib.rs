@@ -874,6 +874,12 @@ pub enum ThoughtKind {
     LaidToRest,
     RelaxedAtTavern,
     PrayedAtTemple,
+    /// Woke in a bed of one's own, in a room of one's own.
+    SleptInOwnRoom,
+    /// Woke in a bed, but out in the open where anyone might tread.
+    SleptInBed,
+    /// Woke on the bare stone, as no dwarf should have to.
+    SleptOnFloor,
 }
 
 impl ThoughtKind {
@@ -903,6 +909,9 @@ impl ThoughtKind {
             ThoughtKind::LaidToRest => 8.0,
             ThoughtKind::RelaxedAtTavern => 6.0,
             ThoughtKind::PrayedAtTemple => 5.0,
+            ThoughtKind::SleptInOwnRoom => 5.0,
+            ThoughtKind::SleptInBed => 2.0,
+            ThoughtKind::SleptOnFloor => -4.0,
         }
     }
 
@@ -935,6 +944,9 @@ impl ThoughtKind {
             ThoughtKind::LaidToRest => "took comfort in a proper burial",
             ThoughtKind::RelaxedAtTavern => "unwound at the tavern",
             ThoughtKind::PrayedAtTemple => "found peace in prayer",
+            ThoughtKind::SleptInOwnRoom => "slept in a fine bedroom of their own",
+            ThoughtKind::SleptInBed => "slept in a bed",
+            ThoughtKind::SleptOnFloor => "slept on the cold hard stone",
         }
     }
 }
@@ -1010,6 +1022,8 @@ pub enum CraftKind {
 pub enum Task {
     Idle { wander_cd: u16 },
     Sleep { remaining: u16 },
+    /// Trudging to one's own bed to sleep in it.
+    GoToBed { bed: usize, path: Vec<Pos> },
     Mine { target: Pos, path: Vec<Pos>, progress: u16 },
     Haul { item: usize, dest: Pos, path: Vec<Pos>, carrying: bool },
     Eat { item: usize, path: Vec<Pos> },
@@ -1058,6 +1072,9 @@ pub struct Dwarf {
     pub pos: Pos,
     pub alive: bool,
     pub faction: Faction,
+    /// The bed this dwarf calls their own (an item index), once they have
+    /// claimed one. A dwarf sleeps in their own bed and nobody else's.
+    pub bed: Option<usize>,
     pub hunger: f32,
     pub thirst: f32,
     pub fatigue: f32,
@@ -1127,6 +1144,7 @@ impl Dwarf {
         match self.task {
             Task::Idle { .. } => "idle",
             Task::Sleep { .. } => "sleeping",
+            Task::GoToBed { .. } => "going to bed",
             Task::Mine { .. } => "mining",
             Task::Haul { .. } => "hauling",
             Task::Eat { .. } => "getting food",
@@ -1412,6 +1430,9 @@ pub struct Sim {
     pub alarm: bool,
     /// Library zones: with one, the fort's scholars set down treatises.
     pub library: Vec<Rect>,
+    /// Rooms set aside for sleeping. A bed inside one is a bedroom of its
+    /// own, and its owner wakes the better for it.
+    pub bedrooms: Vec<Rect>,
     /// Scholarly works the fort has written — its accumulated knowledge.
     pub treatises: Vec<String>,
     pub fisheries: Vec<Rect>,
@@ -1552,6 +1573,7 @@ impl Sim {
             dwarves,
             items: Vec::new(),
             stockpiles: Vec::new(),
+            bedrooms: Vec::new(),
             pastures: Vec::new(),
             taverns: Vec::new(),
             temples: Vec::new(),
@@ -1832,6 +1854,24 @@ impl Sim {
     }
 
     /// Designate a library: with one, the fort's scholars pen treatises.
+    /// Set a room aside for sleeping. A bed standing in one becomes its
+    /// owner's bedroom, and a dwarf with a room of their own is a contented
+    /// dwarf — the cheapest happiness a fort can buy.
+    pub fn add_bedroom(&mut self, a: Pos, b: Pos) {
+        assert_eq!(a.z, b.z);
+        self.bedrooms.push(Rect {
+            z: a.z,
+            x0: a.x.min(b.x),
+            y0: a.y.min(b.y),
+            x1: a.x.max(b.x),
+            y1: a.y.max(b.y),
+        });
+    }
+
+    pub fn bedroom_at(&self, p: Pos) -> bool {
+        self.bedrooms.iter().any(|r| r.contains(p))
+    }
+
     pub fn add_library(&mut self, a: Pos, b: Pos) {
         assert_eq!(a.z, b.z);
         self.library.push(Rect {
@@ -3070,6 +3110,7 @@ impl Sim {
         self.burrows.clear();
         self.alarm = false;
         self.library.clear();
+        self.bedrooms.clear();
         self.treatises.clear();
         self.poems.clear();
         self.songs.clear();
@@ -3328,6 +3369,12 @@ impl Sim {
     }
 
     /// Drop a boulder on the ground (scenarios/tests).
+    /// Strike a dwarf dead where they stand, for tests that need a corpse or
+    /// an heir without staging a siege.
+    pub fn debug_kill_dwarf(&mut self, i: usize) {
+        self.kill_dwarf(i);
+    }
+
     pub fn debug_spawn_boulder(&mut self, material: u16, pos: Pos) {
         self.spawn_item(ItemKind::Boulder, material, pos);
     }
@@ -3496,6 +3543,10 @@ impl Sim {
             self.regions.rebuild(&self.map);
         }
 
+        // The fort's beds are handed out once a day; nothing changes between.
+        if self.clock.tick % TICKS_PER_DAY == 0 {
+            self.tick_bedrooms();
+        }
         self.grow_farms(raws);
         if self.clock.tick % ASSIGN_INTERVAL == 0 {
             self.assign_jobs(raws);
@@ -5949,25 +6000,63 @@ impl Sim {
     /// Whether citizen `i` has a bed to sleep in: the fort's beds are claimed by
     /// its citizens in index order, one each, just as the armory issues weapons
     /// and armor. A dwarf with a bed rests more soundly than one on bare stone.
+    /// Is this dwarf asleep in their own bed? Not "does the fort own enough
+    /// beds" — a bed you are not lying in warms nobody.
     fn sleeps_in_bed(&self, i: usize) -> bool {
-        if self.dwarves[i].faction != Faction::Fort || !self.dwarves[i].alive {
-            return false;
-        }
-        let beds = self
+        let Some(bed) = self.dwarves[i].bed else { return false };
+        self.items
+            .get(bed)
+            .is_some_and(|b| b.active() && b.pos == self.dwarves[i].pos)
+    }
+
+    /// Hand out the fort's beds, one to a dwarf, nearest first. A bed standing
+    /// in a bedroom is claimed ahead of one out in the open, so the rooms a
+    /// player troubles to build are the ones that get slept in.
+    ///
+    /// Deterministic: fixed iteration order, no RNG. A fort with no beds does
+    /// nothing here.
+    fn tick_bedrooms(&mut self) {
+        let free: Vec<usize> = self
             .items
             .iter()
-            .filter(|it| it.active() && it.kind == ItemKind::Bed)
-            .count();
-        if beds == 0 {
-            return false;
+            .enumerate()
+            .filter(|(b, it)| {
+                it.active()
+                    && it.kind == ItemKind::Bed
+                    && !self.dwarves.iter().any(|d| d.alive && d.bed == Some(*b))
+            })
+            .map(|(b, _)| b)
+            .collect();
+        if free.is_empty() {
+            return;
         }
-        let rank = self
-            .dwarves
-            .iter()
-            .take(i)
-            .filter(|d| d.alive && d.faction == Faction::Fort)
-            .count();
-        rank < beds
+        for i in 0..self.dwarves.len() {
+            let d = &self.dwarves[i];
+            if !d.alive || d.faction != Faction::Fort || d.bed.is_some() {
+                continue;
+            }
+            let taken: Vec<usize> =
+                self.dwarves.iter().filter_map(|d| d.bed).collect();
+            let pick = free
+                .iter()
+                .copied()
+                .filter(|b| !taken.contains(b))
+                .filter(|&b| self.regions.id(self.items[b].pos) == self.regions.id(d.pos))
+                .min_by_key(|&b| {
+                    // A bed in a bedroom first; then the nearest.
+                    let p = self.items[b].pos;
+                    (!self.bedroom_at(p), p.manhattan(d.pos))
+                });
+            if let Some(b) = pick {
+                self.dwarves[i].bed = Some(b);
+            }
+        }
+    }
+
+    /// A dwarf's bed is theirs until they die or it does. Called when either
+    /// happens, so a bed never stays claimed by a corpse.
+    fn release_bed(&mut self, i: usize) {
+        self.dwarves[i].bed = None;
     }
 
     /// Whether citizen `i` is dressed in the fort's sewn clothes — claimed by
@@ -6145,8 +6234,21 @@ impl Sim {
         match task {
             Task::Idle { wander_cd } => {
                 if self.dwarves[i].fatigue >= 100.0 {
-                    // A dwarf with a proper bed is refreshed sooner than one
-                    // dropping to sleep on the bare stone floor.
+                    // A dwarf with a bed of their own walks to it. One without
+                    // — or one who cannot reach theirs — drops where they
+                    // stand and sleeps the worse for it.
+                    let own = self.dwarves[i].bed.filter(|&b| self.items[b].active());
+                    if let Some(bed) = own {
+                        let bpos = self.items[bed].pos;
+                        if self.dwarves[i].pos != bpos {
+                            if let Some(p) =
+                                path::astar(&self.map, self.dwarves[i].pos, bpos, MAX_ASTAR_NODES)
+                            {
+                                self.dwarves[i].task = Task::GoToBed { bed, path: p };
+                                return;
+                            }
+                        }
+                    }
                     let remaining = if self.sleeps_in_bed(i) { 800 } else { 1200 };
                     self.dwarves[i].task = Task::Sleep { remaining };
                     return;
@@ -6196,9 +6298,37 @@ impl Sim {
                     self.dwarves[i].task = Task::Idle { wander_cd: cd };
                 }
             }
+            Task::GoToBed { bed, mut path } => {
+                // The bed may have been sold or burned while its owner walked.
+                if !self.items[bed].active() {
+                    self.dwarves[i].bed = None;
+                    self.dwarves[i].task = Task::Sleep { remaining: 1200 };
+                    return;
+                }
+                if !path.is_empty() {
+                    if self.step_along(i, &mut path) {
+                        self.dwarves[i].task = Task::GoToBed { bed, path };
+                    } else {
+                        // Can't get there from here: sleep on the stone.
+                        self.dwarves[i].task = Task::Sleep { remaining: 1200 };
+                    }
+                } else {
+                    self.dwarves[i].task = Task::Sleep { remaining: 800 };
+                }
+            }
             Task::Sleep { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].fatigue = 0.0;
+                    // How a dwarf slept is one of the cheapest things a fort
+                    // can get right, and one of the first they complain about.
+                    let thought = if !self.sleeps_in_bed(i) {
+                        ThoughtKind::SleptOnFloor
+                    } else if self.bedroom_at(self.dwarves[i].pos) {
+                        ThoughtKind::SleptInOwnRoom
+                    } else {
+                        ThoughtKind::SleptInBed
+                    };
+                    self.push_thought(i, thought);
                     self.dwarves[i].task = Task::Idle { wander_cd: 10 };
                 } else {
                     self.dwarves[i].task = Task::Sleep { remaining: remaining - 1 };
@@ -7622,6 +7752,8 @@ impl Sim {
                 it.reserved_by = None;
             }
         }
+        // Their bed passes to whoever needs it next; the dead sleep elsewhere.
+        self.release_bed(i);
         self.dwarves[i].alive = false;
         self.dwarves[i].died_at = Some(self.clock.tick);
         // `deaths` means fort citizens lost; raider kills have their own
@@ -8127,6 +8259,8 @@ impl Sim {
             }
             Task::Idle { .. }
             | Task::Sleep { .. }
+            // A bed is owned, not reserved per-job: nothing to release.
+            | Task::GoToBed { .. }
             | Task::Fight { .. }
             | Task::Tantrum { .. }
             | Task::Sulk { .. }
@@ -8176,6 +8310,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         pos,
         alive: true,
         faction,
+        bed: None,
         hunger: rng.gen_range(0.0..20.0),
         thirst: rng.gen_range(0.0..20.0),
         fatigue: rng.gen_range(0.0..30.0),
@@ -8295,7 +8430,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 61;
+const SAVE_VERSION: u32 = 62;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
