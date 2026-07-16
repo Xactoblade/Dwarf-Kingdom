@@ -3249,7 +3249,24 @@ fn tile_visual(
     }
 
     let here = Pos::new(x, y, view_z);
-    let season = sim.clock.season();
+    // Connected walls: a solid tile is shaded by how buried it is — rock ringed
+    // by more rock sits in shadow, while an exposed face at the edge of a dig
+    // catches the light — so wall masses read as one connected relief instead
+    // of a grid of identical squares. (Off-map neighbours count as more rock.)
+    if sim.map.tile_at(here).is_some_and(|t| t.is_solid()) {
+        let mut open = 0;
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let solid = sim
+                .map
+                .tile_at(Pos::new(x + dx, y + dy, view_z))
+                .map_or(true, |n| n.is_solid());
+            if !solid {
+                open += 1;
+            }
+        }
+        let lit = 0.60 + 0.15 * open as f32; // 0.60 buried .. 1.20 isolated
+        rgb = [rgb[0] * lit, rgb[1] * lit, rgb[2] * lit];
+    }
     // Grassy groundcover over open, grass-bearing soil (loam and clay of the
     // plains and forests — never the bare desert sand): a meadow of a few grass
     // types, dappled with wildflowers, and turning with the seasons — fresh in
