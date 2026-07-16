@@ -458,6 +458,43 @@ pub fn carve_ponds(map: &mut Map, seed: u64, count: usize) {
     }
 }
 
+/// Seed rare adamantine deep in the stone: a few short vertical spires near the
+/// bottom of the map. The deepest one or two are hollow-cored — mining their
+/// bottom cap breaches the underworld. Post-gen and deterministic in `seed`,
+/// applied app-side (kept out of `generate()` so headless forts stay
+/// byte-identical). Returns the breach tile positions.
+pub fn place_adamantine(map: &mut Map, seed: u64, adamantine: u16) -> Vec<Pos> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x0ADA_0ADA_0ADA);
+    let (w, h, d) = (map.width, map.height, map.depth);
+    let mut breaches = Vec::new();
+    if w < 12 || h < 12 || d < 8 {
+        return breaches;
+    }
+    let count = 3 + rng.gen_range(0..3);
+    for i in 0..count {
+        let cx = rng.gen_range(5..w - 5) as i32;
+        let cy = rng.gen_range(5..h - 5) as i32;
+        let top = 2 + rng.gen_range(2..(d / 5).max(3));
+        for z in 2..=top.min(d - 1) {
+            for (dx, dy) in [(0i32, 0i32), (1, 0), (0, 1), (-1, 0), (0, -1)] {
+                let (nx, ny) = (cx + dx, cy + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                    let t = map.get(nx as usize, ny as usize, z);
+                    if t.is_solid() {
+                        map.set_at(Pos::new(nx, ny, z as i32), Tile::solid(adamantine));
+                    }
+                }
+            }
+        }
+        // The deepest one or two spires cap the abyss.
+        if i < 2 {
+            breaches.push(Pos::new(cx, cy, 2));
+        }
+    }
+    breaches
+}
+
 pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle, relief: Relief) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(

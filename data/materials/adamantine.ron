@@ -1,0 +1,6 @@
+// Adamantine — the deep wonder-metal. Never laid down by ordinary mapgen (its
+// category is not a geological one); seeded only in deep spires by the app, and
+// the fort that mines too greedily through one breaches the underworld.
+[
+    MaterialDef(id: "adamantine", name: "Adamantine", category: Adamantine, color: (150, 220, 226), value: 100),
+]

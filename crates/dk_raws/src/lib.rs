@@ -17,6 +17,9 @@ pub enum MaterialCategory {
     /// from the geological categories) — these exist purely as the material of
     /// logs and the wooden goods worked from them.
     Wood,
+    /// Adamantine — the deep, precious metal. Never placed by ordinary mapgen;
+    /// seeded only in deep spires that, dug too greedily, breach the underworld.
+    Adamantine,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

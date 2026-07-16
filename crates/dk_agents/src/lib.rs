@@ -974,6 +974,8 @@ pub struct SimStats {
     pub trees_felled: u32,
     /// Wild shrubs foraged for berries.
     pub foraged: u32,
+    /// Demons loosed from the underworld by digging too deep.
+    pub demons_loosed: u32,
     /// Barrels worked from logs at the carpenter's shop.
     pub barrels_made: u32,
     /// Statues carved at the mason's workshop.
@@ -1195,6 +1197,10 @@ pub struct Sim {
     /// Ceiling on natural shrub regrowth, set when a map is seeded — a berry
     /// patch spreads but never overruns the map.
     pub shrub_cap: usize,
+    /// Adamantine tiles that cap the underworld — mining one breaches the abyss
+    /// and demons pour out. Empty unless a map was seeded with adamantine (app
+    /// embark only), so a fort that never digs one stays byte-identical.
+    pub adamantine_breaches: BTreeSet<Pos>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -1313,6 +1319,7 @@ impl Sim {
             tree_cap: 0,
             shrubs: BTreeSet::new(),
             shrub_cap: 0,
+            adamantine_breaches: BTreeSet::new(),
             engravings: BTreeMap::new(),
             constructions: BTreeMap::new(),
             stats: SimStats::default(),
@@ -2562,6 +2569,7 @@ impl Sim {
         self.tree_cap = 0;
         self.shrubs.clear();
         self.shrub_cap = 0;
+        self.adamantine_breaches.clear();
         self.caravan = None;
         self.water = WaterSim::default();
         if let Some(spring) = natural_spring(&self.map) {
@@ -3130,6 +3138,57 @@ impl Sim {
             "A forgotten beast has risen from the depths! {name}, {form}, stalks the caverns."
         ));
         idx
+    }
+
+    /// A demon of the underworld: a hostile of monstrous form, nastier even
+    /// than a forgotten beast. Returns its dwarf index.
+    pub fn spawn_demon(&mut self, pos: Pos, raws: &Raws) -> usize {
+        let (name, _form) = names::beast_name(&mut self.rng);
+        let mut d = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
+        d.name = format!("{name}, a demon");
+        d.beast = true;
+        d.body = beast_body();
+        // The abyss-born strike harder still.
+        for part in &mut d.body {
+            part.max_hp = (part.max_hp * 3) / 2;
+            part.hp = part.max_hp;
+        }
+        self.dwarves.push(d);
+        self.dwarves.len() - 1
+    }
+
+    /// Dig too deep and pay for it: mining a hollow adamantine cap opens the
+    /// underworld and looses a horde of demons at the breach. Gated on a breach
+    /// existing (adamantine is seeded only at app embark), so a fort that never
+    /// strikes one draws no rng here and steps byte-identically.
+    fn breach_underworld(&mut self, pos: Pos, raws: &Raws) {
+        self.log_event(
+            "The miners break into a hollow of adamantine — and beyond it, the \
+             underworld gapes. You have unleashed what waited below."
+                .to_string(),
+        );
+        // Clear a small pocket at the breach so the demons have somewhere to be.
+        let mut spots = Vec::new();
+        for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)] {
+            let p = Pos::new(pos.x + dx, pos.y + dy, pos.z);
+            if let Some(t) = self.map.tile_at(p) {
+                if t.is_solid() {
+                    self.map.set_at(
+                        p,
+                        Tile { material: t.material, shape: TileShape::Floor, water: 0, magma: 0 },
+                    );
+                }
+                spots.push(p);
+            }
+        }
+        self.map_changed = true;
+        self.regions.dirty = true;
+        let horde = 3 + self.rng.gen_range(0..4); // 3..6 demons
+        for k in 0..horde {
+            let p = spots.get(k % spots.len().max(1)).copied().unwrap_or(pos);
+            self.spawn_demon(p, raws);
+            self.stats.demons_loosed += 1;
+        }
     }
 
     /// Spawn a raiding party at the map edge. Public for tests/scenarios.
@@ -7305,6 +7364,15 @@ impl Sim {
                 self.log_event(format!("{name} strikes a rough {}!", gem_name(gem)));
             }
         }
+        // Adamantine — the deep wonder-metal. And if this cap held back the
+        // abyss, digging it out looses the underworld.
+        if raws.materials.get(boulder_from.material).category == MaterialCategory::Adamantine {
+            let name = self.dwarves[i].name.clone();
+            self.log_event(format!("{name} strikes ADAMANTINE! Praise the deep."));
+        }
+        if self.adamantine_breaches.remove(&target) {
+            self.breach_underworld(target, raws);
+        }
         self.add_xp(i, Skill::Mining, 20);
         self.dwarves[i].task = Task::Idle { wander_cd: 2 };
     }
@@ -7454,7 +7522,7 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 57;
+const SAVE_VERSION: u32 = 58;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

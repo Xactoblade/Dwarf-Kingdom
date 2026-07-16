@@ -721,7 +721,14 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Rivers, lakes and ponds — carved after gen; they don't disturb the embark
     // rng, so the dwarves rolled below are unchanged.
     add_water_features(&mut map, r, seed);
+    // Seed the deep wonder-metal — and the doom of digging it too greedily.
+    let breaches = raws
+        .materials
+        .index_of("adamantine")
+        .map(|adam| dk_world::place_adamantine(&mut map, seed, adam))
+        .unwrap_or_default();
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
+    sim.adamantine_breaches = breaches.into_iter().collect();
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
