@@ -197,6 +197,12 @@ impl Cursor {
 #[derive(Resource)]
 struct MapDirty(bool);
 
+/// Where the fort's dwarves have trodden — accumulates as they walk and slowly
+/// fades, so busy routes wear the grass down to a bare-earth path. Render-only:
+/// it never touches the simulation, so determinism is untouched.
+#[derive(Resource, Default)]
+struct Traffic(std::collections::HashMap<(i32, i32), f32>);
+
 #[derive(Resource, Default)]
 struct SimControl {
     paused: bool,
@@ -914,6 +920,7 @@ fn main() {
         .insert_resource(ViewZ(start_z))
         .insert_resource(Cursor { x: MAP_W as i32 / 2, y: MAP_H as i32 / 2 })
         .insert_resource(MapDirty(true))
+        .insert_resource(Traffic::default())
         .insert_resource(SimControl { paused: false, speed: 1 })
         .insert_resource(UiMode::default())
         .insert_resource(ActiveTool::default())
@@ -1401,6 +1408,7 @@ fn run_sim(
     control: Res<SimControl>,
     screen: Res<ScreenRes>,
     mut dirty: ResMut<MapDirty>,
+    mut traffic: ResMut<Traffic>,
 ) {
     // The fortress keeps living while you read Legends. Embark has no sim,
     // and Adventure advances only when the player acts.
@@ -1411,6 +1419,24 @@ fn run_sim(
     sim.step(&reg.0);
     if sim.map_changed {
         sim.map_changed = false;
+        dirty.0 = true;
+    }
+    // Foot traffic wears paths into the ground — a render-only overlay that
+    // never feeds back into the sim, so determinism holds. Busy tiles climb
+    // toward a cap; everywhere fades a little each tick.
+    let t = &mut traffic.0;
+    for v in t.values_mut() {
+        *v *= 0.992;
+    }
+    t.retain(|_, v| *v > 0.03);
+    for d in &sim.dwarves {
+        if d.alive && d.faction == Faction::Fort {
+            let e = t.entry((d.pos.x, d.pos.y)).or_insert(0.0);
+            *e = (*e + 0.10).min(5.0);
+        }
+    }
+    // Repaint the ground now and then so worn paths appear as they form.
+    if sim.clock.tick % 20 == 0 {
         dirty.0 = true;
     }
 }
@@ -3183,6 +3209,7 @@ fn tile_visual(
     y: i32,
     view_z: i32,
     selection: Option<(Pos, Pos)>,
+    traffic: &std::collections::HashMap<(i32, i32), f32>,
 ) -> (Color, &'static str) {
     const DIM: [f32; 4] = [1.0, 0.55, 0.34, 0.20];
     let mut rgb = [0.02, 0.02, 0.03];
@@ -3302,7 +3329,13 @@ fn tile_visual(
                     Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.85),
                 };
                 rgb = mix(rgb, green, cover);
-                if is_floor {
+                let wear = traffic.get(&(x, y)).copied().unwrap_or(0.0);
+                if is_floor && wear > 0.7 {
+                    // Trodden bare: a worn-earth path where the fort walks most.
+                    let k = ((wear - 0.7) / 2.4).clamp(0.0, 0.82);
+                    rgb = mix(rgb, [0.34, 0.26, 0.16], k);
+                    glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
+                } else if is_floor {
                     glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
                     // Ground clutter breaks up the meadow: the odd leafy bush or
                     // a stone, and in the warm seasons wildflowers — sparse, so
@@ -3576,6 +3609,7 @@ fn redraw_tiles(
     cursor: Res<Cursor>,
     mode: Res<UiMode>,
     active: Res<ActiveTool>,
+    traffic: Res<Traffic>,
     mut tiles: Query<(&TileSprite, &mut Sprite)>,
 ) {
     if !dirty.0 {
@@ -3639,7 +3673,7 @@ fn redraw_tiles(
         .map(|anchor| (anchor, cursor.pos(view_z.0)));
     for (t, mut sprite) in &mut tiles {
         let (color, glyph) =
-            tile_visual(sim, &reg.0, t.x as i32, t.y as i32, view_z.0, selection);
+            tile_visual(sim, &reg.0, t.x as i32, t.y as i32, view_z.0, selection, &traffic.0);
         if let Some(handles) = &tileset.0 {
             if let Some(atlas) = sprite.texture_atlas.as_mut() {
                 atlas.index = handles.index(glyph);
