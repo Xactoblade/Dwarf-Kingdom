@@ -152,6 +152,96 @@ fn a_bed_in_a_bedroom_is_claimed_before_one_out_in_the_open() {
 }
 
 #[test]
+fn a_bed_does_not_travel_with_its_owner() {
+    // `Dwarf.bed` is an index into the item vec, and travelling to a new
+    // region clears that vec. A bed index carried across would point at
+    // whatever now sits at that slot — or off the end of it.
+    let (mut sim, raws) = fort(8107, 1);
+    let sp = sim.dwarves[0].pos;
+    for _ in 0..12 {
+        sim.debug_spawn_item(ItemKind::Boulder, 0, sp);
+    }
+    put_bed(&mut sim);
+    for _ in 0..dk_core::TICKS_PER_DAY + 1 {
+        sim.step(&raws);
+    }
+    assert!(sim.dwarves[0].bed.is_some(), "claimed a bed at home");
+
+    sim.begin_adventure(&raws);
+    let mut rng2 = dk_core::rng_from_seed(99);
+    let new_map = dk_world::generate(&raws.materials, &mut rng2, 32, 32, 16, 99);
+    sim.relocate_player(new_map, &raws);
+
+    assert_eq!(
+        sim.dwarves[0].bed, None,
+        "the bed stayed behind in the old land, and so did its index"
+    );
+    assert!(
+        sim.dwarves.iter().all(|d| d
+            .bed
+            .is_none_or(|b| sim.items.get(b).is_some_and(|i| i.kind == ItemKind::Bed))),
+        "no dwarf owns a 'bed' that is not a bed"
+    );
+    // And the sim keeps running rather than indexing off the end of the vec.
+    sim.dwarves[0].fatigue = 100.0;
+    for _ in 0..200 {
+        sim.step(&raws);
+    }
+}
+
+#[test]
+fn a_bed_that_is_destroyed_is_given_up_and_another_claimed() {
+    // A claim nobody reaps is worse than no claim: its owner is skipped by the
+    // assigner forever ("they have a bed") while sleeping on stone every night.
+    let (mut sim, raws) = fort(8108, 1);
+    put_bed(&mut sim);
+    for _ in 0..dk_core::TICKS_PER_DAY + 1 {
+        sim.step(&raws);
+    }
+    let first = sim.dwarves[0].bed.expect("claimed the first bed");
+
+    // The bed is sold to a caravan, or burns. Either way it is gone.
+    sim.items[first].consumed = true;
+    // The mason builds a replacement.
+    let second = put_bed(&mut sim);
+    let _ = second;
+
+    for _ in 0..dk_core::TICKS_PER_DAY * 2 {
+        sim.step(&raws);
+    }
+    let now = sim.dwarves[0].bed.expect("claimed the replacement");
+    assert_ne!(now, first, "the dead bed was given up");
+    assert!(sim.items[now].active(), "and a real one taken in its place");
+}
+
+#[test]
+fn a_bedroom_designated_later_still_rehouses_its_dwarf() {
+    // A player builds beds first and designates rooms afterwards — the usual
+    // order. Without an upgrade pass, everyone stays in whatever bed they
+    // grabbed on day one and the bedrooms stand empty forever.
+    let (mut sim, raws) = fort(8109, 1);
+    let open = put_bed(&mut sim);
+    let roomed = put_bed(&mut sim);
+    for _ in 0..dk_core::TICKS_PER_DAY + 1 {
+        sim.step(&raws);
+    }
+    let first = sim.dwarves[0].bed.expect("claimed a bed");
+    assert!(!sim.bedroom_at(sim.items[first].pos), "and it is not in any room yet");
+    let _ = open;
+
+    // Now the player builds a bedroom around the other bed.
+    sim.add_bedroom(roomed, roomed);
+    for _ in 0..dk_core::TICKS_PER_DAY * 2 {
+        sim.step(&raws);
+    }
+    let now = sim.dwarves[0].bed.expect("still has a bed");
+    assert!(
+        sim.bedroom_at(sim.items[now].pos),
+        "the dwarf moved into the room built for them"
+    );
+}
+
+#[test]
 fn a_dead_dwarfs_bed_passes_to_the_living() {
     let (mut sim, raws) = fort(8106, 2);
     put_bed(&mut sim);

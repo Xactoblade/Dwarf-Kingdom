@@ -655,10 +655,14 @@ impl Stockpile {
     /// in the furniture pile with the beds — so it is judged by its cargo.
     pub fn takes(&self, kind: ItemKind) -> bool {
         if is_container(kind) {
+            // Strictly by cargo. A furniture pile must NOT take casks: a cask
+            // hauled there is a cask `find_container_for` will never use,
+            // because that asks whether the cask's pile wants the food. The
+            // barrel would sit among the beds forever while the larder went
+            // back to one meal per tile.
             return ItemKind::ALL
                 .iter()
-                .any(|&k| container_capacity(kind, k) > 0 && self.accepts.allows(stock_category(k)))
-                || self.accepts.allows(StockCategory::Furniture);
+                .any(|&k| container_capacity(kind, k) > 0 && self.accepts.allows(stock_category(k)));
         }
         self.accepts.allows(stock_category(kind))
     }
@@ -2193,7 +2197,10 @@ impl Sim {
     }
 
     pub fn stockpile_at(&self, p: Pos) -> Option<usize> {
-        self.stockpiles.iter().position(|s| s.contains(p))
+        // Newest first: painting a pile over another is how a player corrects
+        // a mis-painted one, so the last word must win. (Piles may overlap;
+        // clipping them apart is a bigger change than this deserves.)
+        self.stockpiles.iter().rposition(|s| s.contains(p))
     }
 
     pub fn building_at(&self, p: Pos) -> Option<&Building> {
@@ -3180,13 +3187,22 @@ impl Sim {
     pub fn relocate_player(&mut self, new_map: Map, raws: &Raws) {
         let Some(hero) = self.player else { return };
         let mut wanderer = self.dwarves[hero].clone();
+        // The old land's bed stays in the old land. `Dwarf.bed` is an index
+        // into the item vec, and that vec is about to be cleared — carried
+        // across, it would point at whatever now sits in that slot, or off
+        // the end of it.
+        wanderer.bed = None;
         // Companions journey on with the hero; nobody else does.
         let mut companions: Vec<Dwarf> = self
             .dwarves
             .iter()
             .enumerate()
             .filter(|&(j, d)| j != hero && d.alive && d.follower)
-            .map(|(_, d)| d.clone())
+            .map(|(_, d)| {
+                let mut c = d.clone();
+                c.bed = None; // as above: their beds do not travel either
+                c
+            })
             .collect();
         // Old dwarf index -> new index for everyone who travels: the hero
         // becomes 0, the companions follow in order. Used to keep carried
@@ -4807,9 +4823,15 @@ impl Sim {
         for g in bought {
             received.push(caravan.goods.remove(g));
         }
+        let bought_at = self.clock.tick;
         for mut it in received {
             it.pos = drop_at;
             it.state = ItemState::OnGround;
+            // Provisions off the wagon are as fresh as the day you bought
+            // them. A caravan's own clock means nothing in fort time, and
+            // without this a purchased meal is born already a month old and
+            // rots at the next dawn.
+            it.made_at = bought_at;
             self.items.push(it);
         }
         self.stats.trades_completed += 1;
@@ -6144,6 +6166,20 @@ impl Sim {
     /// Deterministic: fixed iteration order, no RNG. A fort with no beds does
     /// nothing here.
     fn tick_bedrooms(&mut self) {
+        // First, give up beds that are no longer beds to their owner: sold,
+        // burned, or walled off behind a cave-in. A claim nobody reaps is
+        // worse than no claim at all — the owner is skipped here forever
+        // (they "have" a bed) while sleeping on stone every night, and the
+        // bed itself never returns to the pool.
+        for i in 0..self.dwarves.len() {
+            let Some(b) = self.dwarves[i].bed else { continue };
+            let gone = !self.items.get(b).is_some_and(|it| it.active());
+            let walled_off = !gone
+                && self.regions.id(self.items[b].pos) != self.regions.id(self.dwarves[i].pos);
+            if gone || walled_off {
+                self.dwarves[i].bed = None;
+            }
+        }
         let free: Vec<usize> = self
             .items
             .iter()
@@ -6176,6 +6212,38 @@ impl Sim {
                     (!self.bedroom_at(p), p.manhattan(d.pos))
                 });
             if let Some(b) = pick {
+                self.dwarves[i].bed = Some(b);
+            }
+        }
+
+        // Last, let a dwarf move up. A player usually builds the beds and
+        // designates the rooms afterwards — without this, everyone would be
+        // stuck in whatever bed they grabbed on day one and the bedrooms would
+        // stand empty forever, which is exactly the wrong lesson to teach.
+        for i in 0..self.dwarves.len() {
+            let d = &self.dwarves[i];
+            if !d.alive || d.faction != Faction::Fort {
+                continue;
+            }
+            let Some(current) = d.bed else { continue };
+            if self.bedroom_at(self.items[current].pos) {
+                continue; // already housed
+            }
+            let taken: Vec<usize> = self.dwarves.iter().filter_map(|d| d.bed).collect();
+            let better = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(b, it)| {
+                    it.active()
+                        && it.kind == ItemKind::Bed
+                        && !taken.contains(b)
+                        && self.bedroom_at(it.pos)
+                        && self.regions.id(it.pos) == self.regions.id(d.pos)
+                })
+                .min_by_key(|(_, it)| it.pos.manhattan(d.pos))
+                .map(|(b, _)| b);
+            if let Some(b) = better {
                 self.dwarves[i].bed = Some(b);
             }
         }

@@ -142,13 +142,8 @@ fn a_barrel_stands_in_the_larder_it_serves_not_among_the_beds() {
     assert!(!stone.takes(ItemKind::Barrel), "a barrel has no business in the stoneyard");
     assert!(goods.takes(ItemKind::Bin), "a bin serves the goods pile");
     assert!(!food.takes(ItemKind::Bin), "a bin is no place for a meal, nor a larder for a bin");
-    // Furniture piles are where empty containers are kept, as in DF.
-    let furniture = dk_agents::Stockpile {
-        rect: dk_agents::Rect { z: 0, x0: 0, y0: 0, x1: 2, y1: 2 },
-        accepts: StockFilter::only(&[StockCategory::Furniture]),
-    };
-    assert!(furniture.takes(ItemKind::Barrel));
-    assert!(furniture.takes(ItemKind::Bin));
+    // A furniture pile refuses casks — see
+    // `a_furniture_pile_is_no_home_for_a_working_cask` for why.
 }
 
 #[test]
@@ -174,6 +169,41 @@ fn food_is_packed_into_a_barrel_standing_in_the_food_pile() {
         }
     }
     assert_eq!(packed, 4, "the larder's cask takes the larder's meals");
+}
+
+#[test]
+fn painting_a_pile_over_another_corrects_it() {
+    // There is no erase tool, so painting over a mis-categorised pile is the
+    // player's only correction — the last word must win.
+    let (mut sim, _raws) = fort(7105);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (p, q) = sim.find_flat_patch(cx, cy).expect("pile ground");
+    sim.add_filtered_stockpile(p, q, StockFilter::only(&[StockCategory::Stone]));
+    // "No — this is the larder."
+    sim.add_filtered_stockpile(p, q, StockFilter::only(&[StockCategory::Food]));
+
+    let s = sim.stockpile_at(p).expect("a pile covers this tile");
+    assert!(
+        sim.stockpiles[s].accepts.allows(StockCategory::Food),
+        "the pile painted last is the pile that counts"
+    );
+    assert!(!sim.stockpiles[s].accepts.allows(StockCategory::Stone));
+}
+
+#[test]
+fn a_furniture_pile_is_no_home_for_a_working_cask() {
+    // A cask hauled to the furniture pile is a cask nothing will ever fill:
+    // food is only packed into casks whose pile wants food. Casks belong with
+    // their cargo, so a furniture pile must refuse them outright.
+    let furniture = dk_agents::Stockpile {
+        rect: dk_agents::Rect { z: 0, x0: 0, y0: 0, x1: 2, y1: 2 },
+        accepts: StockFilter::only(&[StockCategory::Furniture]),
+    };
+    assert!(!furniture.takes(ItemKind::Barrel), "no stranding the fort's casks");
+    assert!(!furniture.takes(ItemKind::Bin));
+    assert!(furniture.takes(ItemKind::Bed), "beds, though, are furniture");
+    assert!(furniture.takes(ItemKind::Statue));
 }
 
 #[test]

@@ -155,6 +155,80 @@ fn a_rotting_meal_stinks_but_a_withered_crop_does_not() {
 }
 
 #[test]
+fn food_bought_from_a_caravan_is_as_fresh_as_the_day_it_was_bought() {
+    // A caravan's wagon keeps its own clock. Stamp a purchase with the wagon's
+    // reckoning and the meal is born a month old, to rot at the very next dawn
+    // — the fort punished with the stench of rot for going shopping.
+    let (mut sim, raws) = fort(9209);
+    sim.trade_partner = Some("the Amber Banners".to_string());
+    // The FIRST caravan comes before a shelf life has elapsed, so it cannot
+    // spring the trap. Wait for one that arrives after — the second, in the
+    // fort's second season.
+    let mut arrived = false;
+    for _ in 0..dk_core::TICKS_PER_DAY * dk_core::DAYS_PER_SEASON * 4 {
+        // This fort embarked with nothing; keep them alive long enough to shop
+        // (no living dwarves, no caravan).
+        for d in &mut sim.dwarves {
+            d.hunger = 0.0;
+            d.thirst = 0.0;
+        }
+        sim.step(&raws);
+        if sim.caravan.is_some() && sim.clock.tick > SHELF_LIFE_DAYS * TICKS_PER_DAY {
+            arrived = true;
+            break;
+        }
+    }
+    assert!(
+        arrived,
+        "a caravan arriving after a shelf life has elapsed is needed — that is the trap"
+    );
+
+    // Put a meal on the wagon, stamped the way `maybe_caravan` stamps its
+    // goods — `made_at: 0`, the wagon's own reckoning. (A wagon's contents are
+    // random, so relying on it to carry food would make this test pass by
+    // silently skipping.)
+    let here = sim.dwarves[0].pos;
+    sim.caravan.as_mut().unwrap().goods.push(dk_agents::Item {
+        kind: ItemKind::Meal,
+        stuff: 0,
+        name: None,
+        pos: here,
+        state: ItemState::OnGround,
+        reserved_by: None,
+        consumed: false,
+        quality: 0,
+        made_at: 0,
+    });
+    let want = sim.caravan.as_ref().unwrap().goods.len() - 1;
+
+    // Pay for it with rock.
+    for _ in 0..40 {
+        sim.debug_spawn_item(ItemKind::Boulder, 0, here);
+    }
+    let offer: Vec<usize> = sim
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| it.active() && it.kind == ItemKind::Boulder && it.reserved_by.is_none())
+        .map(|(i, _)| i)
+        .take(40)
+        .collect();
+    sim.execute_trade(&offer, &[want], &raws)
+        .expect("the merchants take rock for a meal");
+    let bought = sim.items.len() - 1;
+    assert_eq!(sim.items[bought].kind, ItemKind::Meal, "we bought the meal");
+
+    // One day later it must still be there.
+    for _ in 0..TICKS_PER_DAY + 2 {
+        sim.step(&raws);
+    }
+    assert!(
+        sim.items[bought].active(),
+        "a meal bought today does not rot tomorrow"
+    );
+}
+
+#[test]
 fn a_food_pile_is_what_saves_the_larder() {
     // The player-facing lesson: tell a pile it is for food, and the food lives.
     let (mut sim, raws) = fort(9208);
