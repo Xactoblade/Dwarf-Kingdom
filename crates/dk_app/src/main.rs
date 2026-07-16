@@ -777,6 +777,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
                 .collect(),
         });
     }
+    // The fort is founded in the world's current year, and from here the two
+    // clocks run together (see dk_agents::sync_world).
+    sim.embark_world_year = world.years_simulated;
     sim
 }
 
@@ -1415,6 +1418,7 @@ fn run_sim(
     reg: Res<Registry>,
     control: Res<SimControl>,
     screen: Res<ScreenRes>,
+    mut world: ResMut<WorldRes>,
     mut dirty: ResMut<MapDirty>,
     mut traffic: ResMut<Traffic>,
 ) {
@@ -1425,6 +1429,9 @@ fn run_sim(
     }
     let Some(sim) = sim.0.as_mut() else { return };
     sim.step(&reg.0);
+    // Each year the fort lives, the world outside lives one too — and word of
+    // it reaches the gates. Cheap until a year actually turns.
+    dk_agents::sync_world(sim, &mut world.0);
     if sim.map_changed {
         sim.map_changed = false;
         dirty.0 = true;
@@ -2500,7 +2507,10 @@ fn handle_input(
             // The saga ends: inscribe the hero's deeds into the world's
             // annals so they live on in Legends alongside the ancient feats.
             if let Some(s) = sim.0.as_ref() {
-                let year = world.0.years_simulated + s.clock.year() as u32;
+                // The world's own clock is now the authority on what year it
+                // is — it advances alongside the fort's (see sync_world), so
+                // adding the fort's year on top would count it twice.
+                let year = world.0.years_simulated;
                 for deed in &s.deeds {
                     world.0.record_deed(year, deed.clone());
                 }

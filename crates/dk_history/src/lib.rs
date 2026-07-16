@@ -536,62 +536,7 @@ impl World {
         }
 
         for year in 1..=years {
-            // Populations drift; prosperous civs found new sites.
-            for c in 0..self.civs.len() {
-                let growth = rng.gen_range(-30i32..60);
-                let civ = &mut self.civs[c];
-                civ.population = civ.population.saturating_add_signed(growth).max(50);
-                if civ.population > 600 && rng.gen_ratio(1, 6) {
-                    let near = civ.home;
-                    civ.population -= 150;
-                    self.found_site(rng, c, near, year);
-                }
-            }
-
-            // New figures appear now and then.
-            if !self.civs.is_empty() && rng.gen_ratio(1, 2) {
-                let c = rng.gen_range(0..self.civs.len());
-                let role = if self.civs[c].race == Race::Goblin && rng.gen_ratio(1, 3) {
-                    Role::Warlord
-                } else {
-                    Role::Warrior
-                };
-                self.spawn_figure(rng, c, role, year);
-            }
-
-            // Wars: goblin civs raid their neighbors.
-            if rng.gen_ratio(1, 3) {
-                let attackers: Vec<usize> = self
-                    .civs
-                    .iter()
-                    .filter(|c| c.race.hostile())
-                    .map(|c| c.id)
-                    .collect();
-                let defenders: Vec<usize> = self
-                    .civs
-                    .iter()
-                    .filter(|c| !c.race.hostile())
-                    .map(|c| c.id)
-                    .collect();
-                if let (Some(&a), Some(&d)) = (
-                    attackers.get(rng.gen_range(0..attackers.len().max(1))),
-                    defenders.get(rng.gen_range(0..defenders.len().max(1))),
-                ) {
-                    self.battle(rng, a, d, year);
-                }
-            }
-
-            // Mortality among the named.
-            for f in 0..self.figures.len() {
-                if self.figures[f].died_year.is_none()
-                    && year as i64 - self.figures[f].born_year > 50
-                    && rng.gen_ratio(1, 12)
-                {
-                    self.figures[f].died_year = Some(year);
-                    let (name, civ) = (self.figures[f].name.clone(), self.figures[f].civ);
-                    self.event(year, format!("{} of {} died of old age.", name, self.civs[civ].name));
-                }
-            }
+            self.simulate_year(rng, year);
         }
         self.years_simulated = years;
 
@@ -619,6 +564,92 @@ impl World {
             let name = self.figures[id].name.clone();
             self.event(years, format!("{} {}.", name, reason));
         }
+    }
+
+    /// One year of the world's life: populations drift, sites are founded,
+    /// figures rise and die, and the hostile civs go raiding. Worldgen runs
+    /// this `years` times up front; a live fortress runs it once a year
+    /// through `advance_year`, so the same machinery writes the ancient past
+    /// and the news of today.
+    fn simulate_year(&mut self, rng: &mut ChaCha8Rng, year: u32) {
+        if self.civs.is_empty() {
+            return;
+        }
+
+        // Populations drift; prosperous civs found new sites.
+        for c in 0..self.civs.len() {
+            let growth = rng.gen_range(-30i32..60);
+            let civ = &mut self.civs[c];
+            civ.population = civ.population.saturating_add_signed(growth).max(50);
+            if civ.population > 600 && rng.gen_ratio(1, 6) {
+                let near = civ.home;
+                civ.population -= 150;
+                self.found_site(rng, c, near, year);
+            }
+        }
+
+        // New figures appear now and then.
+        if rng.gen_ratio(1, 2) {
+            let c = rng.gen_range(0..self.civs.len());
+            let role = if self.civs[c].race == Race::Goblin && rng.gen_ratio(1, 3) {
+                Role::Warlord
+            } else {
+                Role::Warrior
+            };
+            self.spawn_figure(rng, c, role, year);
+        }
+
+        // Wars: goblin civs raid their neighbors.
+        if rng.gen_ratio(1, 3) {
+            let attackers: Vec<usize> = self
+                .civs
+                .iter()
+                .filter(|c| c.race.hostile())
+                .map(|c| c.id)
+                .collect();
+            let defenders: Vec<usize> = self
+                .civs
+                .iter()
+                .filter(|c| !c.race.hostile())
+                .map(|c| c.id)
+                .collect();
+            if let (Some(&a), Some(&d)) = (
+                attackers.get(rng.gen_range(0..attackers.len().max(1))),
+                defenders.get(rng.gen_range(0..defenders.len().max(1))),
+            ) {
+                self.battle(rng, a, d, year);
+            }
+        }
+
+        // Mortality among the named.
+        for f in 0..self.figures.len() {
+            if self.figures[f].died_year.is_none()
+                && year as i64 - self.figures[f].born_year > 50
+                && rng.gen_ratio(1, 12)
+            {
+                self.figures[f].died_year = Some(year);
+                let (name, civ) = (self.figures[f].name.clone(), self.civs[self.figures[f].civ].name.clone());
+                self.event(year, format!("{} of {} died of old age.", name, civ));
+            }
+        }
+    }
+
+    /// Live the world forward by one year while a fortress plays, and return
+    /// the fresh events as news. The world does not hold still for you: wars
+    /// grind on, sites burn, and the warlord who hates you may die in a ditch
+    /// somewhere before he ever reaches your gates.
+    ///
+    /// Determinism comes from a per-year RNG derived from the world seed, so
+    /// no stream state has to survive a save round-trip.
+    pub fn advance_year(&mut self) -> Vec<String> {
+        let year = self.years_simulated + 1;
+        let mut rng = dk_core::rng_from_seed(
+            self.seed ^ 0x11FE_0F17_5E17_0000 ^ (year as u64).wrapping_mul(0x9E37_79B9),
+        );
+        let before = self.events.len();
+        self.simulate_year(&mut rng, year);
+        self.years_simulated = year;
+        self.events[before..].iter().map(|e| e.text.clone()).collect()
     }
 
     /// A raid: casualties on both sides, kills credited to named figures,
@@ -758,6 +789,17 @@ impl World {
         self.events.push(HistoricalEvent { year, text });
     }
 
+    /// Has this civilization been wiped from the map? A people with every
+    /// site in ruins sends no more caravans and musters no more sieges.
+    /// Named rather than indexed because a fortress remembers its neighbors
+    /// by name across a save round-trip.
+    pub fn civ_fallen(&self, name: &str) -> bool {
+        let Some(civ) = self.civs.iter().find(|c| c.name == name) else {
+            return true;
+        };
+        !civ.sites.is_empty() && civ.sites.iter().all(|&s| self.sites[s].ruined)
+    }
+
     pub fn legends_lines(&self) -> Vec<String> {
         self.events
             .iter()
@@ -793,6 +835,53 @@ mod tests {
         let biomes_a: Vec<Biome> = a.overworld.regions.iter().map(|r| r.biome).collect();
         let biomes_b: Vec<Biome> = b.overworld.regions.iter().map(|r| r.biome).collect();
         assert_ne!(biomes_a, biomes_b, "terrain must differ between seeds");
+    }
+
+    #[test]
+    fn the_world_lives_on_while_a_fortress_plays() {
+        let mut w = World::generate(7, 48, 48, 80);
+        assert_eq!(w.years_simulated, 80);
+        let before = w.events.len();
+        let mut news = Vec::new();
+        for _ in 0..25 {
+            news.extend(w.advance_year());
+        }
+        assert_eq!(w.years_simulated, 105, "25 played years age the world 25 years");
+        assert!(
+            w.events.len() > before,
+            "a quarter-century of history writes fresh events"
+        );
+        assert!(!news.is_empty(), "some of those years produce news to report");
+        assert!(
+            w.events[before..].iter().all(|e| e.year > 80),
+            "live events are stamped with the years they happened in"
+        );
+    }
+
+    #[test]
+    fn live_years_are_deterministic() {
+        let mut a = World::generate(9, 48, 48, 60);
+        let mut b = World::generate(9, 48, 48, 60);
+        for _ in 0..15 {
+            assert_eq!(a.advance_year(), b.advance_year());
+        }
+        assert_eq!(a.legends_lines(), b.legends_lines());
+        assert_eq!(
+            a.figures.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            b.figures.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_civ_with_every_site_in_ruins_has_fallen() {
+        let mut w = World::generate(3, 48, 48, 60);
+        let name = w.civs[0].name.clone();
+        assert!(!w.civ_fallen(&name), "a civ with standing sites lives");
+        for s in w.civs[0].sites.clone() {
+            w.sites[s].ruined = true;
+        }
+        assert!(w.civ_fallen(&name), "every site razed means the people are gone");
+        assert!(w.civ_fallen("the Nonexistent Horde"), "an unknown civ is no civ at all");
     }
 
     #[test]

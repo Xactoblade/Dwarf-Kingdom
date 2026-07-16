@@ -8,6 +8,7 @@ dk_core = { path = "../dk_core" }
 dk_raws = { path = "../dk_raws" }
 dk_world = { path = "../dk_world" }
 dk_sim = { path = "../dk_sim" }
+dk_history = { path = "../dk_history" }
 serde = { workspace = true }
 bincode = { workspace = true }
 anyhow = { workspace = true }
@@ -15,4 +16,3 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 
 [dev-dependencies]
-dk_history = { path = "../dk_history" }

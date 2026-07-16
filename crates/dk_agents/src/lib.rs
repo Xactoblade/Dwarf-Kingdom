@@ -1232,6 +1232,11 @@ pub struct Sim {
     pub siege_roster: Option<SiegeRoster>,
     /// Friendly civ that sends caravans — wired from world history at embark.
     pub trade_partner: Option<String>,
+    /// The world year this fort was founded in (set by the app at embark).
+    /// `sync_world` reads it to keep the world's clock and the fort's clock
+    /// in step. Left 0 for a sim with no world behind it, which then never
+    /// advances history.
+    pub embark_world_year: u32,
     /// The caravan currently visiting, if any.
     pub caravan: Option<Caravan>,
     /// Killing traders has consequences: no caravans until this tick.
@@ -1338,6 +1343,7 @@ impl Sim {
             songs: Vec::new(),
             siege_roster: None,
             trade_partner: None,
+            embark_world_year: 0,
             caravan: None,
             trade_ban_until: 0,
             trader_lost_to_raiders: false,
@@ -7560,10 +7566,91 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
     }
 }
 
+// ------------------------------------------------------- the world outside
+
+/// How many lines of foreign news the fort will hear in a single year, so a
+/// busy century abroad can't drown out the log of what happened at home. A
+/// backstop, not a filter: a year rarely makes even this much news about the
+/// two civs a given fort knows.
+const NEWS_PER_YEAR: usize = 3;
+
+/// Keep the world's calendar in step with the fortress's: for every year the
+/// fort has lived, the world outside lives one too. Cheap to call every tick
+/// — it does nothing until a year actually turns.
+///
+/// This is the one glue point between a fort and its world (the app calls it
+/// each tick; tests call it directly). Sieges and caravans were wired once at
+/// embark from a world that then stood still; now that the world keeps
+/// turning, they are rewired from it as it changes. A civ can be ground into
+/// ruins by wars you never see and simply stop coming — the caravan that
+/// never arrives is a story the world told without you.
+pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
+    if sim.embark_world_year == 0 {
+        return; // a sim with no world behind it (tests, dummy maps)
+    }
+    // The fort's clock starts at year 1, so its first year adds nothing.
+    let target = sim.embark_world_year + sim.clock.year() as u32 - 1;
+    if world.years_simulated >= target {
+        return; // the common case: no year has turned since the last tick
+    }
+    // A fort only hears news of the peoples it actually knows: the neighbors
+    // who trade with it and the enemies who hate it. The rest of the world's
+    // noise never reaches the mountainhome.
+    let known: Vec<String> = sim
+        .trade_partner
+        .iter()
+        .cloned()
+        .chain(sim.siege_roster.iter().map(|r| r.civ_name.clone()))
+        .collect();
+    while world.years_simulated < target {
+        let news = world.advance_year();
+        for line in news
+            .iter()
+            .filter(|l| known.iter().any(|c| l.contains(c.as_str())))
+            .take(NEWS_PER_YEAR)
+        {
+            sim.log_event(format!("Word arrives from afar: {line}"));
+        }
+    }
+
+    // A trade partner whose every site lies in ruins sends no more wagons.
+    if let Some(partner) = sim.trade_partner.clone() {
+        if world.civ_fallen(&partner) {
+            sim.log_event(format!(
+                "{partner} has been destroyed. No caravan will ever come from them again."
+            ));
+            sim.trade_partner = None;
+        }
+    }
+
+    // Likewise the enemy: a horde razed out of existence besieges no one.
+    // Otherwise refresh the roster — the warlord who swore to burn your gates
+    // may have died abroad, and new grudges make new enemies.
+    if let (Some(roster), Some(region)) = (sim.siege_roster.clone(), sim.home_region) {
+        if world.civ_fallen(&roster.civ_name) {
+            sim.log_event(format!(
+                "{} has been wiped from the world. Their sieges end here.",
+                roster.civ_name
+            ));
+            sim.siege_roster = None;
+        } else if let Some((civ_name, leaders)) = world.siege_pack(region.0, region.1) {
+            let leaders: Vec<SiegeLeader> = leaders
+                .into_iter()
+                .map(|(name, grudge)| SiegeLeader { name, grudge })
+                .collect();
+            // Never leave the fort without a named enemy: an empty refresh
+            // (every grudge-bearer dead) keeps the roster we already had.
+            if !leaders.is_empty() {
+                sim.siege_roster = Some(SiegeRoster { civ_name, leaders });
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 58;
+const SAVE_VERSION: u32 = 59;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
