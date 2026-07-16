@@ -2639,14 +2639,20 @@ fn handle_input(
         }
     }
 
-    // Z-level.
+    // Z-level. Stop at the roof of the world rather than climb into empty sky:
+    // the renderer only reaches a few levels below the view for something to
+    // draw, so above the highest terrain the map is a black void with the
+    // minimap still cheerfully showing the fort. That reads as a broken game.
     if keys.just_pressed(KeyCode::BracketLeft) && view_z.0 > 0 {
         view_z.0 -= 1;
         dirty.0 = true;
     }
-    if keys.just_pressed(KeyCode::BracketRight) && view_z.0 < MAP_D as i32 - 1 {
-        view_z.0 += 1;
-        dirty.0 = true;
+    if keys.just_pressed(KeyCode::BracketRight) {
+        let roof = sim.0.map.highest_solid_z() as i32;
+        if view_z.0 < roof {
+            view_z.0 += 1;
+            dirty.0 = true;
+        }
     }
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);

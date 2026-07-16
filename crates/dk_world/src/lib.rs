@@ -191,6 +191,26 @@ impl Map {
             .find(|&z| self.get(x, y, z).shape.is_walkable())
     }
 
+    /// The highest z-level that has anything in it at all — the roof of the
+    /// world, wherever the mountains or the fort's own towers reach.
+    ///
+    /// A view above this sees nothing: the renderer looks a few levels down
+    /// from the current z for something to draw, and above the roof there is
+    /// nothing within reach, so the map renders as a black void. Clamping the
+    /// view here keeps the player over the world instead of lost in the sky.
+    pub fn highest_solid_z(&self) -> usize {
+        for z in (0..self.depth).rev() {
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    if self.get(x, y, z).shape != TileShape::Empty {
+                        return z;
+                    }
+                }
+            }
+        }
+        0
+    }
+
     /// Structural sanity checks for freshly deserialized maps.
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(

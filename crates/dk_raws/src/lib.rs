@@ -170,6 +170,9 @@ fn load_ron_dir<T: serde::de::DeserializeOwned>(dir: &Path) -> Result<Vec<T>> {
 pub struct MaterialRegistry {
     materials: Vec<MaterialDef>,
     by_id: HashMap<String, u16>,
+    /// Handed back for out-of-range indices so the renderer can never panic on
+    /// one. See `get`.
+    unknown: MaterialDef,
 }
 
 impl MaterialRegistry {
@@ -183,7 +186,17 @@ impl MaterialRegistry {
                 anyhow::bail!("duplicate material id: {}", m.id);
             }
         }
-        Ok(Self { materials, by_id })
+        Ok(Self {
+            materials,
+            by_id,
+            unknown: MaterialDef {
+                id: "unknown".into(),
+                name: "unknown".into(),
+                category: MaterialCategory::Soil,
+                color: [120, 120, 120],
+                value: 0,
+            },
+        })
     }
 
     /// Load every `.ron` file in a directory. Each file holds a `Vec<MaterialDef>`.
@@ -200,8 +213,21 @@ impl MaterialRegistry {
         self.materials.iter().map(|m| m.id.clone()).collect()
     }
 
+    /// The material at `index`.
+    ///
+    /// Out-of-range asks — `NO_MATERIAL` (u16::MAX) above all, which every
+    /// empty tile carries — yield a neutral stand-in rather than panicking.
+    /// This is called from the renderer for every tile of every frame, and a
+    /// bare `self.materials[i]` there turns one stray index into a hard crash
+    /// of the whole game. A grey square is a bug you can see and report; a
+    /// panic is a bug that ends the session.
     pub fn get(&self, index: u16) -> &MaterialDef {
-        &self.materials[index as usize]
+        self.materials.get(index as usize).unwrap_or(&self.unknown)
+    }
+
+    /// Is this a real material, or would `get` hand back the stand-in?
+    pub fn is_valid(&self, index: u16) -> bool {
+        (index as usize) < self.materials.len()
     }
 
     pub fn index_of(&self, id: &str) -> Option<u16> {
