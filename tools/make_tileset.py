@@ -777,6 +777,137 @@ def t_ws_well():
     outline(t)
     return t
 
+# --- Item sprites: grayscale so each takes its material/item colour at runtime
+# (an oak log tints oak-brown, a steel bar steel-grey, a granite statue grey).
+
+def i_log():
+    t = Tile(401)
+    t.fill(5, 13, 27, 21, gray(150))
+    t.fill(5, 13, 27, 15, gray(190))
+    t.fill(5, 19, 27, 21, gray(106))
+    t.disc(8, 17, 4, gray(140)); t.disc(8, 17, 2, gray(186)); t.set(8, 17, gray(118))
+    outline(t); return t
+
+def i_bar():
+    t = Tile(402)
+    t.fill(7, 14, 25, 22, gray(165))
+    t.fill(9, 12, 23, 14, gray(202))
+    t.fill(7, 14, 25, 15, gray(214))
+    t.fill(7, 21, 25, 22, gray(112))
+    outline(t); return t
+
+def i_barrel():
+    t = Tile(403)
+    for yy in range(6, 28):
+        bulge = 2 if 11 < yy < 23 else 0
+        t.fill(9 - bulge, yy, 23 + bulge, yy + 1, gray(150))
+    t.fill(9, 6, 23, 8, gray(188))
+    t.fill(7, 11, 25, 13, gray(100)); t.fill(7, 21, 25, 23, gray(100))
+    for xx in range(11, 22, 4):
+        for yy in range(8, 27):
+            t.set(xx, yy, gray(128))
+    outline(t); return t
+
+def i_bed():
+    t = Tile(404)
+    t.fill(5, 16, 27, 24, gray(150))
+    t.fill(5, 22, 27, 25, gray(108))
+    t.fill(5, 12, 11, 24, gray(172))
+    t.fill(7, 14, 24, 18, gray(202))
+    t.fill(11, 18, 24, 22, gray(160))
+    outline(t); return t
+
+def i_clothes():
+    t = Tile(405)
+    t.fill(10, 8, 22, 26, gray(172))
+    t.fill(6, 10, 12, 16, gray(158)); t.fill(20, 10, 26, 16, gray(158))
+    t.fill(14, 8, 18, 12, gray(138))
+    t.fill(10, 8, 22, 10, gray(202))
+    outline(t); return t
+
+def i_statue():
+    t = Tile(406)
+    t.fill(11, 24, 21, 29, gray(140)); t.fill(9, 27, 23, 29, gray(104))
+    t.disc(16, 8, 3, gray(182))
+    t.fill(13, 11, 19, 24, gray(166))
+    t.fill(10, 13, 13, 20, gray(160)); t.fill(19, 13, 22, 20, gray(160))
+    t.fill(13, 11, 19, 12, gray(200))
+    outline(t); return t
+
+def i_instrument():
+    t = Tile(407)
+    t.disc(13, 21, 7, gray(160)); t.disc(11, 19, 3, gray(196))
+    t.fill(18, 4, 21, 20, gray(150))
+    for i in range(4):
+        t.set(19, 6 + i * 3, gray(118))
+    for sx in (15, 17):
+        for yy in range(9, 24):
+            t.set(sx, yy, gray(212))
+    outline(t); return t
+
+def i_armor():
+    t = Tile(408)
+    t.fill(9, 8, 23, 22, gray(176))
+    t.fill(9, 8, 23, 10, gray(216))
+    t.disc(16, 21, 7, gray(176)); t.fill(9, 20, 23, 26, gray(156))
+    t.fill(15, 10, 17, 24, gray(150))
+    t.set(13, 14, gray(128)); t.set(19, 14, gray(128))
+    outline(t); return t
+
+def i_gem():
+    t = Tile(409)
+    for i in range(8):
+        t.fill(16 - i, 8 + i, 16 + i, 9 + i, gray(182))
+    for i in range(9):
+        w = 8 - i
+        t.fill(16 - w, 16 + i, 16 + w, 17 + i, gray(150))
+    t.fill(9, 15, 23, 17, gray(212))
+    for i in range(8):
+        t.set(16, 16 + i, gray(120))
+    t.set(11, 15, gray(232)); t.set(20, 15, gray(232))
+    outline(t); return t
+
+def i_cloth():
+    t = Tile(410)
+    t.fill(6, 12, 26, 24, gray(170))
+    t.disc(6, 18, 6, gray(158)); t.disc(6, 18, 3, gray(192))
+    for yy in range(13, 24, 3):
+        t.fill(10, yy, 26, yy + 1, gray(148))
+    t.fill(6, 12, 26, 14, gray(202))
+    outline(t); return t
+
+def i_leather():
+    t = Tile(411)
+    t.fill(7, 14, 25, 22, gray(160))
+    t.disc(7, 18, 5, gray(150)); t.disc(7, 18, 2, gray(186)); t.disc(25, 18, 5, gray(150))
+    t.fill(9, 15, 24, 16, gray(192))
+    outline(t); return t
+
+def i_wool():
+    t = Tile(412)
+    for (cx, cy, r, v) in ((13, 18, 6, 200), (19, 17, 5, 190), (16, 13, 5, 212),
+                           (11, 21, 4, 186), (21, 21, 4, 186), (16, 19, 4, 200)):
+        t.disc(cx, cy, r, gray(v))
+    t.speckle(6, 8, 26, 26, gray(160), 0.08)
+    outline(t); return t
+
+def i_glass():
+    t = Tile(413)
+    t.fill(10, 6, 22, 8, gray(200))
+    for i in range(7):
+        t.fill(10 + i, 8 + i, 22 - i, 9 + i, gray(186))
+    t.fill(15, 15, 17, 24, gray(170)); t.fill(11, 24, 21, 26, gray(182))
+    t.fill(12, 8, 14, 14, gray(226))
+    outline(t); return t
+
+def i_craft():
+    t = Tile(414)
+    t.disc(16, 12, 4, gray(186))
+    t.fill(13, 15, 19, 26, gray(166))
+    t.fill(11, 24, 21, 27, gray(140))
+    t.set(14, 12, gray(230)); t.set(18, 18, gray(210))
+    outline(t); return t
+
 def t_reed():
     t = Tile(160)
     # Tall reeds and cattails at the water's edge — thin stalks with the odd
@@ -832,11 +963,18 @@ ORDER = [
     ("ws_forge", t_ws_forge), ("ws_furnace", t_ws_furnace), ("ws_loom", t_ws_loom),
     ("ws_mason", t_ws_mason), ("ws_carpenter", t_ws_carpenter), ("ws_bench", t_ws_bench),
     ("ws_cloth", t_ws_cloth), ("ws_hides", t_ws_hides), ("ws_well", t_ws_well),
+    ("i_log", i_log), ("i_bar", i_bar), ("i_barrel", i_barrel), ("i_bed", i_bed),
+    ("i_clothes", i_clothes), ("i_statue", i_statue), ("i_instrument", i_instrument),
+    ("i_armor", i_armor), ("i_gem", i_gem), ("i_cloth", i_cloth), ("i_leather", i_leather),
+    ("i_wool", i_wool), ("i_glass", i_glass), ("i_craft", i_craft),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
           "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
           "grass_a", "grass_b", "grass_c", "dirt_a", "dirt_b", "rock_a", "rock_b",
-          "water", "bush", "stone", "reed"]
+          "water", "bush", "stone", "reed",
+          "i_log", "i_bar", "i_barrel", "i_bed", "i_clothes", "i_statue",
+          "i_instrument", "i_armor", "i_gem", "i_cloth", "i_leather", "i_wool",
+          "i_glass", "i_craft"]
 
 def main():
     rows = (len(ORDER) + COLS - 1) // COLS
