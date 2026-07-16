@@ -32,7 +32,10 @@ fn a_carpenter_works_a_log_into_a_barrel() {
     for _ in 0..6 {
         sim.debug_spawn_log(sp);
     }
-    assert_eq!(sim.count_kind(ItemKind::Barrel), 0, "nothing made yet");
+    // The embark arrives with its booze already in casks, so count what the
+    // CARPENTER makes, not what the fort owns.
+    let brought = sim.count_kind(ItemKind::Barrel);
+    assert_eq!(sim.stats.barrels_made, 0, "nothing made yet");
 
     let mut made = false;
     for _ in 0..12_000 {
@@ -43,7 +46,10 @@ fn a_carpenter_works_a_log_into_a_barrel() {
         }
     }
     assert!(made, "the carpenter should work a log into a barrel");
-    assert!(sim.count_kind(ItemKind::Barrel) > 0, "a barrel exists in the fort");
+    assert!(
+        sim.count_kind(ItemKind::Barrel) > brought,
+        "a barrel of the fort's own making stands beside the ones it brought"
+    );
 }
 
 #[test]
@@ -81,6 +87,7 @@ fn the_whole_wood_chain_yields_a_barrel() {
 #[test]
 fn no_carpenter_means_no_barrels() {
     let (mut sim, raws) = carpentry_fort(4403);
+    let brought = sim.count_kind(ItemKind::Barrel);
     let sp = sim.dwarves[0].pos;
     for _ in 0..6 {
         sim.debug_spawn_log(sp);
@@ -89,5 +96,9 @@ fn no_carpenter_means_no_barrels() {
         sim.step(&raws);
     }
     assert_eq!(sim.stats.barrels_made, 0, "no carpenter, no barrels");
-    assert_eq!(sim.count_kind(ItemKind::Barrel), 0);
+    assert_eq!(
+        sim.count_kind(ItemKind::Barrel),
+        brought,
+        "the fort still has only the casks it embarked with"
+    );
 }

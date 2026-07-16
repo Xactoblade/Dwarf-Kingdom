@@ -46,10 +46,13 @@ fn a_barrel_takes_food_and_a_bin_takes_goods_but_never_the_reverse() {
         assert!(container_capacity(ItemKind::Bin, good) > 0, "a bin holds {good:?}");
         assert_eq!(container_capacity(ItemKind::Barrel, good), 0, "a barrel is no place for {good:?}");
     }
-    // Dwarf Fortress lets a barrel hold "any number of units of brewed
-    // alcohol" — our Drink is a unit, so a barrel takes a proper cellar's
-    // worth, not one mug.
-    assert!(container_capacity(ItemKind::Barrel, ItemKind::Drink) > 1);
+    // "Any number of units of brewed alcohol, but only a single stack": a
+    // brew yields one stack, and that stack is what a cask holds.
+    assert_eq!(
+        container_capacity(ItemKind::Barrel, ItemKind::Drink),
+        dk_agents::BATCH,
+        "a cask holds exactly one brewing"
+    );
     // And nothing holds the unbarrellable: stone, logs, the dead.
     for loose in [ItemKind::Boulder, ItemKind::Log, ItemKind::Corpse, ItemKind::Bed] {
         assert_eq!(container_capacity(ItemKind::Barrel, loose), 0);
@@ -167,6 +170,10 @@ fn a_brewer_reaches_a_crop_packed_in_a_barrel() {
         let c = sim.items.len() - 1;
         sim.items[c].state = ItemState::Inside { container: barrel };
     }
+    // A second, empty cask for the drink to go home in — brewing needs one,
+    // and the first is full of barley.
+    sim.debug_spawn_item(ItemKind::Barrel, 0, sim.dwarves[0].pos);
+
     let mut brewed = false;
     for _ in 0..15_000 {
         sim.step(&raws);
@@ -375,6 +382,114 @@ fn a_barrel_someone_is_coming_for_cannot_be_sold() {
     );
     assert!(sim.items[barrel].active(), "and the barrel stays");
     assert!(sim.items[meal].active(), "and so does the meal");
+}
+
+/// A still, a field of barley, and thirsty dwarves — everything but a cask.
+fn brewing_fort(seed: u64, casks: usize) -> (Sim, dk_raws::Raws) {
+    let (mut sim, raws) = fort(seed);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    let (still, _) = sim.find_flat_patch(cx, cy).expect("still site");
+    assert!(sim.add_building(dk_agents::BuildingKind::Still, still));
+    sim.place_flat_stockpiles(cx, cy, 24);
+    let sp = sim.dwarves[0].pos;
+    for _ in 0..8 {
+        sim.debug_spawn_item(ItemKind::Crop, 0, sp);
+    }
+    for _ in 0..casks {
+        sim.debug_spawn_item(ItemKind::Barrel, 0, sp);
+    }
+    (sim, raws)
+}
+
+#[test]
+fn no_empty_barrel_means_no_brewing() {
+    // Dwarf Fortress's famous bind: "Brewers need a still, a brewable plant,
+    // and one empty barrel per job." A fort with barley and no cask brews
+    // nothing, however long it waits.
+    let (mut sim, raws) = brewing_fort(6113, 0);
+    for _ in 0..15_000 {
+        sim.step(&raws);
+    }
+    assert_eq!(sim.stats.drinks_brewed, 0, "no cask, no drink");
+    assert!(sim.count_kind(ItemKind::Crop) > 0, "and the barley sits unbrewed");
+}
+
+#[test]
+fn a_brew_fills_a_cask_and_the_drink_is_never_loose() {
+    let (mut sim, raws) = brewing_fort(6114, 1);
+    let mut brewed = false;
+    for _ in 0..15_000 {
+        sim.step(&raws);
+        if sim.stats.drinks_brewed > 0 {
+            brewed = true;
+            break;
+        }
+    }
+    assert!(brewed, "one empty cask is enough to brew");
+    // Every drop of it is in a barrel — drink never lies on the floor.
+    for (i, it) in sim.items.iter().enumerate() {
+        if it.active() && it.kind == ItemKind::Drink {
+            assert!(
+                matches!(it.state, ItemState::Inside { .. }),
+                "drink {i} is loose on the ground, not in its cask"
+            );
+        }
+    }
+    // And that cask now holds a stack, so it is no longer empty for the next
+    // brewing: one empty container per job.
+    let barrel = sim
+        .items
+        .iter()
+        .position(|i| i.active() && i.kind == ItemKind::Barrel)
+        .expect("the cask");
+    assert_eq!(sim.contents_of(barrel).len(), dk_agents::BATCH, "a stack to a cask");
+    assert!(!sim.container_accepts_kind(barrel, ItemKind::Drink), "and it takes no more");
+}
+
+#[test]
+fn an_emptied_cask_can_be_brewed_into_again() {
+    // The loop that keeps a fort alive: dwarves drink a cask dry, which frees
+    // it, and the brewer fills it again.
+    let (mut sim, raws) = brewing_fort(6115, 1);
+    for _ in 0..15_000 {
+        sim.step(&raws);
+        if sim.stats.drinks_brewed > 0 {
+            break;
+        }
+    }
+    let first = sim.stats.drinks_brewed;
+    assert!(first > 0, "brewed once");
+
+    // Drain the cask, as thirsty dwarves would.
+    for i in 0..sim.items.len() {
+        if sim.items[i].active() && sim.items[i].kind == ItemKind::Drink {
+            sim.items[i].consumed = true;
+        }
+    }
+    let mut again = false;
+    for _ in 0..15_000 {
+        sim.step(&raws);
+        if sim.stats.drinks_brewed > first {
+            again = true;
+            break;
+        }
+    }
+    assert!(again, "an emptied cask is an empty cask: the still runs again");
+}
+
+#[test]
+fn an_embark_brings_its_booze_in_casks() {
+    let (mut sim, raws) = fort(6116);
+    sim.add_embark_supplies(&raws);
+    assert!(sim.count_kind(ItemKind::Barrel) > 0, "the wagon carries casks");
+    assert!(sim.count_kind(ItemKind::Drink) > 0, "with drink in them");
+    for it in sim.items.iter().filter(|i| i.active() && i.kind == ItemKind::Drink) {
+        assert!(
+            matches!(it.state, ItemState::Inside { .. }),
+            "a wagon carries no loose wine"
+        );
+    }
 }
 
 #[test]

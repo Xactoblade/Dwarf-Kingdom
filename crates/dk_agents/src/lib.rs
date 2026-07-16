@@ -303,14 +303,14 @@ pub struct Item {
 /// more small crafts may fit into a single bin."
 ///
 /// Drink follows DF's "any number of units of brewed alcohol (but only a
-/// single stack)". Our `Drink` is one unit a dwarf swallows, not a stack of
-/// five, so it's the "any number of units" half that applies — the "single
-/// stack" half is already covered by the one-kind-per-container rule. Capped
-/// at 60 like the rest of the larder so a barrel is never a bottomless pit.
+/// single stack)". A brew yields one stack, and that stack is `BATCH` units of
+/// our unit-sized `Drink` — so a barrel of wine holds exactly what one brewing
+/// put in it and takes no more, which is why DF's embark barrels arrive
+/// holding only a few units each.
 pub fn container_capacity(container: ItemKind, holding: ItemKind) -> usize {
     match (container, holding) {
         // A barrel is for food and drink.
-        (ItemKind::Barrel, ItemKind::Drink) => 60,
+        (ItemKind::Barrel, ItemKind::Drink) => BATCH,
         (ItemKind::Barrel, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry) => 60,
         // DF keeps seeds in bags and the bags in barrels. We have no bags, so
         // seeds ride in the barrel directly rather than inventing an item to
@@ -1949,7 +1949,14 @@ impl Sim {
         let mut supplies: Vec<(ItemKind, u16)> = Vec::new();
         for _ in 0..25 {
             supplies.push((ItemKind::Meal, 0));
-            supplies.push((ItemKind::Drink, 0));
+        }
+        // The booze comes in casks, as it does in Dwarf Fortress — a wagon
+        // does not carry loose wine. Each holds one stack, and they are the
+        // fort's only barrels until a carpenter works more, so drinking the
+        // cellar dry is also how a fort frees the casks to brew again.
+        let casks = 25usize.div_ceil(BATCH);
+        for _ in 0..casks {
+            supplies.push((ItemKind::Barrel, 0));
         }
         for (idx, _) in raws.plants.iter() {
             for _ in 0..8 {
@@ -1985,6 +1992,35 @@ impl Sim {
                         placed += 1;
                     }
                 }
+            }
+        }
+        // Fill the casks: the embark's drink rides inside the barrels it came
+        // in, so a fort never starts with wine on the ground.
+        let casks: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.kind == ItemKind::Barrel && it.active())
+            .map(|(c, _)| c)
+            .collect();
+        let mut poured = 0usize;
+        'pour: for c in casks {
+            let at = self.items[c].pos;
+            for _ in 0..BATCH {
+                if poured >= 25 {
+                    break 'pour;
+                }
+                self.items.push(Item {
+                    kind: ItemKind::Drink,
+                    stuff: 0,
+                    name: None,
+                    pos: at,
+                    state: ItemState::Inside { container: c },
+                    reserved_by: None,
+                    consumed: false,
+                    quality: 0,
+                });
+                poured += 1;
             }
         }
     }
@@ -2479,6 +2515,29 @@ impl Sim {
     /// The nearest container in a stockpile that will take `kind`. Preferred
     /// over an empty cell, so the fort packs its goods away instead of
     /// carpeting the floor with them.
+    /// An empty barrel standing somewhere a brewer could use it.
+    ///
+    /// Dwarf Fortress: "Brewers need a still, a brewable plant, and one empty
+    /// barrel or water-tight pot per job in order to brew drinks." The barrel
+    /// is what the drink goes home in — no empty barrel, no brewing, and a
+    /// fort that never works its wood eventually drinks its cellar dry. It is
+    /// the fort's most famous supply chain, and it starts at a tree.
+    pub fn empty_barrel(&self, near: Pos, region: u32) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(c, it)| {
+                it.kind == ItemKind::Barrel
+                    && it.active()
+                    && it.reserved_by.is_none()
+                    && matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
+                    && self.regions.id(it.pos) == region
+                    && self.contents_of(*c).is_empty()
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(c, _)| c)
+    }
+
     /// Would this container take one more of `kind`? Test/UI window onto the
     /// containment rules.
     pub fn container_accepts_kind(&self, container: usize, kind: ItemKind) -> bool {
@@ -2491,35 +2550,47 @@ impl Sim {
         self.consume_with_contents(container);
     }
 
-    /// How many barrels (or bins) the fort has use for. Every stack that could
-    /// be packed away but isn't becomes demand at that kind's capacity, plus
-    /// one empty spare standing ready for the next load — and never more than
-    /// the stockpiles could stand them on, which is Dwarf Fortress's own rule
-    /// that a pile takes as many containers as it has tiles.
-    fn containers_wanted(&self, container: ItemKind) -> usize {
-        let mut by_kind: Vec<(ItemKind, usize)> = Vec::new();
-        for it in self.items.iter().filter(|i| i.active()) {
-            if matches!(it.state, ItemState::Inside { .. })
-                || container_capacity(container, it.kind) == 0
-            {
-                continue;
-            }
-            match by_kind.iter_mut().find(|(k, _)| *k == it.kind) {
-                Some(e) => e.1 += 1,
-                None => by_kind.push((it.kind, 1)),
-            }
-        }
-        let need: usize = by_kind
-            .into_iter()
-            .map(|(k, n)| n.div_ceil(container_capacity(container, k).max(1)))
-            .sum();
-        if need == 0 {
-            // Nothing of this class to pack away: a fort with no cloth, bars
-            // or crafts has no business turning its logs into bins.
-            return 0;
-        }
+    /// Should the carpenter work another barrel (or bin)?
+    ///
+    /// The question is not "how many do we own" — a fort can own nine casks
+    /// and still have nowhere to put a meal, because every one of them is full
+    /// of wine and a container holds one kind. It is "is there something we
+    /// cannot put away": a good lying loose that no standing container will
+    /// take. One more container is wanted, and once it fills, the question
+    /// gets asked again. That converges without ever counting anything twice.
+    ///
+    /// A still needs an EMPTY barrel to brew into, so a fort that owns a still
+    /// and no empty cask wants one even with its larder tidy — otherwise the
+    /// brewery stops the moment the last cask fills.
+    ///
+    /// Bounded by the stockpile floor, which is Dwarf Fortress's own rule that
+    /// a pile takes as many containers as it has tiles.
+    fn wants_another_container(&self, container: ItemKind) -> bool {
         let cells: usize = self.stockpiles.iter().map(|s| s.cells().count()).sum();
-        (need + 1).min(cells.max(1))
+        if self.count_kind(container) >= cells.max(1) {
+            return false;
+        }
+        let homeless = self.items.iter().enumerate().any(|(_, it)| {
+            it.active()
+                && matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
+                && container_capacity(container, it.kind) > 0
+                && !self
+                    .items
+                    .iter()
+                    .enumerate()
+                    .any(|(c, o)| o.kind == container && self.container_accepts(c, it.kind))
+        });
+        if homeless {
+            return true;
+        }
+        container == ItemKind::Barrel
+            && self.buildings.iter().any(|b| b.kind == BuildingKind::Still)
+            && !self.items.iter().enumerate().any(|(c, it)| {
+                it.kind == ItemKind::Barrel
+                    && it.active()
+                    && matches!(it.state, ItemState::OnGround | ItemState::Stored { .. })
+                    && self.contents_of(c).is_empty()
+            })
     }
 
     /// What an item is worth to a trader, contents and all. A barrel of wine
@@ -4662,16 +4733,17 @@ impl Sim {
                     + pending_wood_beds
                     + pending_wood_statues;
                 // Barrels and bins are the fort's storage, not ornaments: it
-                // wants as many as it has goods to pack away (see
-                // `containers_wanted`), not a fixed few per head.
-                let barrels = self.count_kind(ItemKind::Barrel);
+                // works another whenever something has nowhere to go (see
+                // `wants_another_container`), not a fixed few per head. One at
+                // a time — the next job is only wanted once this one has filled.
                 let want_barrels = has_carpenter
                     && logs > log_jobs
-                    && barrels + pending_barrels < self.containers_wanted(ItemKind::Barrel);
-                let bins = self.count_kind(ItemKind::Bin);
+                    && pending_barrels == 0
+                    && self.wants_another_container(ItemKind::Barrel);
                 let want_bins = has_carpenter
                     && logs > log_jobs
-                    && bins + pending_bins < self.containers_wanted(ItemKind::Bin);
+                    && pending_bins == 0
+                    && self.wants_another_container(ItemKind::Bin);
                 // Craft an instrument or two so the fort can make music.
                 let instruments = self.count_kind(ItemKind::Instrument);
                 let want_instruments =
@@ -4922,7 +4994,10 @@ impl Sim {
         }
 
         // Crafting: keep the fort in drink and food.
-        if w.drinks {
+        // Brewing needs an empty barrel for the drink to live in. Without one
+        // the still stands idle, however much barley the fort has — the famous
+        // Dwarf Fortress bind, and the reason a fort keeps a carpenter.
+        if w.drinks && self.empty_barrel(dwarf_pos, my_region).is_some() {
             if let Some((shop, input)) =
                 self.craft_pair(BuildingKind::Still, true, dwarf_pos, my_region, raws)
             {
@@ -6311,9 +6386,27 @@ impl Sim {
                         let q = (self.dwarves[i].skill_level(skill) as u8).min(5);
                         match kind {
                             CraftKind::Brew => {
+                                // The drink goes home in a barrel, as it always
+                                // does — never onto the floor. The barrel was
+                                // there when the job was taken; if it filled or
+                                // left in the meantime the brewing still stands
+                                // (the plant is spent either way) and the
+                                // hauler will find the drink a home.
+                                let cask = self.empty_barrel(shop, self.regions.id(shop));
                                 self.stats.drinks_brewed += BATCH as u32;
                                 for _ in 0..BATCH {
-                                    self.spawn_item(ItemKind::Drink, stuff, shop);
+                                    match cask {
+                                        Some(c) => {
+                                            let at = self.items[c].pos;
+                                            self.spawn_item(ItemKind::Drink, stuff, at);
+                                            let d = self.items.len() - 1;
+                                            self.items[d].state =
+                                                ItemState::Inside { container: c };
+                                        }
+                                        None => {
+                                            self.spawn_item(ItemKind::Drink, stuff, shop);
+                                        }
+                                    }
                                 }
                                 self.push_thought(i, ThoughtKind::BrewedDrink);
                             }
