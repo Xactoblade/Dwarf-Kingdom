@@ -51,6 +51,15 @@ pub const NEED_DEATH_TICKS: u64 = 6 * TICKS_PER_DAY;
 pub const POP_CAP: usize = 15;
 /// Outputs per brew/cook batch.
 pub const BATCH: usize = 3;
+/// How long food left out of the fort's stores lasts before it turns.
+///
+/// A month, which is the only figure Dwarf Fortress has ever published for it
+/// ("meat and prepared meals will rot if not placed on a stockpile within a
+/// month or so") — and that from a version two behind, on a page since proven
+/// wrong about barrels. Treat it as ours to tune, not as a ported fact.
+pub const SHELF_LIFE_DAYS: u64 = 30;
+/// How far the stench of a rotting meal carries.
+pub const MIASMA_RANGE: u32 = 6;
 /// Ticks between melee swings.
 pub const ATTACK_COOLDOWN: u8 = 40;
 /// How close a raider must be before a war dog charges it.
@@ -324,6 +333,9 @@ pub struct Item {
     /// Craftsdwarfship: 0 = ordinary, up to 5 = a masterwork. Set from the
     /// maker's skill; raises the item's worth.
     pub quality: u8,
+    /// The tick this item came into the world. Food reckons its age from here
+    /// (see `tick_spoilage`); everything else ignores it.
+    pub made_at: u64,
 }
 
 /// How many of `holding` fit in one `container`, or 0 if that container will
@@ -882,6 +894,8 @@ pub enum ThoughtKind {
     SleptOnFloor,
     /// Ate in the hall, in company, like a dwarf and not a dog.
     DinedInHall,
+    /// Walked past food someone left to rot.
+    SmelledRot,
 }
 
 impl ThoughtKind {
@@ -915,6 +929,7 @@ impl ThoughtKind {
             ThoughtKind::SleptInBed => 2.0,
             ThoughtKind::SleptOnFloor => -4.0,
             ThoughtKind::DinedInHall => 3.0,
+            ThoughtKind::SmelledRot => -5.0,
         }
     }
 
@@ -951,6 +966,7 @@ impl ThoughtKind {
             ThoughtKind::SleptInBed => "slept in a bed",
             ThoughtKind::SleptOnFloor => "slept on the cold hard stone",
             ThoughtKind::DinedInHall => "dined in the great hall",
+            ThoughtKind::SmelledRot => "gagged on the stench of rotting food",
         }
     }
 }
@@ -1244,6 +1260,8 @@ pub struct SimStats {
     pub barrels_made: u32,
     /// Bins worked from logs at the carpenter's shop.
     pub bins_made: u32,
+    /// Food that turned for want of a stockpile to keep it in.
+    pub food_spoiled: u32,
     /// Statues carved at the mason's workshop.
     pub statues_carved: u32,
     /// Instruments crafted at the carpenter's shop.
@@ -2239,6 +2257,7 @@ impl Sim {
                             reserved_by: None,
                             consumed: false,
                             quality: 0,
+                            made_at: 0,
                         });
                         placed += 1;
                     }
@@ -2270,6 +2289,7 @@ impl Sim {
                     reserved_by: None,
                     consumed: false,
                     quality: 0,
+                    made_at: 0,
                 });
                 poured += 1;
             }
@@ -2792,6 +2812,82 @@ impl Sim {
             })
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(c, _)| c)
+    }
+
+    /// Is this food somewhere it will keep?
+    ///
+    /// In Dwarf Fortress this is a question about WHERE, not about what the
+    /// food is packed in: "Food will never spoil while in a stockpile", and
+    /// "it does not matter if the food is in a container; a barrel full of
+    /// meat left in a corridor will rot". A barrel is a hauling convenience,
+    /// not a pantry — the widely-repeated belief that casks preserve food was
+    /// true two versions ago and has been a myth ever since.
+    ///
+    /// So: a pile keeps food. A cask keeps food only because the cask stands
+    /// in a pile. And food in a dwarf's hands is on its way somewhere.
+    pub fn food_keeps(&self, i: usize) -> bool {
+        match self.items[i].state {
+            ItemState::Stored { .. } | ItemState::Carried { .. } => true,
+            ItemState::Inside { container } => self
+                .items
+                .get(container)
+                .is_some_and(|c| c.active() && matches!(c.state, ItemState::Stored { .. })),
+            ItemState::OnGround => false,
+        }
+    }
+
+    /// Food left out of the fort's stores goes bad.
+    ///
+    /// Two fates, as in DF. Meals ROT — they stink, and a dwarf who passes the
+    /// heap is the worse for it. Crops and berries merely WITHER: useless, but
+    /// nobody's day is ruined by a shrivelled plant. Drink and seeds keep
+    /// forever, which is the whole reason a fort brews its harvest instead of
+    /// eating it.
+    ///
+    /// Deterministic: a fixed scan, no RNG. Daily, and only over food.
+    fn tick_spoilage(&mut self) {
+        let now = self.clock.tick;
+        let shelf = SHELF_LIFE_DAYS * TICKS_PER_DAY;
+        let mut rotted: Vec<Pos> = Vec::new();
+        let mut withered = 0usize;
+        for i in 0..self.items.len() {
+            let it = &self.items[i];
+            if !it.active() || !matches!(it.kind, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry)
+            {
+                continue;
+            }
+            if self.food_keeps(i) || now.saturating_sub(it.made_at) < shelf {
+                continue;
+            }
+            let (kind, pos) = (it.kind, it.pos);
+            self.items[i].consumed = true;
+            self.stats.food_spoiled += 1;
+            if kind == ItemKind::Meal {
+                rotted.push(pos);
+            } else {
+                withered += 1;
+            }
+        }
+        if withered > 0 {
+            self.log_event(format!(
+                "{withered} harvest(s) left out of the stores have withered away."
+            ));
+        }
+        // A rotting meal stinks. Anyone near it is the worse for having smelled
+        // it — our small answer to DF's miasma, without the cloud.
+        for pos in &rotted {
+            self.log_event("Food left to rot fouls the air.".to_string());
+            for j in 0..self.dwarves.len() {
+                let d = &self.dwarves[j];
+                if d.alive
+                    && d.faction == Faction::Fort
+                    && d.pos.z == pos.z
+                    && d.pos.manhattan(*pos) <= MIASMA_RANGE
+                {
+                    self.push_thought(j, ThoughtKind::SmelledRot);
+                }
+            }
+        }
     }
 
     /// Would this container take one more of `kind`? Test/UI window onto the
@@ -3625,6 +3721,7 @@ impl Sim {
         self.tick_regrowth();
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
+            self.tick_spoilage();
         }
 
         // Season boundary: migrants, moods, and (later years) raiders.
@@ -4536,6 +4633,7 @@ impl Sim {
                     reserved_by: None,
                     consumed: false,
                     quality: 0,
+                    made_at: 0,
                 });
             }
         }
@@ -4555,6 +4653,7 @@ impl Sim {
                 reserved_by: None,
                 consumed: false,
                 quality: 0,
+                made_at: 0,
             });
         }
 
@@ -7928,6 +8027,7 @@ impl Sim {
     }
 
     fn spawn_named_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos, name: Option<String>) {
+        let made_at = self.clock.tick;
         self.items.push(Item {
             kind,
             stuff,
@@ -7937,6 +8037,7 @@ impl Sim {
             reserved_by: None,
             consumed: false,
             quality: 0,
+            made_at,
         });
     }
 
@@ -8523,7 +8624,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 62;
+const SAVE_VERSION: u32 = 63;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

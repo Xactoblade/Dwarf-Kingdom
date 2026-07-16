@@ -27,6 +27,7 @@ fn glass_is_the_finest_ordinary_trade_good() {
         reserved_by: None,
         consumed: false,
         quality: 0,
+        made_at: 0,
     };
     let cut_gem = dk_agents::Item { kind: ItemKind::CutGem, ..glass.clone() };
     assert!(

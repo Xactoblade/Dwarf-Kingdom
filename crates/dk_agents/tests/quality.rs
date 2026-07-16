@@ -29,6 +29,7 @@ fn quality_raises_an_items_worth() {
         reserved_by: None,
         consumed: false,
         quality: 0,
+        made_at: 0,
     };
     let masterful = dk_agents::Item { quality: 5, ..ordinary.clone() };
     let base = item_value(&ordinary, &raws);
