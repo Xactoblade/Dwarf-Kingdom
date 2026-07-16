@@ -663,6 +663,120 @@ def _rock(seed):
 def t_rock_a(): return _rock(221)
 def t_rock_b(): return _rock(222)
 
+def t_ws_forge():
+    t = Tile(301)
+    iron = (78, 80, 90, 255); iron_d = (52, 54, 62, 255); iron_l = (122, 124, 134, 255)
+    fire = (240, 130, 36, 255); ember = (250, 200, 70, 255)
+    t.fill(11, 24, 21, 30, iron_d)          # stump
+    t.fill(7, 22, 25, 26, iron_d)           # base
+    t.fill(6, 17, 20, 22, iron)             # body
+    t.fill(6, 17, 20, 18, iron_l)           # top highlight
+    t.fill(19, 18, 25, 21, iron)            # horn
+    t.disc(26, 24, 4, fire); t.disc(26, 24, 2, ember)  # forge glow
+    outline(t)
+    return t
+
+def t_ws_furnace():
+    t = Tile(302)
+    stone = (128, 122, 112, 255); stone_d = (92, 86, 78, 255); stone_l = (162, 156, 146, 255)
+    fire = (245, 140, 40, 255); glow = (255, 210, 90, 255)
+    t.fill(6, 5, 26, 30, stone)
+    t.fill(6, 5, 26, 7, stone_l); t.fill(6, 28, 26, 30, stone_d)
+    for yy in range(9, 30, 4):
+        t.fill(6, yy, 26, yy + 1, stone_d)
+    t.fill(11, 17, 21, 27, (28, 18, 14, 255))  # mouth
+    t.disc(16, 23, 4, fire); t.disc(16, 23, 2, glow)
+    outline(t)
+    return t
+
+def t_ws_loom():
+    t = Tile(303)
+    wood = (146, 100, 54, 255); wood_d = (104, 70, 36, 255); thread = (222, 214, 196, 255)
+    t.fill(6, 5, 9, 29, wood); t.fill(23, 5, 26, 29, wood)   # posts
+    t.fill(6, 5, 26, 8, wood_d); t.fill(6, 26, 26, 29, wood_d)
+    for tx in range(11, 22, 2):
+        t.fill(tx, 8, tx + 1, 26, thread)   # warp threads
+    t.fill(9, 16, 23, 18, wood_d)           # shuttle bar
+    outline(t)
+    return t
+
+def t_ws_mason():
+    t = Tile(304)
+    wood = (140, 96, 50, 255); wood_d = (100, 68, 34, 255)
+    stone = (150, 148, 154, 255); stone_l = (186, 184, 190, 255); stone_d = (110, 108, 114, 255)
+    steel = (200, 204, 212, 255)
+    t.fill(4, 22, 28, 25, wood); t.fill(4, 25, 28, 27, wood_d)
+    t.fill(6, 25, 8, 30, wood_d); t.fill(24, 25, 26, 30, wood_d)
+    t.fill(11, 12, 22, 22, stone); t.fill(11, 12, 22, 14, stone_l); t.fill(11, 20, 22, 22, stone_d)
+    t.fill(6, 10, 8, 18, steel); t.fill(5, 8, 9, 11, wood_d)  # chisel
+    outline(t)
+    return t
+
+def t_ws_carpenter():
+    t = Tile(305)
+    log = (150, 108, 62, 255); log_d = (110, 78, 44, 255); ring = (178, 140, 92, 255)
+    steel = (200, 204, 212, 255)
+    for (cx, cy) in ((10, 23), (19, 23), (14, 16)):
+        t.disc(cx, cy, 5, log); t.disc(cx, cy, 3, ring); t.disc(cx, cy, 1, log_d)
+    for i in range(15):
+        t.set(8 + i, 8 + i // 2, steel)
+        if i % 2 == 0:
+            t.set(8 + i, 9 + i // 2, (140, 146, 158, 255))  # saw teeth
+    t.fill(5, 5, 9, 9, log_d)  # saw handle
+    outline(t)
+    return t
+
+def t_ws_bench():
+    t = Tile(306)
+    wood = (150, 110, 60, 255); wood_d = (108, 78, 42, 255)
+    steel = (198, 204, 214, 255); gold = (228, 190, 70, 255); red = (190, 70, 60, 255)
+    t.fill(4, 20, 28, 24, wood); t.fill(4, 24, 28, 26, wood_d)
+    t.fill(6, 24, 8, 30, wood_d); t.fill(24, 24, 26, 30, wood_d)
+    t.fill(8, 12, 10, 20, steel)      # a tool
+    t.disc(15, 16, 3, gold)           # a trinket
+    t.fill(20, 13, 24, 20, red)       # a craft in progress
+    outline(t)
+    return t
+
+def t_ws_cloth():
+    t = Tile(307)
+    cloth = (198, 176, 214, 255); cloth_d = (150, 130, 168, 255)
+    steel = (210, 214, 222, 255); thread = (230, 220, 200, 255)
+    t.fill(6, 16, 26, 20, cloth); t.fill(6, 20, 26, 24, cloth_d); t.fill(6, 24, 26, 28, cloth)
+    for yy in (18, 22, 26):
+        t.fill(6, yy, 26, yy + 1, cloth_d)
+    t.fill(20, 6, 22, 16, steel)      # needle
+    for i in range(8):
+        t.set(21 + (i % 3) - 1, 6 + i, thread)
+    outline(t)
+    return t
+
+def t_ws_hides():
+    t = Tile(308)
+    wood = (130, 92, 50, 255)
+    hide = (176, 138, 96, 255); hide_d = (140, 106, 70, 255); hide_l = (202, 166, 124, 255)
+    t.fill(5, 5, 8, 29, wood); t.fill(24, 5, 27, 29, wood); t.fill(5, 5, 27, 8, wood)
+    t.fill(9, 9, 23, 26, hide)
+    t.fill(9, 9, 23, 11, hide_l); t.fill(9, 24, 23, 26, hide_d)
+    t.disc(12, 15, 2, hide_d); t.disc(19, 19, 2, hide_l)
+    outline(t)
+    return t
+
+def t_ws_well():
+    t = Tile(309)
+    stone = (140, 136, 128, 255); stone_d = (100, 96, 90, 255); stone_l = (172, 168, 160, 255)
+    wood = (140, 96, 50, 255); rope = (200, 186, 150, 255); water = (60, 130, 200, 255)
+    t.fill(8, 18, 24, 29, stone); t.fill(8, 18, 24, 20, stone_l); t.fill(8, 27, 24, 29, stone_d)
+    for yy in range(21, 29, 3):
+        t.fill(8, yy, 24, yy + 1, stone_d)
+    t.fill(11, 15, 21, 19, water)     # water in the shaft
+    t.fill(8, 6, 10, 18, wood); t.fill(22, 6, 24, 18, wood)  # posts
+    t.fill(6, 3, 26, 7, wood)         # roof
+    t.fill(15, 7, 16, 15, rope)
+    t.fill(13, 14, 18, 18, wood)      # bucket
+    outline(t)
+    return t
+
 def t_reed():
     t = Tile(160)
     # Tall reeds and cattails at the water's edge — thin stalks with the odd
@@ -715,6 +829,9 @@ ORDER = [
     ("grass_a", t_grass_a), ("grass_b", t_grass_b), ("grass_c", t_grass_c),
     ("dirt_a", t_dirt_a), ("dirt_b", t_dirt_b), ("rock_a", t_rock_a), ("rock_b", t_rock_b),
     ("water", t_water), ("bush", t_bush), ("stone", t_stone), ("reed", t_reed),
+    ("ws_forge", t_ws_forge), ("ws_furnace", t_ws_furnace), ("ws_loom", t_ws_loom),
+    ("ws_mason", t_ws_mason), ("ws_carpenter", t_ws_carpenter), ("ws_bench", t_ws_bench),
+    ("ws_cloth", t_ws_cloth), ("ws_hides", t_ws_hides), ("ws_well", t_ws_well),
 ]
 TINTED = ["wall", "floor", "stairs", "ramp", "gate", "farm", "block", "boulder",
           "seed", "crop", "tree", "tree_conifer", "tree_willow", "tree_birch",
