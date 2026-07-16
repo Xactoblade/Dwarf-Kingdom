@@ -288,6 +288,96 @@ fn a_barrel_is_traded_with_its_contents_and_priced_for_them() {
 }
 
 #[test]
+fn a_larder_already_on_the_floor_is_packed_once_a_barrel_arrives() {
+    // A fort stores its food long before it ever works a barrel — and a save
+    // from before containers existed is entirely stored-loose. That larder must
+    // get packed away when a barrel finally stands in the pile, or containers
+    // only ever help goods that happen to arrive later.
+    let (mut sim, raws) = fort(6111);
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    sim.place_flat_stockpiles(cx, cy, 24);
+    let sp = sim.dwarves[0].pos;
+    for _ in 0..6 {
+        sim.debug_spawn_item(ItemKind::Meal, 0, sp);
+    }
+    // Let the fort put them away the old way: one meal to a cell.
+    for _ in 0..8_000 {
+        sim.step(&raws);
+        if sim.items.iter().filter(|i| i.kind == ItemKind::Meal).all(|i| {
+            matches!(i.state, ItemState::Stored { .. })
+        }) {
+            break;
+        }
+    }
+    let stored_loose = sim
+        .items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Meal && matches!(i.state, ItemState::Stored { .. }))
+        .count();
+    assert!(stored_loose >= 4, "the larder is on the floor, {stored_loose} meals");
+
+    // Now a barrel arrives.
+    let cell = sim.stockpiles[0]
+        .cells()
+        .find(|&c| !sim.items.iter().any(|i| i.active() && i.pos == c))
+        .expect("a free cell for the barrel");
+    sim.debug_spawn_item(ItemKind::Barrel, 0, cell);
+    let barrel = sim.items.len() - 1;
+    sim.items[barrel].state = ItemState::Stored { stockpile: 0 };
+
+    let mut packed = 0;
+    for _ in 0..20_000 {
+        sim.step(&raws);
+        packed = sim.contents_of(barrel).len();
+        if packed >= stored_loose {
+            break;
+        }
+    }
+    assert!(
+        packed >= stored_loose,
+        "the standing larder is packed into the new barrel ({packed} of {stored_loose})"
+    );
+}
+
+#[test]
+fn a_barrel_someone_is_coming_for_cannot_be_sold() {
+    // The trade guard spares a loaf a dwarf has claimed. A barrel must not be
+    // a loophole around it.
+    let (mut sim, raws, barrel) = fort_with_barrel(6112);
+    let bpos = sim.items[barrel].pos;
+    sim.debug_spawn_item(ItemKind::Meal, 0, bpos);
+    let meal = sim.items.len() - 1;
+    sim.items[meal].state = ItemState::Inside { container: barrel };
+
+    // A dwarf claims the meal inside the barrel — they're on their way to eat.
+    sim.items[meal].reserved_by = Some(0);
+
+    sim.trade_partner = Some("the Amber Banners".to_string());
+    let mut arrived = false;
+    for _ in 0..dk_core::TICKS_PER_DAY * dk_core::DAYS_PER_SEASON * 2 {
+        sim.step(&raws);
+        if sim.caravan.is_some() {
+            arrived = true;
+            break;
+        }
+    }
+    assert!(arrived, "a caravan is needed to try the sale");
+    // Re-claim it: a season of stepping may have resolved the old claim.
+    sim.items[meal].reserved_by = Some(0);
+
+    let err = sim
+        .execute_trade(&[barrel], &[0], &raws)
+        .expect_err("selling a barrel whose meal is claimed must be refused");
+    assert!(
+        err.contains("already coming for"),
+        "a claimed meal blocks the sale of its barrel, got: {err}"
+    );
+    assert!(sim.items[barrel].active(), "and the barrel stays");
+    assert!(sim.items[meal].active(), "and so does the meal");
+}
+
+#[test]
 fn a_carpenter_makes_the_containers_the_fort_needs() {
     let (mut sim, raws) = fort(6110);
     let cx = sim.map.width as i32 / 2;

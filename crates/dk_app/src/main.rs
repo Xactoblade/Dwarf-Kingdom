@@ -4211,7 +4211,10 @@ fn update_hud(
             let Some(sim) = sim.0.as_ref() else { return };
             let Some(caravan) = sim.caravan.as_ref() else { return };
             let yours = tradeable_items(sim);
-            let offered: u32 = trade.offer.iter().map(|&i| item_value(&sim.items[i], &reg.0)).sum();
+            // Price a container with its contents, exactly as `Sim::trade`
+            // does — otherwise the screen quotes 45 for a barrel the sim
+            // charges 525 for, and the player ships a cellar unawares.
+            let offered: u32 = trade.offer.iter().map(|&i| sim.stack_value(i, &reg.0)).sum();
             let asked: u32 = trade
                 .request
                 .iter()
@@ -4244,10 +4247,26 @@ fn update_hud(
                 let it = &sim.items[i];
                 let sel = if trade.offer.contains(&i) { "[x]" } else { "[ ]" };
                 let cur = if trade.side == 1 && trade.cursor == row { ">" } else { " " };
+                // A full barrel must read as a full barrel: the contents go
+                // with it, so name them and price them in.
+                let held = if dk_agents::is_container(it.kind) {
+                    let c = sim.contents_of(i);
+                    match c.first() {
+                        Some(&f) => format!(
+                            " [{} {}]",
+                            c.len(),
+                            item_kind_name(sim.items[f].kind)
+                        ),
+                        None => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
                 right.push_str(&format!(
-                    "{cur}{sel} {} ({})\n",
+                    "{cur}{sel} {}{} ({})\n",
                     item_label(&reg.0, it),
-                    item_value(it, &reg.0)
+                    held,
+                    sim.stack_value(i, &reg.0)
                 ));
             }
             let below = yours.len().saturating_sub(start + WINDOW);

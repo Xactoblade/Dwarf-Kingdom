@@ -4304,6 +4304,21 @@ impl Sim {
             {
                 return Err(format!("{:?} is not available to trade", it.kind));
             }
+            // A container leaves with everything in it, so its contents must be
+            // free to go too. Without this, a barrel could be sold out from
+            // under the dwarf already walking across the fort to eat from it —
+            // the same claim the check above protects a loose loaf with.
+            if is_container(it.kind)
+                && self
+                    .contents_of(i)
+                    .iter()
+                    .any(|&c| self.items[c].reserved_by.is_some())
+            {
+                return Err(format!(
+                    "someone is already coming for what's in that {:?}",
+                    it.kind
+                ));
+            }
         }
         for &g in request {
             if !seen.insert(("r", g)) {
@@ -5069,12 +5084,26 @@ impl Sim {
             consider(animal.pos.manhattan(dwarf_pos), Cand::Train { animal: idx }, &mut best);
         }
 
-        // Hauling loose items: corpses go to open tombs, goods to stockpiles.
+        // Hauling: corpses go to open tombs, loose goods to stockpiles — and
+        // goods already resting on a stockpile floor get packed into a
+        // container that will take them, which is how a larder that predates
+        // its first barrel (or a fort loaded from an older save) ever gets put
+        // away. A packed item is neither loose nor resting, so it is never
+        // picked up again by this scan: the shuffling terminates.
+        // Repacking an already-stored larder is only worth scanning for when
+        // the fort actually owns a container to pack it into. A fort with none
+        // (every headless test, and every fort before its first barrel) does
+        // exactly the work it always did.
+        let any_containers = self.items.iter().any(|it| {
+            it.active() && is_container(it.kind) && matches!(it.state, ItemState::Stored { .. })
+        });
         for (idx, item) in self.items.iter().enumerate() {
-            if !item.active()
-                || item.state != ItemState::OnGround
-                || item.reserved_by.is_some()
-            {
+            if !item.active() || item.reserved_by.is_some() {
+                continue;
+            }
+            let loose = item.state == ItemState::OnGround;
+            let resting = matches!(item.state, ItemState::Stored { .. }) && any_containers;
+            if !loose && !resting {
                 continue;
             }
             if self.haul_retry.get(&idx).is_some_and(|&t| t > tick) {
@@ -5083,7 +5112,7 @@ impl Sim {
             if self.regions.id(item.pos) != my_region {
                 continue;
             }
-            let dest = if item.kind == ItemKind::Corpse {
+            let dest = if item.kind == ItemKind::Corpse && loose {
                 self.buildings
                     .iter()
                     .filter(|b| {
@@ -5095,11 +5124,18 @@ impl Sim {
                     .map(|b| b.pos)
             } else if !self.stockpiles.is_empty() {
                 // A barrel or bin that will take this comes first — packing it
-                // away costs the same walk and spends no floor. Only when
-                // nothing will hold it does it claim a cell of its own.
-                self.find_container_for(item.kind, item.pos, my_region)
-                    .map(|c| self.items[c].pos)
-                    .or_else(|| self.find_free_cell(item.pos, my_region))
+                // away costs the same walk and spends no floor.
+                let into = self
+                    .find_container_for(item.kind, item.pos, my_region)
+                    .map(|c| self.items[c].pos);
+                match into {
+                    // An item already put away only moves to be packed; it must
+                    // never be shuffled from one bare cell to another, or
+                    // haulers would carry the larder in circles forever.
+                    None if resting => None,
+                    None => self.find_free_cell(item.pos, my_region),
+                    some => some,
+                }
             } else {
                 None
             };
