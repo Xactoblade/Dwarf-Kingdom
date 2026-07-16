@@ -317,25 +317,14 @@ pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usiz
 /// banks contain it. A pure map mutation deterministic in `seed` — it draws no
 /// RNG, so callers that don't want a river are unaffected. The water sim keeps
 /// the (already-level) river settled.
-pub fn carve_river(map: &mut Map, seed: u64) {
-    use std::f32::consts::TAU;
+/// Sink a set of tiles into a single flat water body: a stone bed one level
+/// below the LOWEST solid surface over the body and its banks (so every bank
+/// tile stays solid at the bed level and water can't leak sideways), cleared
+/// open above and brimming with water. Shared by rivers, lakes and ponds.
+fn carve_water_body(map: &mut Map, tiles: &std::collections::BTreeSet<(usize, usize)>) {
     let (w, h) = (map.width, map.height);
-    // A gently meandering course from the west edge to the east, two tiles wide.
-    let phase = (seed % 997) as f32 / 997.0 * TAU;
-    let amp = (h as f32 / 6.0).max(2.0);
-    let mid = h as f32 / 2.0;
-    let mut path: Vec<(usize, usize)> = Vec::new();
-    for x in 0..w {
-        let fy = mid + amp * ((x as f32 / w.max(1) as f32 * TAU * 1.5) + phase).sin();
-        let cy = (fy.round() as i64).clamp(1, h as i64 - 3) as usize;
-        path.push((x, cy));
-        path.push((x, cy + 1));
-    }
-    // The flat bed sits one below the LOWEST solid surface over the channel AND
-    // its banks, so every bank tile is solid at the bed level (water can't
-    // leak sideways into lower ground beside the river).
     let mut min_surface = usize::MAX;
-    for &(x, y) in &path {
+    for &(x, y) in tiles {
         for (nx, ny) in [(x, y), (x.saturating_sub(1), y), (x + 1, y), (x, y.saturating_sub(1)), (x, y + 1)] {
             if nx < w && ny < h {
                 if let Some(s) = map.surface_z(nx, ny) {
@@ -348,11 +337,9 @@ pub fn carve_river(map: &mut Map, seed: u64) {
         return;
     }
     let bed_z = min_surface - 1;
-    for &(x, y) in &path {
+    for &(x, y) in tiles {
         let Some(st) = map.surface_z(x, y) else { continue };
         let mat = map.get(x, y, bed_z).material;
-        // Open the channel: clear everything from just above the bed up to the
-        // old ground floor.
         let top = (st + 1).min(map.depth - 1);
         for z in (bed_z + 1)..=top {
             map.set_at(
@@ -360,11 +347,114 @@ pub fn carve_river(map: &mut Map, seed: u64) {
                 Tile { material: NO_MATERIAL, shape: TileShape::Empty, water: 0, magma: 0 },
             );
         }
-        // The bed: a stone floor brimming with water.
         map.set_at(
             Pos::new(x as i32, y as i32, bed_z as i32),
             Tile { material: mat, shape: TileShape::Floor, water: 7, magma: 0 },
         );
+    }
+}
+
+/// Cut a river that meanders from `from` to `to` (tile coords, usually on
+/// opposite map edges matching the overworld's flow direction), wandering off
+/// the straight line with seed-varied harmonics and breathing in width, so no
+/// two rivers look alike. A pure map mutation, deterministic in `seed`.
+pub fn carve_river(map: &mut Map, seed: u64, from: (usize, usize), to: (usize, usize)) {
+    use std::f32::consts::{PI, TAU};
+    let (w, h) = (map.width, map.height);
+    let (fx, fy) = (from.0 as f32, from.1 as f32);
+    let (tx, ty) = (to.0 as f32, to.1 as f32);
+    let (dx, dy) = (tx - fx, ty - fy);
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let (px, py) = (-dy / len, dx / len); // unit perpendicular
+    let ph1 = (seed % 1000) as f32 / 1000.0 * TAU;
+    let ph2 = ((seed / 1000) % 1000) as f32 / 1000.0 * TAU;
+    let a1 = (len * 0.16).clamp(2.0, 10.0);
+    let a2 = (len * 0.07).clamp(1.0, 5.0);
+    let steps = (len * 1.6) as usize + 2;
+    let mut tiles: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    for i in 0..=steps {
+        let f = i as f32 / steps as f32;
+        // Meander, tapering to zero at both ends so it meets the edges cleanly.
+        let taper = (f * PI).sin();
+        let off = taper * (a1 * (f * TAU * 1.3 + ph1).sin() + a2 * (f * TAU * 3.1 + ph2).sin());
+        let cx = fx + dx * f + px * off;
+        let cy = fy + dy * f + py * off;
+        // Width breathes between a brook and a broad river.
+        let r = (1.0 + 1.0 * (0.5 + 0.5 * (f * TAU * 2.4 + ph2).sin())).round() as i32;
+        for oy in -r..=r {
+            for ox in -r..=r {
+                if ox * ox + oy * oy <= r * r {
+                    let (nx, ny) = (cx as i32 + ox, cy as i32 + oy);
+                    if nx >= 1 && ny >= 1 && (nx as usize) < w - 1 && (ny as usize) < h - 1 {
+                        tiles.insert((nx as usize, ny as usize));
+                    }
+                }
+            }
+        }
+    }
+    carve_water_body(map, &tiles);
+}
+
+/// Fill a basin with a lake: an irregular blob of water centred at `(cx, cy)`,
+/// its shore wobbled by seed so it reads as a natural pond or lake, not a disc.
+pub fn carve_lake(map: &mut Map, seed: u64, cx: usize, cy: usize, radius: f32) {
+    use std::f32::consts::TAU;
+    let (w, h) = (map.width, map.height);
+    let ph = (seed % 997) as f32 / 997.0 * TAU;
+    let ph2 = ((seed / 997) % 997) as f32 / 997.0 * TAU;
+    let mut tiles: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    let bound = radius.ceil() as i32 + 2;
+    for oy in -bound..=bound {
+        for ox in -bound..=bound {
+            let ang = (oy as f32).atan2(ox as f32);
+            let wobble = 1.0 + 0.34 * (ang * 3.0 + ph).sin() + 0.16 * (ang * 5.0 + ph2).sin();
+            let rr = radius * wobble;
+            if (ox * ox + oy * oy) as f32 <= rr * rr {
+                let (nx, ny) = (cx as i32 + ox, cy as i32 + oy);
+                if nx >= 1 && ny >= 1 && (nx as usize) < w - 1 && (ny as usize) < h - 1 {
+                    tiles.insert((nx as usize, ny as usize));
+                }
+            }
+        }
+    }
+    carve_water_body(map, &tiles);
+}
+
+/// Scatter `count` small ponds across the map's lower ground — the sort of
+/// still water a swamp or wet forest holds. Deterministic in `seed`.
+pub fn carve_ponds(map: &mut Map, seed: u64, count: usize) {
+    use rand::{Rng, SeedableRng};
+    let (w, h) = (map.width, map.height);
+    // The median surface height — ponds prefer the low ground below it.
+    let mut heights: Vec<usize> = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            if let Some(s) = map.surface_z(x, y) {
+                heights.push(s);
+            }
+        }
+    }
+    if heights.is_empty() {
+        return;
+    }
+    heights.sort_unstable();
+    let median = heights[heights.len() / 2];
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed ^ 0x9E37_79B9);
+    let mut placed = 0;
+    for _ in 0..(count * 30) {
+        if placed >= count {
+            break;
+        }
+        let x = rng.gen_range(4..w.saturating_sub(4).max(5));
+        let y = rng.gen_range(4..h.saturating_sub(4).max(5));
+        // Low, land, and dry.
+        match map.surface_z(x, y) {
+            Some(s) if s <= median && map.water_at(Pos::new(x as i32, y as i32, s as i32 + 1)) == 0 => {}
+            _ => continue,
+        }
+        let radius = 2.0 + rng.gen_range(0.0f32..2.5);
+        carve_lake(map, seed ^ ((x as u64) << 20) ^ (y as u64), x, y, radius);
+        placed += 1;
     }
 }
 

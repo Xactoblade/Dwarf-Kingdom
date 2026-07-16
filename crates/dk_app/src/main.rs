@@ -635,10 +635,46 @@ fn surface_style(biome: dk_history::Biome) -> dk_world::SurfaceStyle {
     }
 }
 
-/// Whether a region's biome is wet enough to run a river across its map.
-fn has_river(biome: dk_history::Biome) -> bool {
+/// The mid-point of a local map edge in the given world direction — where a
+/// river crosses in or out to match the overworld's flow.
+fn edge_point(dir: dk_history::Dir, w: usize, h: usize) -> (usize, usize) {
+    use dk_history::Dir;
+    match dir {
+        Dir::N => (w / 2, 1),
+        Dir::S => (w / 2, h - 2),
+        Dir::W => (1, h / 2),
+        Dir::E => (w - 2, h / 2),
+    }
+}
+
+/// Cut the region's actual water onto its local map: a river only where the
+/// overworld river network flows through (entering/exiting to match its
+/// course), a lake if the region sits in a basin, and a scatter of ponds sized
+/// to the biome. Post-gen map mutations that don't disturb the embark rng.
+fn add_water_features(map: &mut dk_world::Map, region: &dk_history::Region, seed: u64) {
     use dk_history::Biome;
-    matches!(biome, Biome::Grassland | Biome::Forest | Biome::Swamp)
+    let (w, h) = (map.width, map.height);
+    let center = (w / 2, h / 2);
+    if region.river {
+        let from = region.river_in.map(|d| edge_point(d, w, h)).unwrap_or(center);
+        let to = region.river_out.map(|d| edge_point(d, w, h)).unwrap_or(center);
+        if from != to {
+            dk_world::carve_river(map, seed, from, to);
+        }
+    }
+    if region.lake {
+        let r = w.min(h) as f32 * 0.17;
+        dk_world::carve_lake(map, seed ^ 0xABCD, center.0, center.1, r);
+    }
+    let ponds = match region.biome {
+        Biome::Swamp => 5,
+        Biome::Forest => 2,
+        Biome::Grassland | Biome::Hills | Biome::Tundra => 1,
+        _ => 0,
+    };
+    if ponds > 0 {
+        dk_world::carve_ponds(map, seed, ponds);
+    }
 }
 
 /// How dramatic a region's local terrain relief is — so a mountain embark
@@ -657,14 +693,12 @@ fn relief_for(biome: dk_history::Biome) -> dk_world::Relief {
 fn region_map(world: &World, raws: &Raws, region: (usize, usize)) -> dk_world::Map {
     let seed = world.seed ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
-    let biome = world.overworld.get(region.0, region.1).biome;
-    let style = surface_style(biome);
+    let r = world.overworld.get(region.0, region.1);
+    let style = surface_style(r.biome);
     let mut map = dk_world::generate_terrain(
-        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(biome),
+        &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(r.biome),
     );
-    if has_river(biome) {
-        dk_world::carve_river(&mut map, seed);
-    }
+    add_water_features(&mut map, r, seed);
     map
 }
 
@@ -672,16 +706,15 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Each region is its own deterministic local map.
     let seed = world.seed ^ ((region.0 as u64) << 32 | region.1 as u64);
     let mut rng = dk_core::rng_from_seed(seed);
-    let biome = world.overworld.get(region.0, region.1).biome;
+    let r = world.overworld.get(region.0, region.1);
+    let biome = r.biome;
     let style = surface_style(biome);
     let mut map = dk_world::generate_terrain(
         &raws.materials, &mut rng, MAP_W, MAP_H, MAP_D, seed, style, relief_for(biome),
     );
-    // A river runs through wetter lands — carved after gen; it draws no RNG,
-    // so the dwarves rolled below are unchanged.
-    if has_river(biome) {
-        dk_world::carve_river(&mut map, seed);
-    }
+    // Rivers, lakes and ponds — carved after gen; they don't disturb the embark
+    // rng, so the dwarves rolled below are unchanged.
+    add_water_features(&mut map, r, seed);
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
@@ -761,7 +794,8 @@ fn main() {
     let (screen, sim) = if screenshot_mode_on() && !shot_embark {
         // DK_SHOT_BIOME=mountain embarks in the highest-elevation region so the
         // mountainous terrain can be captured (screenshot builds only).
-        let region = if std::env::var("DK_SHOT_BIOME").is_ok_and(|v| v == "mountain") {
+        let shot_biome = std::env::var("DK_SHOT_BIOME").unwrap_or_default();
+        let region = if shot_biome == "mountain" {
             let mut best = default_region(&world);
             let mut best_e = -1.0f32;
             for y in 0..OW {
@@ -770,6 +804,25 @@ fn main() {
                     if r.biome.embarkable() && r.elevation > best_e {
                         best_e = r.elevation;
                         best = (x, y);
+                    }
+                }
+            }
+            best
+        } else if shot_biome == "river" {
+            // The river region with the most through-flow (both edges) near
+            // centre, to capture a full meandering course.
+            let c = OW as i32 / 2;
+            let mut best = default_region(&world);
+            let mut best_d = i32::MAX;
+            for y in 0..OW {
+                for x in 0..OW {
+                    let r = world.overworld.get(x, y);
+                    if r.biome.embarkable() && r.river && r.river_in.is_some() && r.river_out.is_some() {
+                        let d = (x as i32 - c).abs() + (y as i32 - c).abs();
+                        if d < best_d {
+                            best_d = d;
+                            best = (x, y);
+                        }
                     }
                 }
             }
@@ -1865,14 +1918,15 @@ fn pick_embark_region(world: &World) -> (usize, usize) {
     let mut best: Option<((usize, usize), i32)> = None;
     for y in 0..OW {
         for x in 0..OW {
-            let biome = world.overworld.get(x, y).biome;
-            if !biome.embarkable() {
+            let r = world.overworld.get(x, y);
+            if !r.biome.embarkable() {
                 continue;
             }
-            // Lower score wins: distance from centre, minus a bonus for lands
-            // that get a river (grassland/forest/swamp).
+            // Lower score wins: distance from centre, minus a bonus for a river
+            // or lake actually flowing through, so "just play" favours water.
             let dist = (x as i32 - c).abs() + (y as i32 - c).abs();
-            let score = dist - if has_river(biome) { 8 } else { 0 };
+            let water_bonus = if r.river { 10 } else { 0 } + if r.lake { 5 } else { 0 };
+            let score = dist - water_bonus;
             if best.map_or(true, |(_, b)| score < b) {
                 best = Some(((x, y), score));
             }
@@ -3462,6 +3516,13 @@ fn redraw_tiles(
                     let snow = ((e - 0.78) / 0.22).clamp(0.0, 0.6);
                     rgb = mix(rgb, [0.92, 0.94, 0.98], snow);
                 }
+            }
+            // A river threads blue across the land; a basin holds a lake — so
+            // you can see the water and settle beside it.
+            if region.lake {
+                rgb = mix(rgb, [0.14, 0.34, 0.72], 0.72);
+            } else if region.river {
+                rgb = mix(rgb, [0.22, 0.46, 0.82], 0.62);
             }
             let mut glyph = "block";
             // Mark civilization sites.

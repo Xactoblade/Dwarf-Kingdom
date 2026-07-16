@@ -58,12 +58,49 @@ impl Biome {
     }
 }
 
+/// A cardinal direction on the overworld / a local map edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Dir {
+    N,
+    E,
+    S,
+    W,
+}
+
+impl Dir {
+    pub const ALL: [Dir; 4] = [Dir::N, Dir::E, Dir::S, Dir::W];
+    pub fn delta(self) -> (i32, i32) {
+        match self {
+            Dir::N => (0, -1),
+            Dir::E => (1, 0),
+            Dir::S => (0, 1),
+            Dir::W => (-1, 0),
+        }
+    }
+    pub fn opposite(self) -> Dir {
+        match self {
+            Dir::N => Dir::S,
+            Dir::E => Dir::W,
+            Dir::S => Dir::N,
+            Dir::W => Dir::E,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Region {
     pub elevation: f32, // 0..1, sea level ~0.35
     pub temperature: f32, // 0..1 cold..hot
     pub rainfall: f32, // 0..1
     pub biome: Biome,
+    /// A river flows through this region (part of the downhill river network).
+    pub river: bool,
+    /// The edge the river enters from (upstream), if any.
+    pub river_in: Option<Dir>,
+    /// The edge the river exits toward (downhill), if any.
+    pub river_out: Option<Dir>,
+    /// This region sits in a basin and holds a lake.
+    pub lake: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,10 +169,123 @@ impl Overworld {
                 } else {
                     Biome::Grassland
                 };
-                regions.push(Region { elevation, temperature, rainfall, biome });
+                regions.push(Region {
+                    elevation,
+                    temperature,
+                    rainfall,
+                    biome,
+                    river: false,
+                    river_in: None,
+                    river_out: None,
+                    lake: false,
+                });
             }
         }
-        Overworld { width, height, regions }
+        let mut world = Overworld { width, height, regions };
+        world.trace_rivers();
+        world
+    }
+
+    const SEA_LEVEL: f32 = 0.35;
+
+    /// Carve a river network into the overworld, derived PURELY from the
+    /// elevation and rainfall fields (no rng), so a river only flows where the
+    /// land actually drains one — and downstream civ/history generation, which
+    /// runs after this, is unaffected. Standard flow-direction + flow-
+    /// accumulation hydrology: water runs to the lowest neighbour, and the
+    /// cells that gather the most flow become rivers on their way to the sea.
+    fn trace_rivers(&mut self) {
+        let (w, h) = (self.width, self.height);
+        let n = w * h;
+        let land = |r: &Region| r.elevation >= Self::SEA_LEVEL;
+        let elev = |i: usize| self.regions[i].elevation;
+
+        // Flow direction: each land cell runs to its lowest LOWER neighbour;
+        // a cell with no lower neighbour is a basin sink.
+        let mut flow: Vec<Option<Dir>> = vec![None; n];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if !land(&self.regions[i]) {
+                    continue;
+                }
+                let e = elev(i);
+                let mut best: Option<(f32, Dir)> = None;
+                for d in Dir::ALL {
+                    let (dx, dy) = d.delta();
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let ne = elev(ny as usize * w + nx as usize);
+                    if ne < e && best.is_none_or(|(be, _)| ne < be) {
+                        best = Some((ne, d));
+                    }
+                }
+                flow[i] = best.map(|(_, d)| d);
+            }
+        }
+
+        // Flow accumulation: process cells from high to low so every upstream
+        // cell has passed its water down before we reach a cell. Each cell
+        // starts with its own rainfall and adds it to its downhill neighbour.
+        let mut order: Vec<usize> = (0..n).filter(|&i| land(&self.regions[i])).collect();
+        order.sort_by(|&a, &b| elev(b).partial_cmp(&elev(a)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut acc: Vec<f32> = (0..n).map(|i| 0.3 + self.regions[i].rainfall).collect();
+        for &i in &order {
+            if let Some(d) = flow[i] {
+                let (dx, dy) = d.delta();
+                let (x, y) = (i % w, i / w);
+                let ni = (y as i32 + dy) as usize * w + (x as i32 + dx) as usize;
+                acc[ni] += acc[i];
+            }
+        }
+
+        // Rivers are the land cells that gather the most flow — a modest top
+        // slice, so rivers stay sparse and channelled, not everywhere.
+        let mut sorted: Vec<f32> = order.iter().map(|&i| acc[i]).collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let river_thresh = sorted
+            .get(sorted.len() * 94 / 100)
+            .copied()
+            .unwrap_or(f32::MAX);
+
+        for i in 0..n {
+            if land(&self.regions[i]) && acc[i] >= river_thresh {
+                self.regions[i].river = true;
+                self.regions[i].river_out = flow[i];
+            }
+            // A land basin with nowhere to drain cradles a lake.
+            if land(&self.regions[i]) && flow[i].is_none() {
+                self.regions[i].lake = true;
+            }
+        }
+
+        // A river's inflow edge: the upstream river neighbour, that flows into
+        // it, carrying the most water.
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if !self.regions[i].river {
+                    continue;
+                }
+                let mut best_in: Option<(f32, Dir)> = None;
+                for d in Dir::ALL {
+                    let (dx, dy) = d.delta();
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.regions[ni].river && flow[ni] == Some(d.opposite()) {
+                        if best_in.is_none_or(|(ba, _)| acc[ni] > ba) {
+                            best_in = Some((acc[ni], d));
+                        }
+                    }
+                }
+                self.regions[i].river_in = best_in.map(|(_, d)| d);
+            }
+        }
     }
 }
 
