@@ -10,6 +10,18 @@ use serde::{Deserialize, Serialize};
 
 pub mod names;
 
+/// How many worlds to reject before settling for what we have. Dwarf Fortress
+/// retries until it succeeds and shows the player the count; we would rather
+/// hand back an odd world than hang.
+const MAX_WORLD_ATTEMPTS: usize = 24;
+
+/// How much of a climb it takes to wring rain out of the air, in elevation.
+/// Below this the ground is merely rolling and the weather does not notice.
+const MIN_OROGRAPHIC_CLIMB: f32 = 25.0;
+/// How fast air picks moisture back up crossing land — this is what sets how
+/// far a rain shadow reaches inland before the country turns green again.
+const SHADOW_RECOVERY: f32 = 0.06;
+
 // ---------------------------------------------------------------- overworld
 
 /// The land a region is. Dwarf Fortress's base biome set, which falls out of
@@ -123,7 +135,7 @@ impl Biome {
 /// Lake, Tundra, Glacier, Ocean, Mountains each stand alone." A traveller does
 /// not say "I crossed the shrubland and then the savanna" — they say they
 /// crossed the plains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RegionKind {
     Ocean,
     Lake,
@@ -317,6 +329,8 @@ pub struct Overworld {
     pub regions: Vec<Region>,
     /// Every named stretch of country. `Region::subregion` indexes this.
     pub named: Vec<NamedRegion>,
+    /// Where the mountains are on fire.
+    pub volcanoes: Vec<(usize, usize)>,
 }
 
 impl Overworld {
@@ -397,7 +411,15 @@ impl Overworld {
     fn generate(rng: &mut ChaCha8Rng, width: usize, height: usize) -> Self {
         // Coarse random grids, bilinearly interpolated — same trick as the
         // local map, at world scale.
-        let field = |rng: &mut ChaCha8Rng, coarse: usize| -> Vec<f32> {
+        // `spread` pushes values away from the middle before they are used.
+        //
+        // Interpolating between random grid points averages the extremes away:
+        // measured, drainage came out a bell curve with 8 tiles of 2304 in its
+        // driest tenth and 15 in its wettest. A world like that has no deserts
+        // and no rainforest — it is one continent of gentle green, which is
+        // exactly what ours was. Dwarf Fortress controls the same thing with
+        // its per-field FREQUENCY weights; this is the same idea with one knob.
+        let field = |rng: &mut ChaCha8Rng, coarse: usize, spread: f32| -> Vec<f32> {
             let gw = width / coarse + 2;
             let gh = height / coarse + 2;
             let grid: Vec<f32> = (0..gw * gh).map(|_| rng.gen_range(0.0f32..1.0)).collect();
@@ -411,7 +433,8 @@ impl Overworld {
                     let g = |gx: usize, gy: usize| grid[gy * gw + gx];
                     let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
                     let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
-                    out[y * width + x] = top * (1.0 - ty) + bot * ty;
+                    let v = top * (1.0 - ty) + bot * ty;
+                    out[y * width + x] = ((v - 0.5) * spread + 0.5).clamp(0.0, 1.0);
                 }
             }
             out
@@ -420,35 +443,29 @@ impl Overworld {
         // elevation, rainfall, temperature, drainage, volcanism, and
         // wildness. Each gets its own coarseness, so mountains run in long
         // ranges while rainfall varies over shorter distances.
-        let elevation = field(rng, 16);
-        let rainfall = field(rng, 12);
-        let drainage = field(rng, 10);
-        let volcanism = field(rng, 20);
-        let savagery = field(rng, 14);
-        let temp_noise = field(rng, 24);
+        let elevation = field(rng, 16, 1.5);
+        let rainfall = field(rng, 12, 1.8);
+        let drainage = field(rng, 10, 1.7);
+        // Volcanism's extremes are set deliberately later — see place_volcanoes.
+        let volcanism = field(rng, 20, 1.0);
+        let savagery = field(rng, 14, 1.4);
+        let temp_noise = field(rng, 24, 1.0);
 
         let mut regions = Vec::with_capacity(width * height);
         for y in 0..height {
             for x in 0..width {
                 let i = y * width + x;
                 let elevation = (elevation[i] * Self::MAX_ELEVATION as f32) as u16;
-                // Two poles, as a world ought to have: cold at both edges,
-                // hot across the middle. (This world used to run cold in the
-                // north and hot in the south — one pole and no equator.)
-                let lat = y as f32 / height as f32;
-                let from_equator = (lat - 0.5).abs() * 2.0; // 0 equator, 1 pole
-                // Roughly -30C at the poles to 45C at the equator, wobbled by
-                // noise, and colder the higher you stand.
-                let above_sea =
-                    (elevation.saturating_sub(Self::SEA_LEVEL)) as f32 / Self::MAX_ELEVATION as f32;
-                let temperature = (45.0 - from_equator * 75.0 + (temp_noise[i] - 0.5) * 20.0
-                    - above_sea * 40.0)
-                    .clamp(-60.0, 60.0) as i16;
                 let rainfall = (rainfall[i] * 100.0) as u8;
                 let drainage = (drainage[i] * 100.0) as u8;
                 let volcanism = (volcanism[i] * 100.0) as u8;
                 let savagery = (savagery[i] * 100.0) as u8;
-                let biome = Self::classify(elevation, rainfall, drainage, temperature);
+                // Temperature and biome are BOTH set properly further down —
+                // Dwarf Fortress revises the rain for the mountains, then
+                // recalculates the heat, and only then asks what grows here.
+                // Placeholders until then.
+                let temperature = 0;
+                let biome = Biome::Ocean;
                 regions.push(Region {
                     elevation,
                     temperature,
@@ -467,13 +484,299 @@ impl Overworld {
                 });
             }
         }
-        let mut world = Overworld { width, height, regions, named: Vec::new() };
+        let mut world = Overworld {
+            width,
+            height,
+            regions,
+            named: Vec::new(),
+            volcanoes: Vec::new(),
+        };
+        // Dwarf Fortress's own order, as Toady describes it — and the order
+        // matters, because the passes feed each other. A one-pass world (which
+        // this was) cannot look like a DF world: its rain has never heard of
+        // its mountains.
+        //
+        //   ... select points for highest peaks ... smooth mid-level
+        //   elevations to make more plains ... place volcanoes respecting
+        //   volcanism hot spots ... EROSION AND RIVER STAGE ... rainfall
+        //   adjusted for rain shadow and orographic precipitation ...
+        //   temperature recalculated from elevation and rainfall ...
+        //   detect/name biome regions ...
+        world.raise_peaks(rng);
+        world.smooth_midlands();
+        world.place_volcanoes(rng);
         world.trace_rivers();
+        world.revise_rainfall();
+        world.set_temperature(&temp_noise);
+        // Only now is it known what grows here.
+        world.classify_all();
         world.place_alignment(rng);
         // Named last: a region is contiguous land of one kind sharing one
         // alignment, so both must be settled before anything can be named.
         world.name_regions(rng);
         world
+    }
+
+    /// Build a world, and keep building until one is fit to live in.
+    ///
+    /// This is Dwarf Fortress's rejection loop, and it is not an error path —
+    /// it is how the thing works: "Worlds are generated with parameters which
+    /// are LIKELY to produce worlds that can support a required number of
+    /// mountains, and are then checked to make sure they meet the criteria",
+    /// because "factors like mountain-tile count can't be determined ahead of
+    /// time". DF rejects and retries; the player watches the counter climb.
+    ///
+    /// Ours needed it. Measured across three seeds before this existed, one
+    /// world's highest ground was elevation 294 — below the mountain line —
+    /// so it had no mountains, and therefore nowhere for dwarves to live and
+    /// no dwarven civilization in its history at all.
+    ///
+    /// Deterministic: the same seed runs the same rejections in the same order
+    /// and lands on the same world.
+    fn generate_verified(rng: &mut ChaCha8Rng, width: usize, height: usize) -> Self {
+        let mut last = Overworld::generate(rng, width, height);
+        for _ in 0..MAX_WORLD_ATTEMPTS {
+            if last.verify().is_ok() {
+                return last;
+            }
+            last = Overworld::generate(rng, width, height);
+        }
+        // Every attempt was rejected. Take the last rather than loop forever —
+        // a strange world is still a world, and a hang is not.
+        last
+    }
+
+    /// Is this world fit to live in? Dwarf Fortress checks its own criteria
+    /// after the fact for exactly the things that cannot be arranged up front.
+    fn verify(&self) -> Result<(), &'static str> {
+        let n = self.regions.len();
+        // A world that is two-thirds sea is a world with nowhere to put a
+        // fortress. Measured: one seed in six came out 63% ocean before this.
+        let land = self.regions.iter().filter(|r| r.biome.embarkable()).count();
+        if land * 5 < n * 2 {
+            return Err("not enough land");
+        }
+        let mountains = self
+            .regions
+            .iter()
+            .filter(|r| r.biome == Biome::Mountains)
+            .count();
+        if mountains < n / 100 {
+            return Err("not enough mountains for a dwarf to live in");
+        }
+        // A world of one climate is a boring world. DF rejects on distribution
+        // too ("Volcanism not evenly distributed" is a named rejection).
+        let kinds = self
+            .regions
+            .iter()
+            .map(|r| RegionKind::of(r.biome))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if kinds < 4 {
+            return Err("too few kinds of country");
+        }
+        if self.volcanoes.is_empty() {
+            return Err("no volcanoes");
+        }
+        Ok(())
+    }
+
+    /// Pick the world's high peaks and drive them up.
+    ///
+    /// Dwarf Fortress "select[s] points for highest peaks" as a deliberate
+    /// step, and it is the reason its worlds reliably have mountains. Ours had
+    /// none: the raw noise field topped out wherever it happened to, and one
+    /// seed in three produced a world whose highest ground was below the
+    /// mountain line — a world with no dwarven homeland in it at all.
+    fn raise_peaks(&mut self, rng: &mut ChaCha8Rng) {
+        let n = self.width * self.height;
+        let peaks = (n / 380).max(3);
+        for _ in 0..peaks {
+            // Peaks belong on high ground, not out at sea: try for somewhere
+            // already raised, and take the best of a few looks.
+            let mut best: Option<(usize, usize, u16)> = None;
+            for _ in 0..12 {
+                let x = rng.gen_range(0..self.width);
+                let y = rng.gen_range(0..self.height);
+                let e = self.get(x, y).elevation;
+                if best.is_none_or(|(_, _, be)| e > be) {
+                    best = Some((x, y, e));
+                }
+            }
+            let Some((cx, cy, _)) = best else { continue };
+            // A peak and the range that falls away from it.
+            let radius = rng.gen_range(3i32..7);
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                    if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                        continue;
+                    }
+                    let d = ((dx * dx + dy * dy) as f32).sqrt();
+                    if d > radius as f32 {
+                        continue;
+                    }
+                    // Full height at the peak, tapering to nothing at the rim.
+                    let lift = (1.0 - d / radius as f32).powf(1.6);
+                    let i = y as usize * self.width + x as usize;
+                    let want = Self::SEA_LEVEL as f32
+                        + (Self::MAX_ELEVATION - Self::SEA_LEVEL) as f32 * lift;
+                    let e = self.regions[i].elevation as f32;
+                    self.regions[i].elevation = e.max(want).min(Self::MAX_ELEVATION as f32) as u16;
+                }
+            }
+        }
+    }
+
+    /// Flatten the middle ground. Dwarf Fortress "smooth[s] mid-level
+    /// elevations to make more plains" — without it a world is all slope and
+    /// nowhere to live.
+    fn smooth_midlands(&mut self) {
+        let before: Vec<u16> = self.regions.iter().map(|r| r.elevation).collect();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let i = y * self.width + x;
+                let e = before[i];
+                // Leave the sea and the mountains alone; plane the rest.
+                if e < Self::SEA_LEVEL || e >= Self::MOUNTAIN_LEVEL {
+                    continue;
+                }
+                let mut sum = e as u32;
+                let mut count = 1u32;
+                for d in Dir::ALL {
+                    let (dx, dy) = d.delta();
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+                        continue;
+                    }
+                    sum += before[ny as usize * self.width + nx as usize] as u32;
+                    count += 1;
+                }
+                self.regions[i].elevation = (sum / count) as u16;
+            }
+        }
+    }
+
+    /// Set the volcanoes.
+    ///
+    /// Dwarf Fortress: "a square must have volcanism exactly 100 to form one",
+    /// and it "place[s] volcanoes respecting volcanism hot spots". Our
+    /// volcanism was raw noise scaled to 0..100, which in practice topped out
+    /// around 90 — so no square ever reached 100, no volcano could ever form,
+    /// and the embark screen's VOLCANO readout was a line that could never
+    /// print. The hot spots are now driven to 100, and that is where they go.
+    fn place_volcanoes(&mut self, rng: &mut ChaCha8Rng) {
+        let n = self.width * self.height;
+        let wanted = (n / 700).max(2);
+        for _ in 0..wanted {
+            // The hottest ground of several looks, and it must be land.
+            let mut best: Option<(usize, u8)> = None;
+            for _ in 0..24 {
+                let i = rng.gen_range(0..n);
+                if self.regions[i].elevation < Self::SEA_LEVEL {
+                    continue;
+                }
+                let v = self.regions[i].volcanism;
+                if best.is_none_or(|(_, bv)| v > bv) {
+                    best = Some((i, v));
+                }
+            }
+            let Some((i, _)) = best else { continue };
+            self.regions[i].volcanism = 100;
+            // A volcano stands up out of its country.
+            self.regions[i].elevation = self.regions[i].elevation.max(Self::MOUNTAIN_LEVEL);
+            let (x, y) = (i % self.width, i / self.width);
+            if !self.volcanoes.contains(&(x, y)) {
+                self.volcanoes.push((x, y));
+            }
+        }
+    }
+
+    /// Revise the rain for the mountains — the pass that makes a world look
+    /// like a world.
+    ///
+    /// Dwarf Fortress adjusts "rainfall for rain shadow and orographic
+    /// precipitation" AFTER the terrain is settled, and it is why its deserts
+    /// sit where they do. Ours was raw noise: rainfall had never heard of the
+    /// mountains, so a range could have rainforest on both sides.
+    ///
+    /// The model is the real one, kept simple. Weather comes off the sea
+    /// carrying water. Forced up a slope it drops what it carries — that is
+    /// orographic precipitation, and it soaks the windward side. Over the
+    /// crest there is nothing left to fall, and the lee is a desert: the rain
+    /// shadow. The wind blows west to east here, which is our choice; Dwarf
+    /// Fortress does not say what its own does.
+    fn revise_rainfall(&mut self) {
+        for y in 0..self.height {
+            // Air arrives off the western sea, fully laden.
+            let mut moisture = 1.0f32;
+            for x in 0..self.width {
+                let i = y * self.width + x;
+                let e = self.regions[i].elevation;
+                if e < Self::SEA_LEVEL {
+                    moisture = 1.0; // the sea puts it back
+                    continue;
+                }
+                let upwind = if x > 0 {
+                    self.regions[i - 1].elevation
+                } else {
+                    Self::SEA_LEVEL
+                };
+                // Only a real climb wrings the air out. A gentle rise does
+                // nothing — when every slope counted, the whole continent sat
+                // in a permanent shadow and the world came out one dry plain
+                // from coast to coast.
+                let climb = (e as i32 - upwind as i32).max(0) as f32;
+                let wrung = if climb > MIN_OROGRAPHIC_CLIMB {
+                    (((climb - MIN_OROGRAPHIC_CLIMB) / 110.0).min(1.0) * moisture * 0.85).max(0.0)
+                } else {
+                    0.0
+                };
+                moisture -= wrung;
+                // Land gives it back as it goes, so a shadow reaches some way
+                // inland and then fades — it does not last to the far coast.
+                moisture = (moisture + SHADOW_RECOVERY).min(1.0);
+                let base = self.regions[i].rainfall as f32;
+                // Dry air suppresses the local rain; climbing air adds to it.
+                let revised = base * (0.18 + 0.82 * moisture) + wrung * 70.0;
+                self.regions[i].rainfall = revised.clamp(0.0, 100.0) as u8;
+            }
+        }
+    }
+
+    /// Work out how warm it is, now that the land is finished.
+    ///
+    /// Dwarf Fortress recalculates temperature late, "from elevation, rainfall
+    /// and forest damping", which is why it must come after the peaks are
+    /// raised and the rain revised — a mountain that grew in step six is cold
+    /// in step sixteen.
+    fn set_temperature(&mut self, noise: &[f32]) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let i = y * self.width + x;
+                // Two poles and a warm middle.
+                let lat = y as f32 / self.height as f32;
+                let from_equator = (lat - 0.5).abs() * 2.0;
+                let e = self.regions[i].elevation;
+                let above_sea =
+                    e.saturating_sub(Self::SEA_LEVEL) as f32 / Self::MAX_ELEVATION as f32;
+                // Wet air moderates: a rainy coast swings less than a dry
+                // interior. (DF damps with forest; rainfall is what makes the
+                // forest, and we have it to hand here.)
+                let damp = self.regions[i].rainfall as f32 / 100.0;
+                let t = 45.0 - from_equator.powf(1.7) * 72.0 + (noise[i] - 0.5) * 20.0
+                    - above_sea * 55.0
+                    + damp * 4.0;
+                self.regions[i].temperature = t.clamp(-60.0, 60.0) as i16;
+            }
+        }
+    }
+
+    /// Ask what grows here — last, once everything it depends on is settled.
+    fn classify_all(&mut self) {
+        for r in &mut self.regions {
+            r.biome = Self::classify(r.elevation, r.rainfall, r.drainage, r.temperature);
+        }
     }
 
     /// Find and name the world's regions.
@@ -807,7 +1110,7 @@ impl World {
     /// Fully deterministic in `seed`.
     pub fn generate(seed: u64, width: usize, height: usize, years: u32) -> Self {
         let mut rng = dk_core::rng_from_seed(seed ^ 0x9E37_79B9_7F4A_7C15);
-        let overworld = Overworld::generate(&mut rng, width, height);
+        let overworld = Overworld::generate_verified(&mut rng, width, height);
         let mut world = World {
             seed,
             overworld,

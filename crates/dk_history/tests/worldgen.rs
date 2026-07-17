@@ -285,3 +285,110 @@ fn regions_are_named_something_a_dwarf_would_say() {
     assert_eq!(medium.size_class(), "medium");
     assert_eq!(large.size_class(), "large");
 }
+
+// ------------------------------------------- the pipeline's later passes
+
+#[test]
+fn every_world_has_mountains_for_dwarves_to_live_in() {
+    // Dwarf Fortress "select[s] points for highest peaks" as a deliberate step
+    // and then REJECTS worlds that fail its criteria, because "factors like
+    // mountain-tile count can't be determined ahead of time". Ours had neither:
+    // measured across three seeds, one world's highest ground was elevation 294
+    // — below the mountain line — so it had no mountains and no dwarves.
+    for seed in 0..8u64 {
+        let w = World::generate(seed, 48, 48, 5);
+        let peak = w.overworld.regions.iter().map(|r| r.elevation).max().unwrap();
+        assert!(peak >= Overworld::MOUNTAIN_LEVEL, "seed {seed}: highest ground is {peak}");
+        let mountains = w
+            .overworld
+            .regions
+            .iter()
+            .filter(|r| r.biome == Biome::Mountains)
+            .count();
+        assert!(mountains > 0, "seed {seed}: no mountains");
+        assert!(
+            w.civs.iter().any(|c| c.race == dk_history::Race::Dwarven),
+            "seed {seed}: a world with mountains has dwarves in it"
+        );
+    }
+}
+
+#[test]
+fn every_world_has_a_volcano() {
+    // "A square must have volcanism exactly 100 to form one." Our volcanism was
+    // raw noise scaled to 0..100, which topped out around 90 — so no square ever
+    // reached 100, no volcano could form, and the embark screen's VOLCANO line
+    // could never print.
+    for seed in 0..6u64 {
+        let w = World::generate(seed, 48, 48, 5);
+        assert!(!w.overworld.volcanoes.is_empty(), "seed {seed}: no volcanoes");
+        for &(x, y) in &w.overworld.volcanoes {
+            let r = w.overworld.get(x, y);
+            assert_eq!(r.volcanism, 100, "a volcano sits on volcanism 100");
+            assert!(r.elevation >= Overworld::MOUNTAIN_LEVEL, "and stands up out of its country");
+        }
+        let hot = w.overworld.regions.iter().filter(|r| r.volcanism >= 100).count();
+        assert!(hot > 0, "seed {seed}: somewhere reaches 100");
+    }
+}
+
+#[test]
+fn the_lee_of_a_mountain_range_is_drier_than_its_windward_side() {
+    // The pass that makes a world look like a world. Dwarf Fortress revises
+    // "rainfall for rain shadow and orographic precipitation" AFTER the terrain
+    // settles; ours was raw noise that had never heard of its own mountains, so
+    // a range could have rainforest on both sides.
+    //
+    // Wind blows west to east, so land with mountains to its WEST sits in their
+    // shadow.
+    let (mut lee, mut lee_n) = (0i64, 0i64);
+    let (mut open, mut open_n) = (0i64, 0i64);
+    for seed in 0..6u64 {
+        let ow = &World::generate(seed, 48, 48, 5).overworld;
+        for y in 0..ow.height {
+            for x in 0..ow.width {
+                let r = ow.get(x, y);
+                if !r.biome.embarkable() || r.biome == Biome::Mountains {
+                    continue;
+                }
+                let shadowed =
+                    (1..=5).any(|d| x >= d && ow.get(x - d, y).biome == Biome::Mountains);
+                let clear = !shadowed
+                    && !(1..=5).any(|d| x + d < ow.width && ow.get(x + d, y).biome == Biome::Mountains);
+                if shadowed {
+                    lee += r.rainfall as i64;
+                    lee_n += 1;
+                } else if clear {
+                    open += r.rainfall as i64;
+                    open_n += 1;
+                }
+            }
+        }
+    }
+    assert!(lee_n > 100 && open_n > 100, "enough country to compare");
+    let (lee_avg, open_avg) = (lee / lee_n, open / open_n);
+    assert!(
+        lee_avg + 4 < open_avg,
+        "land behind a range is drier than open country ({lee_avg} vs {open_avg})"
+    );
+}
+
+#[test]
+fn a_world_is_not_one_endless_plain() {
+    // Interpolating between random grid points averages the extremes away: the
+    // fields came out bell curves, so nowhere was dry enough for desert or wet
+    // enough for rainforest and the whole world was gentle green grassland.
+    for seed in 0..6u64 {
+        let w = World::generate(seed, 48, 48, 5);
+        let n = w.overworld.regions.len();
+        let count = |f: fn(&dk_history::Region) -> bool| {
+            w.overworld.regions.iter().filter(|r| f(r)).count()
+        };
+        let grassy = count(|r| r.biome.is_grassy());
+        assert!(grassy * 2 < n, "seed {seed}: not everything is grass ({grassy}/{n})");
+        assert!(count(|r| r.biome.is_desert()) > 0, "seed {seed}: somewhere is dry");
+        // And enough land to build on — a world two-thirds drowned is no world.
+        let land = count(|r| r.biome.embarkable());
+        assert!(land * 5 >= n * 2, "seed {seed}: enough land ({land}/{n})");
+    }
+}

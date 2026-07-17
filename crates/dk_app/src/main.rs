@@ -3963,6 +3963,11 @@ fn redraw_tiles(
                 }
             }
             let mut glyph = "block";
+            // A volcano burns on the map in every view — it is the one feature
+            // a dwarf will cross a continent for.
+            if world.0.overworld.volcanoes.contains(&(rx, ry)) {
+                rgb = [0.95, 0.35, 0.12];
+            }
             // Mark civilization sites — worth seeing in every view.
             if world.0.sites.iter().any(|st| st.region == (rx, ry) && !st.ruined) {
                 rgb = [0.95, 0.9, 0.5];
