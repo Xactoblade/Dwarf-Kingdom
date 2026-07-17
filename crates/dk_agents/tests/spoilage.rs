@@ -198,6 +198,7 @@ fn food_bought_from_a_caravan_is_as_fresh_as_the_day_it_was_bought() {
         consumed: false,
         quality: 0,
         made_at: 0,
+        variant: 0,
     });
     let want = sim.caravan.as_ref().unwrap().goods.len() - 1;
 

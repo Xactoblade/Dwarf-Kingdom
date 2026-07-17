@@ -31,6 +31,39 @@ pub struct MaterialDef {
     pub color: [u8; 3],
     /// Relative trade value multiplier.
     pub value: u32,
+    /// How this material fights and defends. Defaulted so existing raws that
+    /// predate combat still load — a material with no stats is treated as a
+    /// dull, middling stone, fine for a wall and useless for a blade.
+    #[serde(default)]
+    pub combat: CombatStats,
+}
+
+/// A material's mechanical properties, as they matter in a fight. A pared-down
+/// stand-in for Dwarf Fortress's material science: DF drives combat off shear
+/// and impact yield/fracture, density, and a per-material sharpness multiplier
+/// (1x for metals, 2x obsidian, 10x adamantine). These three axes capture the
+/// same shape — a keen edge, a heavy head, and metal that beats lesser metal —
+/// without the fragile version-specific formulas.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CombatStats {
+    /// Edge multiplier for cutting and stabbing. Dwarf Fortress's own numbers:
+    /// 1.0 for metal, 1.5 glass, 2.0 obsidian, 10.0 adamantine — and near-zero
+    /// for wood and stone, which hold no edge at all.
+    pub sharpness: f32,
+    /// Grams per cubic centimetre. The mass behind a blunt blow, and the weight
+    /// that helps a suit of armour turn one aside.
+    pub density: f32,
+    /// Resistance to being cut through or dented — DF's shear and impact yield,
+    /// rolled into one. Steel beats iron beats bronze beats copper beats bone
+    /// beats wood, and this is the number that says so.
+    pub hardness: f32,
+}
+
+impl Default for CombatStats {
+    fn default() -> Self {
+        // Dull stone: no edge, heavy, middling hardness.
+        CombatStats { sharpness: 0.1, density: 2.6, hardness: 20.0 }
+    }
 }
 
 /// A crop that can be farmed, then eaten raw-ish (cooked) or brewed.
@@ -195,6 +228,7 @@ impl MaterialRegistry {
                 category: MaterialCategory::Soil,
                 color: [120, 120, 120],
                 value: 0,
+                combat: CombatStats::default(),
             },
         })
     }

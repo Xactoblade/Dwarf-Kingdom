@@ -4,7 +4,9 @@
 
 mod common;
 
-use dk_agents::{fighting_bonus, BuildingKind, ItemKind, Sim, WEAPON_DAMAGE};
+use dk_agents::{
+    resolve_blow, BuildingKind, CombatStats, DamageType, ItemKind, Sim, WeaponKind,
+};
 
 fn forge_fort(seed: u64) -> (Sim, dk_raws::Raws) {
     let raws = common::test_raws();
@@ -16,10 +18,12 @@ fn forge_fort(seed: u64) -> (Sim, dk_raws::Raws) {
 }
 
 #[test]
-fn a_weapon_is_worth_more_than_its_stone() {
-    // The damage bonus is a real, positive number.
-    assert!(WEAPON_DAMAGE > 0);
-    assert!(WEAPON_DAMAGE as i32 + fighting_bonus(6) as i32 > 0);
+fn a_forged_blade_bites_far_deeper_than_a_bare_fist() {
+    let iron = CombatStats { sharpness: 1.0, density: 7.8, hardness: 100.0 };
+    let sword = Some((DamageType::Edge, WeaponKind::Sword.heft(), iron));
+    let armed = resolve_blow(15.0, sword, None).damage;
+    let fist = resolve_blow(15.0, None, None).damage;
+    assert!(armed > fist * 3, "a sword ({armed}) is far deadlier than a fist ({fist})");
 }
 
 #[test]

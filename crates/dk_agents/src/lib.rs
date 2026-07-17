@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use dk_core::{Calendar, Season, DAYS_PER_SEASON, SEASONS_PER_YEAR, TICKS_PER_DAY};
 use dk_raws::{MaterialCategory, Raws};
+pub use dk_raws::CombatStats;
 use dk_sim::{FluidSim, WaterSim};
 use dk_world::path::{self, Pos, Regions};
 use dk_world::{Map, Tile, TileShape, NO_MATERIAL};
@@ -83,11 +84,7 @@ pub const VERMIN_EAT_INTERVAL: u64 = TICKS_PER_DAY * 2;
 pub const ATTACK_COOLDOWN: u8 = 40;
 /// How close a raider must be before a war dog charges it.
 pub const WAR_DOG_ENGAGE: u32 = 18;
-/// Extra damage a soldier deals when wielding a forged weapon.
-pub const WEAPON_DAMAGE: i16 = 10;
 /// Damage a suit of armor turns aside from each blow that lands on its wearer
-/// (a struck blow always does at least 1, so armor never fully negates a hit).
-pub const ARMOR_REDUCTION: i16 = 7;
 /// Ticks fully submerged before drowning kills.
 pub const BREATH_TICKS: f32 = 240.0;
 /// Region rebuilds are throttled to once per this many ticks.
@@ -355,6 +352,21 @@ pub struct Item {
     /// The tick this item came into the world. Food reckons its age from here
     /// (see `tick_spoilage`); everything else ignores it.
     pub made_at: u64,
+    /// A subtype the `kind` alone doesn't carry. For a Weapon it is the
+    /// `WeaponKind` (a sword is not a hammer); unused, and 0, for everything
+    /// else.
+    #[serde(default)]
+    pub variant: u8,
+}
+
+impl Item {
+    /// This weapon's kind, or `None` if it is not a weapon.
+    pub fn weapon_kind(&self) -> Option<WeaponKind> {
+        if self.kind != ItemKind::Weapon {
+            return None;
+        }
+        WeaponKind::ALL.get(self.variant as usize).copied()
+    }
 }
 
 /// How many of `holding` fit in one `container`, or 0 if that container will
@@ -879,6 +891,87 @@ pub struct BodyPart {
     pub bleeding: u8,
 }
 
+/// How a weapon hurts. Dwarf Fortress's three practical melee classes: an
+/// edge cuts, a point punches through, a blunt head crushes. Each meets armour
+/// and flesh differently, which is the whole reason the class matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DamageType {
+    /// Slashing. Cuts through flesh with the material's edge; a keener blade
+    /// bites deeper, and a lesser metal is turned by a better armour.
+    Edge,
+    /// Stabbing. An edge attack, but narrow — it punches a small deep wound,
+    /// which is how a spear finds an organ a slash would only score.
+    Pierce,
+    /// Crushing. Ignores the edge and drives force through the armour into the
+    /// flesh, breaking bone the armour never stopped. Beaten by weight, not
+    /// sharpness.
+    Blunt,
+}
+
+/// The weapons a fort can forge or a raider can carry. Each is a damage type,
+/// a mass (which drives blunt force and the weight behind any blow), and the
+/// skill that wields it. Dwarf Fortress's own roster, pared to the ones a
+/// dwarf can make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WeaponKind {
+    Sword,
+    Axe,
+    Spear,
+    Mace,
+    Hammer,
+}
+
+impl WeaponKind {
+    pub const ALL: [WeaponKind; 5] = [
+        WeaponKind::Sword,
+        WeaponKind::Axe,
+        WeaponKind::Spear,
+        WeaponKind::Mace,
+        WeaponKind::Hammer,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WeaponKind::Sword => "sword",
+            WeaponKind::Axe => "axe",
+            WeaponKind::Spear => "spear",
+            WeaponKind::Mace => "mace",
+            WeaponKind::Hammer => "war hammer",
+        }
+    }
+
+    pub fn damage_type(self) -> DamageType {
+        match self {
+            WeaponKind::Sword | WeaponKind::Axe => DamageType::Edge,
+            WeaponKind::Spear => DamageType::Pierce,
+            WeaponKind::Mace | WeaponKind::Hammer => DamageType::Blunt,
+        }
+    }
+
+    /// The weapon's own heft, a rough stand-in for DF's SIZE token. Heavier
+    /// heads hit harder with blunt force; a sword is quick and light.
+    pub fn heft(self) -> f32 {
+        match self {
+            WeaponKind::Sword => 1.0,
+            WeaponKind::Spear => 1.1,
+            WeaponKind::Axe => 1.5,
+            WeaponKind::Hammer => 1.8,
+            WeaponKind::Mace => 2.0,
+        }
+    }
+
+    /// The verb for the combat log — a sword slashes, a hammer bashes.
+    pub fn verb(self) -> &'static str {
+        match self {
+            WeaponKind::Sword => "slashes",
+            WeaponKind::Axe => "hacks",
+            WeaponKind::Spear => "stabs",
+            WeaponKind::Mace => "bashes",
+            WeaponKind::Hammer => "smashes",
+        }
+    }
+}
+
 fn default_body() -> Vec<BodyPart> {
     let part = |kind: PartKind, hp: i16| BodyPart { kind, hp, max_hp: hp, bleeding: 0 };
     vec![
@@ -1070,6 +1163,81 @@ pub enum Skill {
 /// blow. A seasoned veteran hits markedly harder than a green recruit.
 pub fn fighting_bonus(level: u32) -> i16 {
     level as i16 * 2
+}
+
+/// The outcome of one landed blow: how much the struck part loses, and how
+/// hard it bleeds.
+pub struct BlowResult {
+    pub damage: i16,
+    pub bleed: u8,
+}
+
+/// Resolve a single landed blow — the heart of combat, and where Dwarf
+/// Fortress's three damage types earn their keep.
+///
+/// `force` is the raw power behind the swing (skill + a beast's monstrous
+/// strength). The weapon supplies a damage type, a heft, and its material; the
+/// armour, if any, supplies its own material. Everything else falls out of how
+/// those meet:
+///
+/// - **Edge** cuts with the weapon's sharpness. A better metal defeats a
+///   lesser armour, and an equal one is largely turned — which is why a sword
+///   glances off plate. It draws the most blood.
+/// - **Pierce** is a narrow edge: it concentrates, defeating armour better than
+///   a slash and punching a deep wound, but spilling less blood.
+/// - **Blunt** ignores the edge entirely and drives its mass through the
+///   armour into the flesh. Armour blunts it but never stops it — a war hammer
+///   hurts a plated dwarf where a sword would ring off — and it breaks bone
+///   rather than opening veins.
+///
+/// `weapon = None` is a bare fist: a feeble blunt tap.
+pub fn resolve_blow(
+    force: f32,
+    weapon: Option<(DamageType, f32, CombatStats)>,
+    armor: Option<CombatStats>,
+) -> BlowResult {
+    let (dtype, heft, wmat) = weapon.unwrap_or((
+        DamageType::Blunt,
+        0.5,
+        CombatStats { sharpness: 0.1, density: 1.0, hardness: 10.0 },
+    ));
+    let armor_hard = armor.map_or(0.0, |a| a.hardness);
+    let armor_dens = armor.map_or(0.0, |a| a.density);
+
+    // A soft blade holds no edge: below iron it dulls and folds, so a copper
+    // sword bites worse than an iron one however keen its geometry. Past iron
+    // it stops mattering — sharpness carries the harder metals — so the temper
+    // only ever penalises, never rewards.
+    let temper = (wmat.hardness / 100.0).min(1.0);
+    let (raw, bleed) = match dtype {
+        DamageType::Edge => {
+            // Cut deepens with the blade's keenness; armour hardness turns it.
+            let cut = force * wmat.sharpness * temper;
+            let turned = armor_hard * 0.12;
+            (cut - turned, 3u8)
+        }
+        DamageType::Pierce => {
+            // Narrower and more concentrated: defeats armour better, bleeds
+            // less, but the point drives deep.
+            let punch = force * wmat.sharpness * temper * 1.15;
+            let turned = armor_hard * 0.08;
+            (punch - turned, 2u8)
+        }
+        DamageType::Blunt => {
+            // Mass behind the head, transmitted through the armour. Iron is
+            // density ~7.8, so a mid-weight weapon of it hits near its raw
+            // force; armour only softens the blow, never negates it.
+            let mass = heft * (wmat.density / 7.8).max(0.3);
+            let hit = force * mass;
+            let softened = armor_hard * 0.06 + armor_dens * 0.4;
+            // At least 40% of a crush always reaches the bone.
+            ((hit - softened).max(hit * 0.4), 1u8)
+        }
+    };
+    // A landed blow always does something and always draws at least a little
+    // blood — no hit is truly harmless.
+    let damage = raw.round().max(1.0) as i16;
+    BlowResult { damage, bleed: bleed.max(1) }
 }
 
 // ------------------------------------------------------------------- tasks
@@ -2362,6 +2530,7 @@ impl Sim {
                             consumed: false,
                             quality: 0,
                             made_at: 0,
+            variant: 0,
                         });
                         placed += 1;
                     }
@@ -2394,6 +2563,7 @@ impl Sim {
                     consumed: false,
                     quality: 0,
                     made_at: 0,
+            variant: 0,
                 });
                 poured += 1;
             }
@@ -3807,7 +3977,7 @@ impl Sim {
                 });
                 if let Some(enemy) = here_enemy {
                     self.dwarves[hero].attack_cd = 0; // one swing per turn
-                    self.melee(hero, enemy);
+                    self.melee(hero, enemy, raws);
                 } else {
                     // Sloped terrain: a step can land level, up a ramp, or
                     // down one — resolve like any other walker would. Both
@@ -3832,7 +4002,7 @@ impl Sim {
                     });
                     if let Some(enemy) = enemy {
                         self.dwarves[hero].attack_cd = 0;
-                        self.melee(hero, enemy);
+                        self.melee(hero, enemy, raws);
                     } else if let Some(&t) = reachable.first() {
                         self.dwarves[hero].pos = t;
                         self.carry_item_along(hero);
@@ -3922,6 +4092,15 @@ impl Sim {
     /// Drop a boulder on the ground (scenarios/tests).
     /// Strike a dwarf dead where they stand, for tests that need a corpse or
     /// an heir without staging a siege.
+    /// Drop a single bare-handed raider on a tile — for combat tests that
+    /// want a fight without staging a whole siege.
+    pub fn debug_spawn_raider_at(&mut self, pos: Pos, raws: &Raws) -> usize {
+        let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
+        r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
+        self.dwarves.push(r);
+        self.dwarves.len() - 1
+    }
+
     pub fn debug_kill_dwarf(&mut self, i: usize) {
         self.kill_dwarf(i);
     }
@@ -4112,13 +4291,13 @@ impl Sim {
                 continue;
             }
             if self.dwarves[i].follower && self.player.is_some() {
-                self.follow_hero(i);
+                self.follow_hero(i, raws);
                 continue;
             }
             match self.dwarves[i].faction {
                 Faction::Fort => self.update_dwarf(i, raws),
-                Faction::Hostile => self.update_hostile(i),
-                Faction::Visitor => self.update_visitor(i),
+                Faction::Hostile => self.update_hostile(i, raws),
+                Faction::Visitor => self.update_visitor(i, raws),
             }
         }
         // Caravans arrive mid-season (offset from raids and migrants).
@@ -5068,6 +5247,7 @@ impl Sim {
                     consumed: false,
                     quality: 0,
                     made_at: 0,
+            variant: 0,
                 });
             }
         }
@@ -5088,6 +5268,7 @@ impl Sim {
                 consumed: false,
                 quality: 0,
                 made_at: 0,
+            variant: 0,
             });
         }
 
@@ -5262,13 +5443,13 @@ impl Sim {
 
     /// Visitors mill about near where they stand; no jobs, no needs (they
     /// carry their own provisions), but they will defend themselves.
-    fn update_visitor(&mut self, i: usize) {
+    fn update_visitor(&mut self, i: usize, raws: &Raws) {
         self.tick_vitals(i);
         if !self.dwarves[i].alive {
             return;
         }
         if let Some(enemy) = self.adjacent_enemy(i) {
-            self.melee(i, enemy);
+            self.melee(i, enemy, raws);
             return;
         }
         if self.dwarves[i].move_cd > 0 {
@@ -6495,31 +6676,7 @@ impl Sim {
         soldiers.min(weapons)
     }
 
-    /// Whether soldier `i` is drawing one of the fort's forged weapons: the
-    /// armory arms enlistees in index order, up to the number of weapons.
-    fn is_armed(&self, i: usize) -> bool {
-        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
-            return false;
-        }
-        let weapons = self
-            .items
-            .iter()
-            .filter(|it| it.active() && it.kind == ItemKind::Weapon)
-            .count();
-        if weapons == 0 {
-            return false;
-        }
-        // Rank among living soldiers by index; armed if within the weapon count.
-        let rank = self
-            .dwarves
-            .iter()
-            .take(i)
-            .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
-            .count();
-        rank < weapons
-    }
-
-    /// How many soldiers are armored: the armory issues its forged suits to
+/// How many soldiers are armored: the armory issues its forged suits to
     /// enlistees in index order, just like weapons.
     pub fn armored_soldiers(&self) -> usize {
         let soldiers = self
@@ -6535,34 +6692,54 @@ impl Sim {
         soldiers.min(armor)
     }
 
-    /// Whether soldier `i` is wearing one of the fort's forged suits of armor.
-    fn is_armored(&self, i: usize) -> bool {
-        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
-            return false;
-        }
-        let armor = self
-            .items
-            .iter()
-            .filter(|it| it.active() && it.kind == ItemKind::Armor)
-            .count();
-        if armor == 0 {
-            return false;
-        }
-        let rank = self
-            .dwarves
+/// A soldier's rank in the armoury's issue order — the fort hands out its
+    /// weapons and armour to enlistees by dwarf index, one each.
+    fn armory_rank(&self, i: usize) -> usize {
+        self.dwarves
             .iter()
             .take(i)
             .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
-            .count();
-        rank < armor
+            .count()
     }
 
-    /// Is this creature carrying a forged weapon in hand? (Used for the lone
-    /// adventurer, who wields looted blades rather than the fortress armory.)
-    fn carries_weapon(&self, i: usize) -> bool {
-        self.items.iter().any(|it| {
-            it.active() && it.kind == ItemKind::Weapon && it.state == ItemState::Carried { by: i }
-        })
+    /// The actual weapon in this fighter's hands, as an item index — a soldier's
+    /// issued arm, or an adventurer's carried one. Combat reads its kind and
+    /// material off the real item rather than settling for "armed: yes/no".
+    fn wielded_weapon(&self, i: usize) -> Option<usize> {
+        // An adventurer or the player carries their own blade.
+        if let Some(idx) = self.items.iter().position(|it| {
+            it.active()
+                && it.kind == ItemKind::Weapon
+                && it.state == ItemState::Carried { by: i }
+        }) {
+            return Some(idx);
+        }
+        // A soldier draws the rank-th weapon from the armoury.
+        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
+            return None;
+        }
+        let rank = self.armory_rank(i);
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.active() && it.kind == ItemKind::Weapon)
+            .nth(rank)
+            .map(|(idx, _)| idx)
+    }
+
+    /// The suit of armour this fighter wears, as an item index. Only the fort's
+    /// enlisted soldiers are issued armour, by the same rank order.
+    fn worn_armor(&self, i: usize) -> Option<usize> {
+        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
+            return None;
+        }
+        let rank = self.armory_rank(i);
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.active() && it.kind == ItemKind::Armor)
+            .nth(rank)
+            .map(|(idx, _)| idx)
     }
 
     /// Whether citizen `i` has a bed to sleep in: the fort's beds are claimed by
@@ -6724,7 +6901,7 @@ impl Sim {
         }
         // Self-defense: fight any adjacent hostile before doing anything else.
         if let Some(enemy) = self.adjacent_enemy(i) {
-            self.melee(i, enemy);
+            self.melee(i, enemy, raws);
             return;
         }
 
@@ -7450,9 +7627,15 @@ impl Sim {
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::ForgeWeapon => {
-                                // The bar's metal carries into the blade.
+                                // The bar's metal carries into the blade, and the
+                                // smith works the fort a mix of arms rather than
+                                // a rack of identical swords — a spear for reach,
+                                // a hammer for armoured foes.
                                 self.stats.weapons_forged += 1;
+                                let kind = WeaponKind::ALL
+                                    [self.stats.weapons_forged as usize % WeaponKind::ALL.len()];
                                 self.spawn_quality_item(ItemKind::Weapon, stuff, shop, q);
+                                self.set_last_weapon_kind(kind);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::Smelt => {
@@ -8029,14 +8212,14 @@ impl Sim {
     /// approach greedily when no path exists (e.g. walls or moats).
     /// A recruited companion in adventure mode: cut down any adjacent
     /// enemy, otherwise shadow the hero, keeping a step or two behind.
-    fn follow_hero(&mut self, i: usize) {
+    fn follow_hero(&mut self, i: usize, raws: &Raws) {
         self.tick_vitals(i);
         if !self.dwarves[i].alive {
             return;
         }
         // Strike first if an enemy is in reach.
         if let Some(enemy) = self.adjacent_enemy(i) {
-            self.melee(i, enemy);
+            self.melee(i, enemy, raws);
             return;
         }
         let Some(hero) = self.player else {
@@ -8082,13 +8265,13 @@ impl Sim {
         self.dwarves[i].task = Task::Fight { target: hero, path, repath_cd };
     }
 
-    fn update_hostile(&mut self, i: usize) {
+    fn update_hostile(&mut self, i: usize, raws: &Raws) {
         self.tick_vitals(i);
         if !self.dwarves[i].alive {
             return;
         }
         if let Some(enemy) = self.adjacent_enemy(i) {
-            self.melee(i, enemy);
+            self.melee(i, enemy, raws);
             return;
         }
         // A war dog barring the way is dealt with first.
@@ -8172,7 +8355,7 @@ impl Sim {
 
     /// One melee swing, if off cooldown: pick a body part, deal damage,
     /// start bleeding, log it, and kill on vital destruction.
-    fn melee(&mut self, attacker: usize, defender: usize) {
+    fn melee(&mut self, attacker: usize, defender: usize, raws: &Raws) {
         if self.dwarves[attacker].attack_cd > 0 {
             self.dwarves[attacker].attack_cd -= 1;
             return;
@@ -8189,26 +8372,52 @@ impl Sim {
             6 => PartKind::LeftLeg,
             _ => PartKind::RightLeg,
         };
-        // A forgotten beast's blow lands with terrible force.
+        // The force behind the swing: a beast's monstrous strength, or a
+        // dwarf's arm sharpened by training.
         let base = if self.dwarves[attacker].beast {
-            self.rng.gen_range(25..=55) as i16
+            self.rng.gen_range(25..=55) as f32
         } else {
-            self.rng.gen_range(8..=20) as i16
+            self.rng.gen_range(8..=20) as f32
         };
-        // A trained fighter puts more weight behind the blow; a forged weapon
-        // in hand makes it far deadlier than bare fists. A soldier draws from
-        // the armory; a lone adventurer wields whatever blade they carry.
-        let armed = self.is_armed(attacker)
-            || (self.player == Some(attacker) && self.carries_weapon(attacker));
-        // A soldier in forged plate turns aside much of the blow — but a hit
-        // that lands always draws at least a little blood.
-        let armored = self.is_armored(defender);
-        let dmg = (base
-            + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting))
-            + if armed { WEAPON_DAMAGE } else { 0 }
-            - if armored { ARMOR_REDUCTION } else { 0 })
-        .max(1);
-        let bleed = self.rng.gen_range(1..=3) as u8;
+        let force = base + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting)) as f32;
+
+        // The weapon in hand: its kind (a sword cuts, a hammer crushes) and the
+        // metal it is forged from. A soldier draws from the armoury; an
+        // adventurer wields whatever they carry; a bare-handed brawler has
+        // only fists.
+        let weapon = self
+            .wielded_weapon(attacker)
+            .and_then(|w| {
+                let it = &self.items[w];
+                let kind = it.weapon_kind()?;
+                Some((
+                    kind.damage_type(),
+                    kind.heft(),
+                    raws.materials.get(it.stuff).combat,
+                ))
+            })
+            .or_else(|| {
+                // A beast fights with claw and bulk, not a fist. Its natural
+                // weapon is a rending, full-weight blow — otherwise the
+                // feeble-fist fallback would rob a monster of its menace.
+                self.dwarves[attacker].beast.then_some((
+                    DamageType::Edge,
+                    1.4,
+                    CombatStats { sharpness: 1.5, density: 7.8, hardness: 120.0 },
+                ))
+            });
+        // The armour the defender wears, if the fort issued them any.
+        let armor = self
+            .worn_armor(defender)
+            .map(|a| raws.materials.get(self.items[a].stuff).combat);
+
+        let blow = resolve_blow(force, weapon, armor);
+        let (dmg, bleed) = (blow.damage, blow.bleed);
+        let weapon_verb = weapon
+            .and_then(|_| self.wielded_weapon(attacker))
+            .and_then(|w| self.items[w].weapon_kind())
+            .map(|k| k.verb())
+            .unwrap_or("strikes");
         // Drawing blood teaches the trade: every landed blow hones prowess.
         self.add_xp(attacker, Skill::Fighting, 6);
 
@@ -8221,7 +8430,7 @@ impl Sim {
         let destroyed = part.hp <= 0;
         let vital = part.kind.vital();
         self.log_event(format!(
-            "{att_name} strikes {def_name} in the {}!",
+            "{att_name} {weapon_verb} {def_name} in the {}!",
             part_kind.name()
         ));
         if destroyed && vital {
@@ -8524,7 +8733,17 @@ impl Sim {
             consumed: false,
             quality: 0,
             made_at,
+            variant: 0,
         });
+    }
+
+    /// Set the kind of the weapon most recently spawned. Weapons come off the
+    /// forge through `spawn_quality_item`, which knows nothing of kinds — this
+    /// stamps the one just made.
+    fn set_last_weapon_kind(&mut self, kind: WeaponKind) {
+        if let Some(it) = self.items.last_mut() {
+            it.variant = WeaponKind::ALL.iter().position(|&k| k == kind).unwrap_or(0) as u8;
+        }
     }
 
     /// Pick up an item the dwarf is standing on. Returns false if it's gone.
@@ -9110,7 +9329,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 64;
+const SAVE_VERSION: u32 = 65;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

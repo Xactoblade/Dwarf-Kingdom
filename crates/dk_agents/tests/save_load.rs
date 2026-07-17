@@ -128,6 +128,7 @@ fn a_reordered_registry_remaps_dwarf_favorites_and_tree_species() {
         category: cat,
         color: [100, 100, 100],
         value: 1,
+        combat: Default::default(),
     };
     // Same six materials (covering the categories mapgen needs), two orders.
     let defs = |rev: bool| {

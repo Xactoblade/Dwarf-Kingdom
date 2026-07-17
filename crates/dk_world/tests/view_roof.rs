@@ -10,6 +10,7 @@ use dk_raws::{MaterialCategory, MaterialDef, MaterialRegistry};
 fn regs() -> MaterialRegistry {
     let m = |id: &str, cat: MaterialCategory| MaterialDef {
         id: id.into(), name: id.into(), category: cat, color: [100,100,100], value: 1,
+        combat: Default::default(),
     };
     MaterialRegistry::from_defs(vec![
         m("loam", MaterialCategory::Soil),

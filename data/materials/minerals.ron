@@ -22,9 +22,14 @@
     MaterialDef(id: "gneiss",    name: "Gneiss",    category: Metamorphic, color: (120, 108, 100), value: 1),
 
     // --- Ores ---
-    MaterialDef(id: "hematite",  name: "Hematite",   category: Ore,        color: (155, 66, 58),   value: 8),
-    MaterialDef(id: "magnetite", name: "Magnetite",  category: Ore,        color: (60, 56, 66),    value: 8),
-    MaterialDef(id: "galena",    name: "Galena",     category: Ore,        color: (130, 134, 150), value: 10),
-    MaterialDef(id: "cassiterite", name: "Cassiterite", category: Ore,     color: (110, 90, 60),   value: 12),
-    MaterialDef(id: "native_gold", name: "Native Gold", category: Ore,     color: (222, 178, 62),  value: 30),
+    MaterialDef(id: "hematite",  name: "Hematite",   category: Ore,        color: (155, 66, 58),   value: 8,
+        combat: CombatStats(sharpness: 1.0, density: 7.8, hardness: 100.0)),  // forges into iron
+    MaterialDef(id: "magnetite", name: "Magnetite",  category: Ore,        color: (60, 56, 66),    value: 8,
+        combat: CombatStats(sharpness: 1.0, density: 7.8, hardness: 100.0)),  // iron
+    MaterialDef(id: "galena",    name: "Galena",     category: Ore,        color: (130, 134, 150), value: 10,
+        combat: CombatStats(sharpness: 0.6, density: 11.3, hardness: 25.0)),  // lead: heavy and soft
+    MaterialDef(id: "cassiterite", name: "Cassiterite", category: Ore,     color: (110, 90, 60),   value: 12,
+        combat: CombatStats(sharpness: 0.8, density: 7.3, hardness: 30.0)),  // tin: soft
+    MaterialDef(id: "native_gold", name: "Native Gold", category: Ore,     color: (222, 178, 62),  value: 30,
+        combat: CombatStats(sharpness: 0.7, density: 19.3, hardness: 20.0)),  // gold: for show, not war
 ]

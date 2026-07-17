@@ -2,5 +2,6 @@
 // category is not a geological one); seeded only in deep spires by the app, and
 // the fort that mines too greedily through one breaches the underworld.
 [
-    MaterialDef(id: "adamantine", name: "Adamantine", category: Adamantine, color: (150, 220, 226), value: 100),
+    MaterialDef(id: "adamantine", name: "Adamantine", category: Adamantine, color: (150, 220, 226), value: 100,
+        combat: CombatStats(sharpness: 10.0, density: 0.2, hardness: 200.0)),  // keen beyond reason, light as cloth
 ]
