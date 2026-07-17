@@ -27,7 +27,7 @@ use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
     item_value, AnimalKind, PlayerAction,
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
-    SiegeLeader, SiegeRoster, Sim,
+    SiegeLeader, SiegeRoster, Sim, SquadOrder,
 };
 use dk_core::Season;
 use dk_history::World;
@@ -78,6 +78,8 @@ ZONES & LABOR\n\
   Shift+L ... library (scholars write treatises, read them in Legends)\n\
   u ... cull an animal      Shift+U ... war-train a dog\n\
   i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
+  Defend / Station / Train (toolbar) ... order your squads: hunt all, hold a\n\
+    clicked post, or drill and defend only themselves\n\
   c ... cancel designations\n\
 \n\
 FORTRESS\n\
@@ -281,6 +283,18 @@ enum Tool {
     WarDog,
     /// Enlist (or dismiss) the dwarf at the clicked tile as a soldier.
     Enlist,
+    /// Set every squad's standing order. Station uses the clicked tile as the
+    /// post; Defend and Train ignore the tile and apply at once.
+    Order(OrderTool),
+}
+
+/// The three standing orders a player can give the fort's squads, as toolbar
+/// buttons. Station's post is the tile the player clicks; the others act at once.
+#[derive(Clone, Copy, PartialEq)]
+enum OrderTool {
+    Defend,
+    Station,
+    Train,
 }
 
 /// The currently selected toolbar tool and its pending rectangle anchor.
@@ -578,6 +592,9 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Enlist, label: "Enlist", key: "i", tip: "Make the dwarf here a soldier (click again to dismiss)", cat: 3 },
     ToolButton { tool: Tool::Cull, label: "Cull", key: "u", tip: "Mark the animal here to be slaughtered for meat", cat: 3 },
     ToolButton { tool: Tool::WarDog, label: "War Dog", key: "\u{21e7}U", tip: "Train the dog here into a war beast", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Defend), label: "Defend", key: "", tip: "Squads hunt any hostile in the fort", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Station), label: "Station", key: "", tip: "Squads hold the clicked post, striking only what nears it", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Train), label: "Train", key: "", tip: "Squads drill at the barracks and defend only themselves", cat: 3 },
     ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
 ];
 
@@ -1907,7 +1924,11 @@ fn handle_toolbar(
             active.anchor = None;
         }
         if hovered {
-            hover_tip = Some(format!("{}  ({})   {}", tb.label, tb.key, tb.tip));
+            hover_tip = Some(if tb.key.is_empty() {
+                format!("{}   {}", tb.label, tb.tip)
+            } else {
+                format!("{}  ({})   {}", tb.label, tb.key, tb.tip)
+            });
         }
         let is_active = active.tool == Some(tb.tool);
         *bg = BackgroundColor(tool_bg(tb.cat, is_active, hovered));
@@ -2056,6 +2077,18 @@ fn apply_active_tool(
         }
         Tool::Enlist => {
             sim.toggle_soldier(here);
+        }
+        Tool::Order(order) => {
+            let order = match order {
+                OrderTool::Defend => SquadOrder::Defend,
+                OrderTool::Train => SquadOrder::Train,
+                OrderTool::Station => SquadOrder::Station(here),
+            };
+            // A small fort commands its soldiers as one body: the order goes to
+            // every squad.
+            for s in 0..sim.squads.len() {
+                sim.set_squad_order(s, order);
+            }
         }
         Tool::Rect(kind) => match active.anchor {
             Some(a) if a.z == here.z => {
@@ -4936,6 +4969,14 @@ fn update_hud(
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
     let alarm_txt = if sim.0.alarm { " [SOUNDED]" } else { "" };
+    // The fort's soldiers share one standing order in this UI; show it so the
+    // player knows whether their squads will sally, hold, or drill.
+    let squad_txt = match sim.0.squads.first().map(|s| s.order) {
+        None => String::new(),
+        Some(SquadOrder::Defend) => "   orders: DEFEND".to_string(),
+        Some(SquadOrder::Train) => "   orders: TRAIN".to_string(),
+        Some(SquadOrder::Station(p)) => format!("   orders: STATION ({}, {})", p.x, p.y),
+    };
     let vampire_txt = if sim.0.stats.drained > 0 {
         format!("   ** a vampire walks among us: {} drained **", sim.0.stats.drained)
     } else {
@@ -4959,7 +5000,7 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}   songs {}{}\n\
+             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}{}   poems {}   songs {}{}\n\
              Build & dig from the toolbar below (or press its key) -- click a tool, then click the map.   l:lever  t:pull   F1: full controls\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
@@ -4996,6 +5037,7 @@ fn update_hud(
             sim.0.veterans(),
             sim.0.armed_soldiers(),
             sim.0.armored_soldiers(),
+            squad_txt,
             sim.0.poems.len(),
             sim.0.songs.len(),
             vampire_txt,

@@ -436,6 +436,23 @@ pub fn quality_name(q: u8) -> &'static str {
     }
 }
 
+/// Spell a small ordinal — for naming squads "the First Company", "the Second
+/// Company", and so on. Falls back to the numeral past what a fort will field.
+pub fn ordinal(n: usize) -> &'static str {
+    match n {
+        1 => "First",
+        2 => "Second",
+        3 => "Third",
+        4 => "Fourth",
+        5 => "Fifth",
+        6 => "Sixth",
+        7 => "Seventh",
+        8 => "Eighth",
+        9 => "Ninth",
+        _ => "Tenth",
+    }
+}
+
 impl Item {
     pub fn active(&self) -> bool {
         !self.consumed
@@ -1334,6 +1351,9 @@ pub enum Task {
     Recover { spot: Pos, path: Vec<Pos>, remaining: u16 },
     /// Drill at the barracks, honing the fighting skill.
     Spar { spot: Pos, path: Vec<Pos>, remaining: u16 },
+    /// Hold a post: a stationed soldier marches to its point and stands guard,
+    /// striking only what strays near (the hunt loop handles engagement).
+    Station { spot: Pos, path: Vec<Pos> },
     /// Shelter in a burrow while the alarm sounds.
     Shelter { spot: Pos, path: Vec<Pos> },
     /// Walk to a marked tree and fell it for a log.
@@ -1465,6 +1485,7 @@ impl Dwarf {
             Task::Pray { .. } => "praying at the temple",
             Task::Recover { .. } => "resting in the hospital",
             Task::Spar { .. } => "drilling at the barracks",
+            Task::Station { .. } => "holding a post",
             Task::Shelter { .. } => "sheltering from the raid",
         }
     }
@@ -1686,6 +1707,39 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
 
 // ---------------------------------------------------------------- sieges
 
+
+/// What a squad is doing. A player's command over their soldiers, where before
+/// every soldier hunted every hostile on sight with no say in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SquadOrder {
+    /// Hunt down any hostile in the fort. The old always-on behaviour, now a
+    /// choice.
+    Defend,
+    /// Hold a post: march to a point and guard it, striking only what comes
+    /// near. A soldier stationed on a bridge does not chase a beast across the
+    /// map and leave the gate open.
+    Station(Pos),
+    /// Drill at the barracks. Train through peacetime; still defends itself if
+    /// something walks up, but does not go looking for a fight.
+    Train,
+}
+
+/// A squad: the fort's soldiers, organised. Dwarf Fortress caps a squad at ten
+/// under one commander; this is that, pared to what a small fort needs — a
+/// name, its members, and one standing order the player sets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Squad {
+    pub name: String,
+    /// Dwarf indices. The first is the squad's commander.
+    pub members: Vec<usize>,
+    pub order: SquadOrder,
+}
+
+/// The most soldiers in one squad, as in Dwarf Fortress.
+pub const SQUAD_MAX: usize = 10;
+/// How near a hostile must come to a stationed squad before it strikes.
+pub const STATION_ENGAGE_RANGE: u32 = 10;
+
 /// A named enemy supplied by world history: sieges are led by figures the
 /// player can look up in Legends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1715,6 +1769,8 @@ pub struct Sim {
     pub hospitals: Vec<Rect>,
     /// Barracks zones: enlisted soldiers spar here to hone their fighting.
     pub barracks: Vec<Rect>,
+    /// The fort's squads. A soldier belongs to exactly one.
+    pub squads: Vec<Squad>,
     /// Burrow zones: safe rooms civilians retreat to when the alarm sounds.
     pub burrows: Vec<Rect>,
     /// Whether the civilian alarm is sounded (retreat to the burrows).
@@ -1880,6 +1936,7 @@ impl Sim {
             temples: Vec::new(),
             hospitals: Vec::new(),
             barracks: Vec::new(),
+            squads: Vec::new(),
             burrows: Vec::new(),
             alarm: false,
             library: Vec::new(),
@@ -2244,12 +2301,70 @@ impl Sim {
             .position(|d| d.alive && d.faction == Faction::Fort && d.pos == p)?;
         self.dwarves[i].soldier = !self.dwarves[i].soldier;
         let (name, now) = (self.dwarves[i].name.clone(), self.dwarves[i].soldier);
+        if now {
+            self.enlist_in_squad(i);
+        } else {
+            self.discharge_from_squads(i);
+        }
         self.log_event(if now {
             format!("{name} takes up arms as a soldier.")
         } else {
             format!("{name} lays down their arms.")
         });
         Some(now)
+    }
+
+    /// Slot a new soldier into a squad — the first with room, or a fresh one.
+    /// Dwarf Fortress caps a squad at ten, so an eleventh soldier musters a
+    /// second squad rather than crowding the first.
+    fn enlist_in_squad(&mut self, i: usize) {
+        if self.squads.iter().any(|s| s.members.contains(&i)) {
+            return;
+        }
+        if let Some(sq) = self.squads.iter_mut().find(|s| s.members.len() < SQUAD_MAX) {
+            sq.members.push(i);
+            return;
+        }
+        let n = self.squads.len() + 1;
+        self.squads.push(Squad {
+            name: format!("the {} Company", ordinal(n)),
+            members: vec![i],
+            order: SquadOrder::Defend,
+        });
+    }
+
+    /// Take a discharged (or dead) soldier off the rolls. An emptied squad is
+    /// struck so it does not linger with no one in it.
+    fn discharge_from_squads(&mut self, i: usize) {
+        for sq in &mut self.squads {
+            sq.members.retain(|&m| m != i);
+        }
+        self.squads.retain(|s| !s.members.is_empty());
+    }
+
+    /// Give a squad its standing order — the player's command.
+    pub fn set_squad_order(&mut self, squad: usize, order: SquadOrder) {
+        if let Some(sq) = self.squads.get_mut(squad) {
+            sq.order = order;
+            let (name, what) = (
+                sq.name.clone(),
+                match order {
+                    SquadOrder::Defend => "will defend the fort".to_string(),
+                    SquadOrder::Station(p) => format!("holds a post at ({}, {})", p.x, p.y),
+                    SquadOrder::Train => "drills at the barracks".to_string(),
+                },
+            );
+            self.log_event(format!("{name} {what}."));
+        }
+    }
+
+    /// The standing order for the squad this soldier belongs to. A soldier in
+    /// no squad (or a lone enlistee before mustering) simply defends.
+    fn squad_order(&self, i: usize) -> SquadOrder {
+        self.squads
+            .iter()
+            .find(|s| s.members.contains(&i))
+            .map_or(SquadOrder::Defend, |s| s.order)
     }
 
     pub fn soldier_count(&self) -> usize {
@@ -3855,6 +3970,8 @@ impl Sim {
         self.fisheries.clear();
         self.hospitals.clear();
         self.barracks.clear();
+        // The squads reference fort dwarf indices, gone with the old roster.
+        self.squads.clear();
         self.burrows.clear();
         self.alarm = false;
         self.library.clear();
@@ -7078,11 +7195,20 @@ impl Sim {
             self.dwarves[i].task = Task::Idle { wander_cd: 3 };
         }
 
-        // Soldiers proactively hunt: march on the nearest reachable hostile
-        // instead of standing at their post.
+        // Soldiers hunt as their squad's standing order directs. A defending
+        // squad marches on the nearest hostile anywhere in the fort; a
+        // stationed one only strikes what comes near its post and otherwise
+        // holds it; a training squad drills (below) and defends only itself.
         if self.dwarves[i].soldier {
             let my_pos = self.dwarves[i].pos;
             let my_region = self.regions.id(my_pos);
+            let order = self.squad_order(i);
+            // A stationed squad measures threats from its post, not from the
+            // soldier — so the whole line reacts to a foe nearing the gate.
+            let watch = match order {
+                SquadOrder::Station(p) => p,
+                _ => my_pos,
+            };
             let quarry = self
                 .dwarves
                 .iter()
@@ -7091,9 +7217,49 @@ impl Sim {
                     d.alive
                         && d.faction == Faction::Hostile
                         && self.regions.id(d.pos) == my_region
+                        && match order {
+                            // Train: never go looking (self-defense is handled
+                            // above by the adjacent-enemy check).
+                            SquadOrder::Train => false,
+                            // Station: only what strays within reach of the post.
+                            SquadOrder::Station(p) => d.pos.manhattan(p) <= STATION_ENGAGE_RANGE,
+                            SquadOrder::Defend => true,
+                        }
                 })
-                .min_by_key(|(_, d)| d.pos.manhattan(my_pos))
+                .min_by_key(|(_, d)| d.pos.manhattan(watch))
                 .map(|(j, _)| j);
+            // A stationed soldier with nothing to fight marches to its post and
+            // holds there, rather than idling wherever it happened to be.
+            if quarry.is_none() {
+                if let SquadOrder::Station(post) = order {
+                    // Already holding near the post: stand guard, step no more.
+                    if my_pos.manhattan(post) <= 1 || !self.map.walkable(post) {
+                        self.dwarves[i].task = Task::Station { spot: post, path: Vec::new() };
+                        return;
+                    }
+                    // March to the post — reuse a cached route unless it points
+                    // elsewhere (a fresh order) or has run out.
+                    let mut path = match self.dwarves[i].task.clone() {
+                        Task::Station { spot, path } if spot == post => path,
+                        other => {
+                            // Drop any stale pursuit or job before marching.
+                            if !matches!(other, Task::Station { .. }) {
+                                self.abandon_task(i);
+                            }
+                            Vec::new()
+                        }
+                    };
+                    if path.is_empty() {
+                        path = path::astar(&self.map, my_pos, post, MAX_ASTAR_NODES)
+                            .unwrap_or_default();
+                    }
+                    if !path.is_empty() && !self.step_along(i, &mut path) {
+                        path.clear();
+                    }
+                    self.dwarves[i].task = Task::Station { spot: post, path };
+                    return;
+                }
+            }
             if let Some(q) = quarry {
                 // Reuse the cached route unless we've retargeted or the
                 // repath timer expired — a full A* every tick is wasteful
@@ -8232,6 +8398,15 @@ impl Sim {
                 // (update_dwarf releases us back to Idle then).
                 self.dwarves[i].task = Task::Shelter { spot, path };
             }
+            Task::Station { spot, mut path } => {
+                // March to the post, then hold. update_dwarf redirects to a
+                // fight the moment a hostile strays within reach.
+                if !path.is_empty() && self.step_along(i, &mut path) {
+                    self.dwarves[i].task = Task::Station { spot, path };
+                } else {
+                    self.dwarves[i].task = Task::Station { spot, path: Vec::new() };
+                }
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -8810,6 +8985,8 @@ impl Sim {
         }
         // Their bed passes to whoever needs it next; the dead sleep elsewhere.
         self.release_bed(i);
+        // A fallen soldier is struck from the muster rolls.
+        self.discharge_from_squads(i);
         self.dwarves[i].alive = false;
         self.dwarves[i].died_at = Some(self.clock.tick);
         // `deaths` means fort citizens lost; raider kills have their own
@@ -9340,6 +9517,7 @@ impl Sim {
             | Task::Pray { .. }
             | Task::Recover { .. }
             | Task::Spar { .. }
+            | Task::Station { .. }
             | Task::Shelter { .. }
             | Task::DrinkWell { .. } => {}
         }
@@ -9501,7 +9679,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 66;
+const SAVE_VERSION: u32 = 67;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
