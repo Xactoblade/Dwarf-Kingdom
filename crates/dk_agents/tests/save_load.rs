@@ -63,6 +63,7 @@ fn a_rich_fortress_survives_a_save_and_reload() {
     assert!(!sim.hospitals.is_empty() && !sim.barracks.is_empty() && !sim.burrows.is_empty());
     assert!(!sim.library.is_empty() && !sim.taverns.is_empty() && !sim.temples.is_empty());
     assert!(sim.alarm, "the alarm was sounded");
+    assert!(!sim.squads.is_empty(), "enlisting mustered a squad");
     assert!(!sim.buildings.is_empty());
     assert!(sim.count_kind(ItemKind::Meal) > 0 || sim.count_kind(ItemKind::Drink) > 0);
 
@@ -88,6 +89,7 @@ fn a_rich_fortress_survives_a_save_and_reload() {
     same!(stockpiles);
     same!(hospitals);
     same!(barracks);
+    same!(squads);
     same!(burrows);
     same!(library);
     same!(taverns);
