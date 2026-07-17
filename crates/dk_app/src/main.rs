@@ -334,6 +334,95 @@ struct WasPressed(bool);
 /// The category names, indexed by the `cat` field on each tool.
 const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders", "Piles"];
 
+/// Which of the world's layers the embark map is painting.
+///
+/// The world knows six fields and its own good and evil, and until now the map
+/// drew two of them. Dwarf Fortress lets you look at each in turn; so does
+/// this. Cycled with `m`.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+enum MapView {
+    #[default]
+    Biome,
+    Elevation,
+    Rainfall,
+    Drainage,
+    Temperature,
+    Savagery,
+    Volcanism,
+    Alignment,
+}
+
+impl MapView {
+    const ALL: [MapView; 8] = [
+        MapView::Biome,
+        MapView::Elevation,
+        MapView::Rainfall,
+        MapView::Drainage,
+        MapView::Temperature,
+        MapView::Savagery,
+        MapView::Volcanism,
+        MapView::Alignment,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            MapView::Biome => "biome",
+            MapView::Elevation => "elevation",
+            MapView::Rainfall => "rainfall",
+            MapView::Drainage => "drainage",
+            MapView::Temperature => "temperature",
+            MapView::Savagery => "savagery",
+            MapView::Volcanism => "volcanism",
+            MapView::Alignment => "good & evil",
+        }
+    }
+
+    fn next(self) -> MapView {
+        let i = MapView::ALL.iter().position(|&v| v == self).unwrap_or(0);
+        MapView::ALL[(i + 1) % MapView::ALL.len()]
+    }
+
+    /// What colour a region takes in this view. `None` means "paint it the
+    /// ordinary way" — the biome view.
+    fn tint(self, r: &dk_history::Region) -> Option<[f32; 3]> {
+        // A cold-to-hot ramp: deep blue, teal, green, yellow, red. Reads at a
+        // glance and survives being wrong about the exact number.
+        fn ramp(t: f32) -> [f32; 3] {
+            let t = t.clamp(0.0, 1.0);
+            const STOPS: [[f32; 3]; 5] = [
+                [0.10, 0.16, 0.55],
+                [0.10, 0.55, 0.60],
+                [0.25, 0.70, 0.30],
+                [0.88, 0.80, 0.25],
+                [0.80, 0.20, 0.16],
+            ];
+            let x = t * (STOPS.len() - 1) as f32;
+            let i = (x.floor() as usize).min(STOPS.len() - 2);
+            let f = x - i as f32;
+            [
+                STOPS[i][0] + (STOPS[i + 1][0] - STOPS[i][0]) * f,
+                STOPS[i][1] + (STOPS[i + 1][1] - STOPS[i][1]) * f,
+                STOPS[i][2] + (STOPS[i + 1][2] - STOPS[i][2]) * f,
+            ]
+        }
+        match self {
+            MapView::Biome => None,
+            MapView::Elevation => Some(ramp(r.elevation_frac())),
+            MapView::Rainfall => Some(ramp(r.rainfall as f32 / 100.0)),
+            MapView::Drainage => Some(ramp(r.drainage as f32 / 100.0)),
+            // -30C..45C over the ramp.
+            MapView::Temperature => Some(ramp((r.temperature as f32 + 30.0) / 75.0)),
+            MapView::Savagery => Some(ramp(r.savagery as f32 / 100.0)),
+            MapView::Volcanism => Some(ramp(r.volcanism as f32 / 100.0)),
+            MapView::Alignment => Some(match r.alignment {
+                dk_history::Alignment::Good => [0.45, 0.80, 0.95],
+                dk_history::Alignment::Neutral => [0.35, 0.35, 0.38],
+                dk_history::Alignment::Evil => [0.65, 0.12, 0.45],
+            }),
+        }
+    }
+}
+
 /// The dwarf whose info sheet is open (clicked with no tool selected).
 #[derive(Resource, Default)]
 struct SelectedDwarf(Option<usize>);
@@ -991,6 +1080,7 @@ fn main() {
         .insert_resource(MapDirty(true))
         .insert_resource(Traffic::default())
         .insert_resource(SimControl { paused: false, speed: 1 })
+        .init_resource::<MapView>()
         .insert_resource(UiMode::default())
         .insert_resource(ActiveTool::default())
         .insert_resource(OpenCategory(Some(0)))
@@ -1010,6 +1100,7 @@ fn main() {
                     (
                         handle_toolbar,
                         handle_embark_buttons,
+                        cycle_map_view,
                         handle_category,
                         tool_escape,
                         toolbar_layout,
@@ -2315,6 +2406,31 @@ fn toolbar_visibility(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `m` on the embark screen: look at the world's layers in turn — elevation,
+/// rainfall, drainage, temperature, savagery, volcanism, good and evil — the
+/// way Dwarf Fortress lets you. Its own system because `handle_input` is at
+/// Bevy's sixteen-parameter ceiling.
+fn cycle_map_view(
+    keys: Res<ButtonInput<KeyCode>>,
+    screen: Res<ScreenRes>,
+    mut map_view: ResMut<MapView>,
+    mut dirty: ResMut<MapDirty>,
+) {
+    if screen.0 == Screen::Embark && keys.just_pressed(KeyCode::KeyM) {
+        *map_view = map_view.next();
+        dirty.0 = true;
+    }
+    // A screenshot run can pin a view for verification.
+    if let Ok(v) = std::env::var("DK_SHOT_VIEW") {
+        if let Some(&w) = MapView::ALL.iter().find(|m| m.name().starts_with(&v)) {
+            if *map_view != w {
+                *map_view = w;
+                dirty.0 = true;
+            }
+        }
+    }
+}
+
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -3750,6 +3866,7 @@ fn redraw_tiles(
     reg: Res<Registry>,
     world: Res<WorldRes>,
     screen: Res<ScreenRes>,
+    map_view: Res<MapView>,
     tileset: Res<Tileset>,
     view_z: Res<ViewZ>,
     cursor: Res<Cursor>,
@@ -3769,10 +3886,17 @@ fn redraw_tiles(
             let region = world.0.overworld.get(rx.min(OW - 1), ry.min(OW - 1));
             let [r, g, b] = region.biome.color();
             let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+            // Looking at one of the world's layers instead of its face: paint
+            // the value and skip the relief shading, which would only muddy a
+            // reading.
+            let overlay = map_view.tint(region);
+            if let Some(c) = overlay {
+                rgb = c;
+            }
             // Shade by elevation so the land reads as relief: valleys sit
             // darker, high ground brightens, and the highest peaks catch a
             // dusting of snow — mountains stand out at a glance.
-            if !matches!(region.biome, dk_history::Biome::Ocean) {
+            if overlay.is_none() && !matches!(region.biome, dk_history::Biome::Ocean) {
                 let e = region.elevation_frac();
                 let shade = (0.72 + 0.5 * (e - 0.35)).clamp(0.55, 1.15);
                 rgb = [rgb[0] * shade, rgb[1] * shade, rgb[2] * shade];
@@ -3783,13 +3907,15 @@ fn redraw_tiles(
             }
             // A river threads blue across the land; a basin holds a lake — so
             // you can see the water and settle beside it.
-            if region.lake {
-                rgb = mix(rgb, [0.14, 0.34, 0.72], 0.72);
-            } else if region.river {
-                rgb = mix(rgb, [0.22, 0.46, 0.82], 0.62);
+            if overlay.is_none() {
+                if region.lake {
+                    rgb = mix(rgb, [0.14, 0.34, 0.72], 0.72);
+                } else if region.river {
+                    rgb = mix(rgb, [0.22, 0.46, 0.82], 0.62);
+                }
             }
             let mut glyph = "block";
-            // Mark civilization sites.
+            // Mark civilization sites — worth seeing in every view.
             if world.0.sites.iter().any(|st| st.region == (rx, ry) && !st.ruined) {
                 rgb = [0.95, 0.9, 0.5];
                 glyph = "artifact";
@@ -4183,6 +4309,7 @@ fn update_hud(
     reg: Res<Registry>,
     world: Res<WorldRes>,
     screen: Res<ScreenRes>,
+    map_view: Res<MapView>,
     has_save: Res<HasSave>,
     scroll: Res<LegendsState>,
     trade: Res<TradeState>,
@@ -4248,19 +4375,20 @@ fn update_hud(
                 text.0 = format!(
                     "Dwarf Kingdom :: Choose your embark   (world seed {} — n: forge a new world)\n\
                      {} years of history · {} civilizations · {} sites · {} named figures\n\
-                     region ({}, {}) — {}{}{}\n\
+                     {} ({}) — {}{}{}\n\
                      surroundings: {} · temperature {}C · elevation {} · rainfall {} · drainage {}\n\
                      {} · {}{}\n\
                      {}\n\
                      {}\n\
-                     arrows/click: move   y: Legends   {}{}",
+                     {}\n\
+                     arrows/click: move   m: {} view   y: Legends{}",
                     world.0.seed,
                     world.0.years_simulated,
                     world.0.civs.len(),
                     world.0.sites.len(),
                     world.0.figures.len(),
-                    rx,
-                    ry,
+                    world.0.overworld.named[region.subregion].name,
+                    world.0.overworld.named[region.subregion].size_class(),
                     region.biome.name(),
                     hills,
                     site,
@@ -4275,6 +4403,7 @@ fn update_hud(
                     neighbours,
                     enemy,
                     ok,
+                    map_view.name(),
                     resume,
                 );
             }

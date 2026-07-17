@@ -217,3 +217,71 @@ fn the_same_seed_still_makes_the_same_world() {
     };
     assert_eq!(fields(&a), fields(&b), "every field of every region matches");
 }
+
+// ------------------------------------------------------------ named regions
+
+#[test]
+fn every_tile_belongs_to_a_named_region() {
+    let w = World::generate(808, 48, 48, 5);
+    assert!(!w.overworld.named.is_empty(), "the world has named country");
+    for r in &w.overworld.regions {
+        assert!(
+            r.subregion < w.overworld.named.len(),
+            "every tile points at a real region"
+        );
+    }
+    // The tile counts add up to the world.
+    let counted: usize = w.overworld.named.iter().map(|n| n.tiles).sum();
+    assert_eq!(counted, w.overworld.regions.len(), "no tile counted twice or lost");
+}
+
+#[test]
+fn a_named_region_is_one_kind_of_country_of_one_nature() {
+    // DF: "a contiguous set of world tiles with the same or similar biomes AND
+    // the same alignment; the whole region is uniformly evil, neutral, or good".
+    let w = World::generate(909, 48, 48, 5);
+    for r in &w.overworld.regions {
+        let named = &w.overworld.named[r.subregion];
+        assert_eq!(
+            dk_history::RegionKind::of(r.biome),
+            named.kind,
+            "a tile is the kind of country its region is"
+        );
+        assert_eq!(r.alignment, named.alignment, "and shares its nature");
+    }
+}
+
+#[test]
+fn like_country_is_named_together_not_tile_by_tile() {
+    // Swamp and marsh are one Wetland; the three forests are one Forest. A
+    // world naming every tile separately would be a world of 2304 regions.
+    let w = World::generate(1010, 48, 48, 5);
+    let n = w.overworld.named.len();
+    assert!(
+        n < w.overworld.regions.len() / 4,
+        "country is named in stretches, not tiles ({n} regions for {} tiles)",
+        w.overworld.regions.len()
+    );
+    assert!(n > 4, "but the world is not one single region ({n})");
+    // At least one region is big enough to be worth the name.
+    assert!(
+        w.overworld.named.iter().any(|r| r.tiles >= 25),
+        "somewhere is a region you could walk across"
+    );
+}
+
+#[test]
+fn regions_are_named_something_a_dwarf_would_say() {
+    let w = World::generate(1111, 48, 48, 5);
+    for r in &w.overworld.named {
+        assert!(r.name.starts_with("the "), "{:?} reads like a name", r.name);
+        assert!(r.name.contains(" of "), "{:?} is 'the X of Y'", r.name);
+    }
+    // Size classes are DF's.
+    let small = dk_history::NamedRegion { name: String::new(), kind: dk_history::RegionKind::Forest, alignment: dk_history::Alignment::Neutral, tiles: 24 };
+    let medium = dk_history::NamedRegion { tiles: 25, ..small.clone() };
+    let large = dk_history::NamedRegion { tiles: 100, ..small.clone() };
+    assert_eq!(small.size_class(), "small");
+    assert_eq!(medium.size_class(), "medium");
+    assert_eq!(large.size_class(), "large");
+}

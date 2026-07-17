@@ -91,3 +91,39 @@ const SITE_B: [&str; 12] = [
 pub fn site_name(rng: &mut ChaCha8Rng, _race: Race) -> String {
     format!("{}{}", pick(rng, &SITE_A), pick(rng, &SITE_B))
 }
+
+// ---------------------------------------------------------------- regions
+
+/// The word a stretch of country goes by — "the Forest of Whispering".
+/// Deliberately evocative rather than descriptive: a region's name should be
+/// something a dwarf would say, not a label.
+const REGION_OF: [&str; 24] = [
+    "Whispering",
+    "Sorrow",
+    "the Long Dusk",
+    "Iron Rain",
+    "Quiet Bones",
+    "the Pale Sun",
+    "Wandering",
+    "Old Grief",
+    "Silver Thunder",
+    "the Last Word",
+    "Bitter Song",
+    "Hollow Winds",
+    "the Grey Watch",
+    "Broken Promises",
+    "Amber Light",
+    "the Deep Hush",
+    "Rusted Hope",
+    "Singing Stones",
+    "the Cold Vigil",
+    "Glass Water",
+    "Fading Echoes",
+    "the Slow Fire",
+    "Crooked Roads",
+    "Mourning Doves",
+];
+
+pub fn region_name(rng: &mut ChaCha8Rng, kind: &str) -> String {
+    format!("the {} of {}", kind, pick(rng, &REGION_OF))
+}

@@ -115,6 +115,81 @@ impl Biome {
     }
 }
 
+/// The kinds of country a named region can be.
+///
+/// Dwarf Fortress lumps like with like before it names anything: "Wetland =
+/// swamp+marsh; Forest = broadleaf+coniferous+taiga; Grassland/Hills =
+/// grassland+savanna+shrubland; Desert = badlands+rocky wasteland+sand desert;
+/// Lake, Tundra, Glacier, Ocean, Mountains each stand alone." A traveller does
+/// not say "I crossed the shrubland and then the savanna" — they say they
+/// crossed the plains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RegionKind {
+    Ocean,
+    Lake,
+    Mountains,
+    Glacier,
+    Tundra,
+    Desert,
+    Grassland,
+    Wetland,
+    Forest,
+}
+
+impl RegionKind {
+    pub fn of(biome: Biome) -> RegionKind {
+        match biome {
+            Biome::Ocean => RegionKind::Ocean,
+            Biome::Lake => RegionKind::Lake,
+            Biome::Mountains => RegionKind::Mountains,
+            Biome::Glacier => RegionKind::Glacier,
+            Biome::Tundra => RegionKind::Tundra,
+            Biome::SandDesert | Biome::RockyWasteland | Biome::Badlands => RegionKind::Desert,
+            Biome::Grassland | Biome::Savanna | Biome::Shrubland => RegionKind::Grassland,
+            Biome::Marsh | Biome::Swamp => RegionKind::Wetland,
+            Biome::ConiferForest | Biome::Taiga | Biome::BroadleafForest => RegionKind::Forest,
+        }
+    }
+
+    /// The noun in the name: "the Forest of Whispering".
+    pub fn noun(self) -> &'static str {
+        match self {
+            RegionKind::Ocean => "Ocean",
+            RegionKind::Lake => "Lake",
+            RegionKind::Mountains => "Mountains",
+            RegionKind::Glacier => "Glacier",
+            RegionKind::Tundra => "Tundra",
+            RegionKind::Desert => "Desert",
+            RegionKind::Grassland => "Plains",
+            RegionKind::Wetland => "Marshes",
+            RegionKind::Forest => "Forest",
+        }
+    }
+}
+
+/// A named stretch of country: contiguous land of one kind that shares one
+/// nature. Dwarf Fortress's subregion, and the thing a player actually names
+/// when they talk about where they settled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamedRegion {
+    pub name: String,
+    pub kind: RegionKind,
+    pub alignment: Alignment,
+    /// How many overworld tiles it covers. DF's size classes: <=24 small,
+    /// 25-99 medium, 100+ large.
+    pub tiles: usize,
+}
+
+impl NamedRegion {
+    pub fn size_class(&self) -> &'static str {
+        match self.tiles {
+            0..=24 => "small",
+            25..=99 => "medium",
+            _ => "large",
+        }
+    }
+}
+
 /// How wild the land is — Dwarf Fortress's savagery, in its own words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Savagery {
@@ -221,6 +296,9 @@ pub struct Region {
     pub savagery: u8,
     /// Whether the land is kindly, indifferent, or hates you.
     pub alignment: Alignment,
+    /// Index into `Overworld::named` — the stretch of country this tile is
+    /// part of, and the name it goes by.
+    pub subregion: usize,
     pub biome: Biome,
     /// A river flows through this region (part of the downhill river network).
     pub river: bool,
@@ -237,6 +315,8 @@ pub struct Overworld {
     pub width: usize,
     pub height: usize,
     pub regions: Vec<Region>,
+    /// Every named stretch of country. `Region::subregion` indexes this.
+    pub named: Vec<NamedRegion>,
 }
 
 impl Overworld {
@@ -376,8 +456,9 @@ impl Overworld {
                     drainage,
                     volcanism,
                     savagery,
-                    // Painted on later, once the land is known.
+                    // Both painted on later, once the land is known.
                     alignment: Alignment::Neutral,
+                    subregion: 0,
                     biome,
                     river: false,
                     river_in: None,
@@ -386,10 +467,65 @@ impl Overworld {
                 });
             }
         }
-        let mut world = Overworld { width, height, regions };
+        let mut world = Overworld { width, height, regions, named: Vec::new() };
         world.trace_rivers();
         world.place_alignment(rng);
+        // Named last: a region is contiguous land of one kind sharing one
+        // alignment, so both must be settled before anything can be named.
+        world.name_regions(rng);
         world
+    }
+
+    /// Find and name the world's regions.
+    ///
+    /// Dwarf Fortress: "A region/subregion is a contiguous set of world tiles
+    /// with the same or similar biomes AND the same alignment; the whole region
+    /// is uniformly evil, neutral, or good." So we flood-fill on (kind,
+    /// alignment) and give each patch a name — which is why a fort's home reads
+    /// "the Forest of Whispering" instead of "region (24, 24)".
+    fn name_regions(&mut self, rng: &mut ChaCha8Rng) {
+        let n = self.width * self.height;
+        let mut seen = vec![false; n];
+        for start in 0..n {
+            if seen[start] {
+                continue;
+            }
+            let kind = RegionKind::of(self.regions[start].biome);
+            let align = self.regions[start].alignment;
+            let id = self.named.len();
+            // Flood-fill this stretch, breadth-first from the seed tile.
+            let mut queue = vec![start];
+            let mut tiles = 0usize;
+            seen[start] = true;
+            while let Some(i) = queue.pop() {
+                self.regions[i].subregion = id;
+                tiles += 1;
+                let (x, y) = (i % self.width, i / self.width);
+                for d in Dir::ALL {
+                    let (dx, dy) = d.delta();
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+                        continue;
+                    }
+                    let j = ny as usize * self.width + nx as usize;
+                    if seen[j] {
+                        continue;
+                    }
+                    if RegionKind::of(self.regions[j].biome) == kind
+                        && self.regions[j].alignment == align
+                    {
+                        seen[j] = true;
+                        queue.push(j);
+                    }
+                }
+            }
+            self.named.push(NamedRegion {
+                name: names::region_name(rng, kind.noun()),
+                kind,
+                alignment: align,
+                tiles,
+            });
+        }
     }
 
     /// Paint good and evil onto the land.
