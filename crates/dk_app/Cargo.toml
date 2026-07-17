@@ -9,7 +9,17 @@ dk_raws = { path = "../dk_raws" }
 dk_world = { path = "../dk_world" }
 dk_agents = { path = "../dk_agents" }
 dk_history = { path = "../dk_history" }
-bevy = "0.16"
+# The "wav" feature compiles rodio's WAV decoder (hound); without it Bevy's
+# default features give only OGG, and every .wav sound panics on decode
+# ("UnrecognizedFormat") the first time an event tries to play one. Not a
+# version bump — just an added feature on the pinned 0.16.
+bevy = { version = "0.16", features = ["wav"] }
 anyhow = { workspace = true }
 bincode = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+# hound is rodio's WAV decoder (pulled in by bevy's "wav" feature). The sounds
+# test opens each shipped .wav with it, so a bad or non-PCM sound file fails CI
+# instead of crashing the game the first time it plays.
+hound = "3"
