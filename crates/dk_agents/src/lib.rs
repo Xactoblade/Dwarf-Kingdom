@@ -941,15 +941,19 @@ pub enum WeaponKind {
     Spear,
     Mace,
     Hammer,
+    /// The dwarves' ranged arm: fires bolts at a distance, and bashes like a
+    /// heavy club up close when the bolts run out or a foe closes in.
+    Crossbow,
 }
 
 impl WeaponKind {
-    pub const ALL: [WeaponKind; 5] = [
+    pub const ALL: [WeaponKind; 6] = [
         WeaponKind::Sword,
         WeaponKind::Axe,
         WeaponKind::Spear,
         WeaponKind::Mace,
         WeaponKind::Hammer,
+        WeaponKind::Crossbow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -959,14 +963,18 @@ impl WeaponKind {
             WeaponKind::Spear => "spear",
             WeaponKind::Mace => "mace",
             WeaponKind::Hammer => "war hammer",
+            WeaponKind::Crossbow => "crossbow",
         }
     }
 
+    /// The damage a blow with this weapon deals in MELEE. A crossbow used to
+    /// bash is blunt; the bolts it fires pierce, but that is the bolt's doing,
+    /// resolved separately.
     pub fn damage_type(self) -> DamageType {
         match self {
             WeaponKind::Sword | WeaponKind::Axe => DamageType::Edge,
             WeaponKind::Spear => DamageType::Pierce,
-            WeaponKind::Mace | WeaponKind::Hammer => DamageType::Blunt,
+            WeaponKind::Mace | WeaponKind::Hammer | WeaponKind::Crossbow => DamageType::Blunt,
         }
     }
 
@@ -976,6 +984,7 @@ impl WeaponKind {
         match self {
             WeaponKind::Sword => 1.0,
             WeaponKind::Spear => 1.1,
+            WeaponKind::Crossbow => 1.3,
             WeaponKind::Axe => 1.5,
             WeaponKind::Hammer => 1.8,
             WeaponKind::Mace => 2.0,
@@ -990,9 +999,25 @@ impl WeaponKind {
             WeaponKind::Spear => "stabs",
             WeaponKind::Mace => "bashes",
             WeaponKind::Hammer => "smashes",
+            WeaponKind::Crossbow => "bashes",
         }
     }
+
+    /// A ranged weapon fires at a distance rather than closing to strike.
+    pub fn is_ranged(self) -> bool {
+        matches!(self, WeaponKind::Crossbow)
+    }
 }
+
+/// The melee kinds a general weaponsmithing job cycles through — every
+/// WeaponKind but the crossbow, which the forge makes only for marksdwarves.
+pub const MELEE_WEAPONS: [WeaponKind; 5] = [
+    WeaponKind::Sword,
+    WeaponKind::Axe,
+    WeaponKind::Spear,
+    WeaponKind::Mace,
+    WeaponKind::Hammer,
+];
 
 fn default_body() -> Vec<BodyPart> {
     let part = |kind: PartKind, hp: i16| BodyPart { kind, hp, max_hp: hp, bleeding: 0 };
@@ -1288,6 +1313,10 @@ pub enum CraftKind {
     ForgeArmor,
     /// Work a bar into a shield at the forge.
     ForgeShield,
+    /// Forge a metal bar into a crossbow — the marksdwarf's arm.
+    ForgeCrossbow,
+    /// Forge a metal bar into a quiver of crossbow bolts.
+    ForgeBolts,
     /// Work a stone boulder into a piece of furniture (a bed).
     MakeFurniture,
     /// Sew a bolt of cloth into clothes.
@@ -1460,6 +1489,8 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Smelt, .. } => "smelting",
             Task::Craft { kind: CraftKind::ForgeArmor, .. } => "forging armor",
             Task::Craft { kind: CraftKind::ForgeShield, .. } => "forging a shield",
+            Task::Craft { kind: CraftKind::ForgeCrossbow, .. } => "forging a crossbow",
+            Task::Craft { kind: CraftKind::ForgeBolts, .. } => "forging bolts",
             Task::Craft { kind: CraftKind::MakeFurniture, .. } => "building furniture",
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
             Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
@@ -1526,6 +1557,12 @@ pub struct SimStats {
     /// Suits of armor forged for the fort's soldiers.
     pub armor_forged: u32,
     pub shields_forged: u32,
+    /// Crossbows forged for the marksdwarves.
+    pub crossbows_forged: u32,
+    /// Bolts forged (in quivers) for the fort's ammo stock.
+    pub bolts_forged: u32,
+    /// Bolts loosed at the enemy by marksdwarves.
+    pub bolts_fired: u32,
     /// Pieces of furniture (beds) built at the mason's workshop.
     pub furniture_made: u32,
     /// Sets of clothes sewn at the clothier's shop.
@@ -1566,6 +1603,8 @@ struct Wants {
     meals: bool,
     crafts: bool,
     weapons: bool,
+    crossbows: bool,
+    bolts: bool,
     glass: bool,
     bars: bool,
     armor: bool,
@@ -1724,21 +1763,41 @@ pub enum SquadOrder {
     Train,
 }
 
+/// How a squad is armed — Dwarf Fortress's uniform, pared to the one choice
+/// that changes how a soldier fights: melee steel, or the crossbow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Uniform {
+    /// Sword, axe, spear, mace, or hammer — close and strike.
+    #[default]
+    Melee,
+    /// Crossbow and bolts — a marksdwarf who fires from afar and falls back to
+    /// a bash only when a foe closes in.
+    Ranged,
+}
+
 /// A squad: the fort's soldiers, organised. Dwarf Fortress caps a squad at ten
 /// under one commander; this is that, pared to what a small fort needs — a
-/// name, its members, and one standing order the player sets.
+/// name, its members, one standing order, and how it is armed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Squad {
     pub name: String,
     /// Dwarf indices. The first is the squad's commander.
     pub members: Vec<usize>,
     pub order: SquadOrder,
+    #[serde(default)]
+    pub uniform: Uniform,
 }
 
 /// The most soldiers in one squad, as in Dwarf Fortress.
 pub const SQUAD_MAX: usize = 10;
 /// How near a hostile must come to a stationed squad before it strikes.
 pub const STATION_ENGAGE_RANGE: u32 = 10;
+/// How far a marksdwarf's bolt carries (tiles). A crossbow outranges any
+/// melee reach, so a marksdwarf opens fire long before a foe can close.
+pub const RANGED_RANGE: u32 = 12;
+/// Bolts forged per job — a quiver's worth, so the armoury isn't run ragged
+/// making ammo one bolt at a time.
+pub const QUIVER: u32 = 25;
 
 /// A named enemy supplied by world history: sieges are led by figures the
 /// player can look up in Legends.
@@ -1771,6 +1830,11 @@ pub struct Sim {
     pub barracks: Vec<Rect>,
     /// The fort's squads. A soldier belongs to exactly one.
     pub squads: Vec<Squad>,
+    /// The fort's stock of crossbow bolts — a shared quiver the marksdwarves
+    /// draw from. Consumable ammo is a pool (unlike the durable arms, which are
+    /// items); forged in quivers, spent one bolt per shot.
+    #[serde(default)]
+    pub bolts: u32,
     /// Burrow zones: safe rooms civilians retreat to when the alarm sounds.
     pub burrows: Vec<Rect>,
     /// Whether the civilian alarm is sounded (retreat to the burrows).
@@ -1937,6 +2001,7 @@ impl Sim {
             hospitals: Vec::new(),
             barracks: Vec::new(),
             squads: Vec::new(),
+            bolts: 0,
             burrows: Vec::new(),
             alarm: false,
             library: Vec::new(),
@@ -2330,6 +2395,7 @@ impl Sim {
             name: format!("the {} Company", ordinal(n)),
             members: vec![i],
             order: SquadOrder::Defend,
+            uniform: Uniform::Melee,
         });
     }
 
@@ -2365,6 +2431,46 @@ impl Sim {
             .iter()
             .find(|s| s.members.contains(&i))
             .map_or(SquadOrder::Defend, |s| s.order)
+    }
+
+    /// How the squad this soldier belongs to is armed. Squad-less soldiers
+    /// (and the whole fort before the first muster) default to melee.
+    fn squad_uniform(&self, i: usize) -> Uniform {
+        self.squads
+            .iter()
+            .find(|s| s.members.contains(&i))
+            .map_or(Uniform::Melee, |s| s.uniform)
+    }
+
+    /// Arm a squad as melee steel or crossbows — the player's choice. The
+    /// armoury re-issues weapons by kind next time each soldier draws.
+    pub fn set_squad_uniform(&mut self, squad: usize, uniform: Uniform) {
+        if let Some(sq) = self.squads.get_mut(squad) {
+            sq.uniform = uniform;
+            let (name, what) = (
+                sq.name.clone(),
+                match uniform {
+                    Uniform::Melee => "takes up sword and shield",
+                    Uniform::Ranged => "takes up crossbows",
+                },
+            );
+            self.log_event(format!("{name} {what}."));
+        }
+    }
+
+    /// How many enlisted soldiers march under the crossbow — the fort's
+    /// marksdwarves. Drives how many crossbows and bolts the armoury wants.
+    fn marksdwarf_count(&self) -> usize {
+        self.squads
+            .iter()
+            .filter(|s| s.uniform == Uniform::Ranged)
+            .map(|s| {
+                s.members
+                    .iter()
+                    .filter(|&&m| self.dwarves[m].alive && self.dwarves[m].soldier)
+                    .count()
+            })
+            .sum()
     }
 
     pub fn soldier_count(&self) -> usize {
@@ -3972,6 +4078,7 @@ impl Sim {
         self.barracks.clear();
         // The squads reference fort dwarf indices, gone with the old roster.
         self.squads.clear();
+        self.bolts = 0;
         self.burrows.clear();
         self.alarm = false;
         self.library.clear();
@@ -4311,6 +4418,20 @@ impl Sim {
     /// Drop an arbitrary item on the ground (scenarios/tests).
     pub fn debug_spawn_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos) {
         self.spawn_item(kind, stuff, pos);
+    }
+
+    /// Spawn a weapon of a specific kind (scenarios/tests) — e.g. a crossbow
+    /// for a marksdwarf. Ordinary forging cycles the melee kinds, so this is
+    /// how a test puts a particular arm in the armoury.
+    pub fn debug_spawn_weapon(&mut self, kind: WeaponKind, stuff: u16, pos: Pos) {
+        self.spawn_item(ItemKind::Weapon, stuff, pos);
+        self.set_last_weapon_kind(kind);
+    }
+
+    /// The kind of weapon this soldier would draw from the armoury right now —
+    /// what `wielded_weapon` resolves to, exposed for scenarios/tests.
+    pub fn debug_weapon_kind(&self, i: usize) -> Option<WeaponKind> {
+        self.wielded_weapon(i).and_then(|w| self.items[w].weapon_kind())
     }
 
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
@@ -4705,7 +4826,11 @@ impl Sim {
             .into_iter()
             .find(|&m| raws.materials.get(m).combat.sharpness >= 1.0)
             .unwrap_or(0);
-        let kind = WeaponKind::ALL[self.rng.gen_range(0..WeaponKind::ALL.len())];
+        // Raiders close and strike — they carry melee steel, never a crossbow
+        // (they have no marksmanship AI, and a crossbow is a feeble club). Drawn
+        // from the five melee kinds, which also keeps the rng stream identical
+        // to before the crossbow was added.
+        let kind = MELEE_WEAPONS[self.rng.gen_range(0..MELEE_WEAPONS.len())];
         let pos = self.dwarves[i].pos;
         self.spawn_item(ItemKind::Weapon, metal, pos);
         self.set_last_weapon_kind(kind);
@@ -5779,6 +5904,8 @@ impl Sim {
         let mut pending_bars = 0usize;
         let mut pending_armor = 0usize;
         let mut pending_shields = 0usize;
+        let mut pending_crossbows = 0usize;
+        let mut pending_bolts = 0usize;
         let mut pending_furniture = 0usize;
         let mut pending_clothes = 0usize;
         let mut pending_barrels = 0usize;
@@ -5795,6 +5922,8 @@ impl Sim {
                     Task::Craft { kind: CraftKind::Cook, .. } => pending_cooks += 1,
                     Task::Craft { kind: CraftKind::Stonecraft, .. } => pending_crafts += 1,
                     Task::Craft { kind: CraftKind::ForgeWeapon, .. } => pending_weapons += 1,
+                    Task::Craft { kind: CraftKind::ForgeCrossbow, .. } => pending_crossbows += 1,
+                    Task::Craft { kind: CraftKind::ForgeBolts, .. } => pending_bolts += 1,
                     Task::Craft { kind: CraftKind::MakeGlass, .. } => pending_glass += 1,
                     Task::Craft { kind: CraftKind::Smelt, .. } => pending_bars += 1,
                     Task::Craft { kind: CraftKind::ForgeArmor, .. } => pending_armor += 1,
@@ -5831,10 +5960,27 @@ impl Sim {
             .iter()
             .filter(|d| d.alive && d.faction == Faction::Fort && d.soldier)
             .count();
-        let weapons_on_hand = self
+        // The forge arms melee soldiers and marksdwarves from separate racks:
+        // blades for the one, crossbows and bolts for the other.
+        let marksdwarves = self.marksdwarf_count();
+        let melee_soldiers = soldiers.saturating_sub(marksdwarves);
+        let crossbows_on_hand = self
             .items
             .iter()
-            .filter(|it| it.active() && it.kind == ItemKind::Weapon)
+            .filter(|it| {
+                it.active()
+                    && it.kind == ItemKind::Weapon
+                    && it.weapon_kind().is_some_and(|k| k.is_ranged())
+            })
+            .count();
+        let melee_weapons_on_hand = self
+            .items
+            .iter()
+            .filter(|it| {
+                it.active()
+                    && it.kind == ItemKind::Weapon
+                    && it.weapon_kind().is_some_and(|k| !k.is_ranged())
+            })
             .count();
         for i in 0..self.dwarves.len() {
             if self.player == Some(i) || self.dwarves[i].follower {
@@ -5861,10 +6007,23 @@ impl Sim {
                 // lines, so each checks there's a bar free of the other's claims.
                 let bars = self.count_kind(ItemKind::Bar);
                 let armor_on_hand = self.count_kind(ItemKind::Armor);
-                let claimed_bars = pending_weapons + pending_armor;
+                let claimed_bars =
+                    pending_weapons + pending_armor + pending_crossbows + pending_bolts;
+                // A blade for every melee soldier; a crossbow for every
+                // marksdwarf; a suit of plate for all.
                 let want_weapons = has_forge
                     && bars > claimed_bars
-                    && weapons_on_hand + pending_weapons < soldiers;
+                    && melee_weapons_on_hand + pending_weapons < melee_soldiers;
+                let want_crossbows = has_forge
+                    && bars > claimed_bars
+                    && crossbows_on_hand + pending_crossbows < marksdwarves;
+                // Keep the quivers full: a marksdwarf wants a good forty bolts
+                // behind them, forged a quiver at a time.
+                let bolt_stock = self.bolts as usize + pending_bolts * QUIVER as usize;
+                let want_bolts = has_forge
+                    && marksdwarves > 0
+                    && bars > claimed_bars
+                    && bolt_stock < marksdwarves * 40;
                 let want_armor = has_forge
                     && bars > claimed_bars
                     && armor_on_hand + pending_armor < soldiers;
@@ -5949,6 +6108,8 @@ impl Sim {
                     meals: want_meals,
                     crafts: want_crafts,
                     weapons: want_weapons,
+                    crossbows: want_crossbows,
+                    bolts: want_bolts,
                     glass: want_glass,
                     bars: want_bars,
                     armor: want_armor,
@@ -5972,6 +6133,8 @@ impl Sim {
                     Some(CraftKind::Smelt) => pending_bars += 1,
                     Some(CraftKind::ForgeArmor) => pending_armor += 1,
                     Some(CraftKind::ForgeShield) => pending_shields += 1,
+                    Some(CraftKind::ForgeCrossbow) => pending_crossbows += 1,
+                    Some(CraftKind::ForgeBolts) => pending_bolts += 1,
                     Some(CraftKind::MakeFurniture) => pending_furniture += 1,
                     Some(CraftKind::SewClothes) => pending_clothes += 1,
                     Some(CraftKind::MakeBarrel) => pending_barrels += 1,
@@ -6242,6 +6405,20 @@ impl Sim {
             if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeShield }, &mut best);
+            }
+        }
+        // Crossbows for the marksdwarves, and the bolts they loose. Both draw a
+        // bar at the forge like the other arms.
+        if w.crossbows {
+            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeCrossbow }, &mut best);
+            }
+        }
+        if w.bolts {
+            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeBolts }, &mut best);
             }
         }
         // Furniture: work a boulder into a bed at the mason's workshop.
@@ -6898,6 +7075,25 @@ impl Sim {
             .count()
     }
 
+    /// A soldier's rank among the enlistees who share its uniform — so a
+    /// marksdwarf draws the n-th crossbow from the rack of crossbows, and a
+    /// melee soldier the n-th blade from the rack of blades, without the two
+    /// racks fighting over the same index.
+    fn armory_rank_in_uniform(&self, i: usize) -> usize {
+        let mine = self.squad_uniform(i);
+        self.dwarves
+            .iter()
+            .enumerate()
+            .take(i)
+            .filter(|(j, d)| {
+                d.alive
+                    && d.faction == Faction::Fort
+                    && d.soldier
+                    && self.squad_uniform(*j) == mine
+            })
+            .count()
+    }
+
     /// The actual weapon in this fighter's hands, as an item index — a soldier's
     /// issued arm, or an adventurer's carried one. Combat reads its kind and
     /// material off the real item rather than settling for "armed: yes/no".
@@ -6910,15 +7106,22 @@ impl Sim {
         }) {
             return Some(idx);
         }
-        // A soldier draws the rank-th weapon from the armoury.
+        // A soldier draws the rank-th weapon from the armoury — a crossbow if
+        // its squad marches under the crossbow, a melee arm otherwise, each
+        // ranked within its own kind so the racks don't collide.
         if !self.dwarves[i].soldier || !self.dwarves[i].alive {
             return None;
         }
-        let rank = self.armory_rank(i);
+        let want_ranged = self.squad_uniform(i) == Uniform::Ranged;
+        let rank = self.armory_rank_in_uniform(i);
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, it)| it.active() && it.kind == ItemKind::Weapon)
+            .filter(|(_, it)| {
+                it.active()
+                    && it.kind == ItemKind::Weapon
+                    && it.weapon_kind().is_some_and(|k| k.is_ranged() == want_ranged)
+            })
             .nth(rank)
             .map(|(idx, _)| idx)
     }
@@ -7285,6 +7488,25 @@ impl Sim {
                 }
             }
             if let Some(q) = quarry {
+                // A marksdwarf with a loaded crossbow and a clear shot looses a
+                // bolt from where it stands rather than closing to melee. It
+                // fires only inside its range and line of sight; otherwise it
+                // falls through and advances until it has one. If the quiver is
+                // dry, fire_bolt returns false and it closes in to bash instead.
+                let marks = self.squad_uniform(i) == Uniform::Ranged
+                    && self
+                        .wielded_weapon(i)
+                        .and_then(|w| self.items[w].weapon_kind())
+                        .is_some_and(|k| k.is_ranged());
+                if marks
+                    && self.dwarves[q].pos.manhattan(my_pos) <= RANGED_RANGE
+                    && self.map.clear_shot(my_pos, self.dwarves[q].pos)
+                    && self.fire_bolt(i, q, raws)
+                {
+                    // Stand and shoot: hold position, keep the target.
+                    self.dwarves[i].task = Task::Fight { target: q, path: Vec::new(), repath_cd: 0 };
+                    return;
+                }
                 // Reuse the cached route unless we've retargeted or the
                 // repath timer expired — a full A* every tick is wasteful
                 // when a siege sends many soldiers at one distant beast.
@@ -7879,6 +8101,8 @@ impl Sim {
                             | CraftKind::Smelt
                             | CraftKind::ForgeArmor
                             | CraftKind::ForgeShield
+                            | CraftKind::ForgeCrossbow
+                            | CraftKind::ForgeBolts
                             | CraftKind::MakeFurniture
                             | CraftKind::SewClothes
                             | CraftKind::MakeBarrel
@@ -7963,12 +8187,28 @@ impl Sim {
                                 // The bar's metal carries into the blade, and the
                                 // smith works the fort a mix of arms rather than
                                 // a rack of identical swords — a spear for reach,
-                                // a hammer for armoured foes.
+                                // a hammer for armoured foes. Crossbows are their
+                                // own job, so this cycles the five melee kinds.
                                 self.stats.weapons_forged += 1;
-                                let kind = WeaponKind::ALL
-                                    [self.stats.weapons_forged as usize % WeaponKind::ALL.len()];
+                                let kind = MELEE_WEAPONS
+                                    [self.stats.weapons_forged as usize % MELEE_WEAPONS.len()];
                                 self.spawn_quality_item(ItemKind::Weapon, stuff, shop, q);
                                 self.set_last_weapon_kind(kind);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::ForgeCrossbow => {
+                                // A crossbow for a marksdwarf — a Weapon item like
+                                // any other, but of the ranged kind.
+                                self.stats.crossbows_forged += 1;
+                                self.spawn_quality_item(ItemKind::Weapon, stuff, shop, q);
+                                self.set_last_weapon_kind(WeaponKind::Crossbow);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::ForgeBolts => {
+                                // A quiver's worth of bolts joins the fort's
+                                // shared ammo stock.
+                                self.stats.bolts_forged += QUIVER;
+                                self.bolts += QUIVER;
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::Smelt => {
@@ -8721,16 +8961,9 @@ impl Sim {
             return;
         }
 
-        // Torso is the biggest target; head the deadliest.
-        let roll = self.rng.gen_range(0..8usize);
-        let part_kind = match roll {
-            0 => PartKind::Head,
-            1 | 2 | 3 => PartKind::Torso,
-            4 => PartKind::LeftArm,
-            5 => PartKind::RightArm,
-            6 => PartKind::LeftLeg,
-            _ => PartKind::RightLeg,
-        };
+        // Torso is the biggest target; head the deadliest. Rolled here, BEFORE
+        // the force, to keep the rng draw order combat has always had.
+        let part_kind = self.roll_part();
         // The force behind the swing: a beast's monstrous strength, or a
         // dwarf's arm sharpened by training.
         let base = if self.dwarves[attacker].beast {
@@ -8765,6 +8998,46 @@ impl Sim {
                     CombatStats { sharpness: 1.5, density: 7.8, hardness: 120.0 },
                 ))
             });
+        let verb = self
+            .wielded_weapon(attacker)
+            .and_then(|w| self.items[w].weapon_kind())
+            .map(|k| k.verb())
+            .unwrap_or("strikes");
+
+        self.land_hit(attacker, defender, force, weapon, part_kind, verb, raws);
+    }
+
+    /// Pick which body part a blow strikes — torso most often, head the
+    /// deadliest. One rng draw; kept as a helper so melee and ranged fire roll
+    /// it the same way.
+    fn roll_part(&mut self) -> PartKind {
+        match self.rng.gen_range(0..8usize) {
+            0 => PartKind::Head,
+            1 | 2 | 3 => PartKind::Torso,
+            4 => PartKind::LeftArm,
+            5 => PartKind::RightArm,
+            6 => PartKind::LeftLeg,
+            _ => PartKind::RightLeg,
+        }
+    }
+
+    /// Resolve one landed attack against `defender`: work the wound out against
+    /// whatever armour they wear, narrate it with `verb`, and handle death,
+    /// kill-stats, and a werebeast's curse. Shared by a melee swing and a
+    /// marksdwarf's bolt — the caller supplies the force, weapon (a bolt is just
+    /// a fast, distant Pierce), and the pre-rolled body part. The defender's
+    /// chance to dodge or block is spent by the caller BEFORE this, so a hit
+    /// here lands.
+    fn land_hit(
+        &mut self,
+        attacker: usize,
+        defender: usize,
+        force: f32,
+        weapon: Option<(DamageType, f32, CombatStats)>,
+        part_kind: PartKind,
+        verb: &str,
+        raws: &Raws,
+    ) {
         // The armour the defender wears, if the fort issued them any.
         let armor = self
             .worn_armor(defender)
@@ -8772,11 +9045,6 @@ impl Sim {
 
         let blow = resolve_blow(force, weapon, armor);
         let (dmg, bleed) = (blow.damage, blow.bleed);
-        let weapon_verb = weapon
-            .and_then(|_| self.wielded_weapon(attacker))
-            .and_then(|w| self.items[w].weapon_kind())
-            .map(|k| k.verb())
-            .unwrap_or("strikes");
         // Drawing blood teaches the trade: every landed blow hones prowess.
         self.add_xp(attacker, Skill::Fighting, 6);
 
@@ -8789,7 +9057,7 @@ impl Sim {
         let destroyed = part.hp <= 0;
         let vital = part.kind.vital();
         self.log_event(format!(
-            "{att_name} {weapon_verb} {def_name} in the {}!",
+            "{att_name} {verb} {def_name} in the {}!",
             part_kind.name()
         ));
         if destroyed && vital {
@@ -8821,6 +9089,45 @@ impl Sim {
             let name = self.dwarves[defender].name.clone();
             self.log_event(format!("{name} is savaged by the beast -- the curse takes root."));
         }
+    }
+
+    /// A marksdwarf looses a bolt at a foe at range: consume a bolt from the
+    /// fort's quiver, let the target try to dodge or block, and on a hit resolve
+    /// it as a fast Pierce through their armour. Returns false (drawing no rng)
+    /// if there is no bolt to fire, so the caller falls back to closing in.
+    fn fire_bolt(&mut self, attacker: usize, defender: usize, raws: &Raws) -> bool {
+        if self.dwarves[attacker].attack_cd > 0 {
+            self.dwarves[attacker].attack_cd -= 1;
+            return true;
+        }
+        if self.bolts == 0 {
+            return false; // out of ammo — fall back to the crossbow's bash
+        }
+        self.dwarves[attacker].attack_cd = ATTACK_COOLDOWN;
+        self.bolts -= 1;
+        self.stats.bolts_fired += 1;
+
+        // A bolt can be dodged or turned by a shield, but there is no parrying
+        // an arrow out of the air.
+        if let Some(defence) = self.try_defend(defender) {
+            let att = self.dwarves[attacker].name.clone();
+            let def = self.dwarves[defender].name.clone();
+            self.log_event(format!("{def} {defence} from {att}'s bolt."));
+            return true;
+        }
+
+        // The bolt's bite: the crossbow's launch force plus the marksdwarf's
+        // aim, driven as a Pierce with the bolt's own metal.
+        let part_kind = self.roll_part();
+        let force =
+            14.0 + fighting_bonus(self.dwarves[attacker].skill_level(Skill::Fighting)) as f32;
+        let bolt = (
+            DamageType::Pierce,
+            0.4,
+            CombatStats { sharpness: 1.0, density: 7.8, hardness: 100.0 },
+        );
+        self.land_hit(attacker, defender, force, Some(bolt), part_kind, "fires a bolt into", raws);
+        true
     }
 
     /// Blood, breath, bleeding, and rest-healing — applies to every faction.
@@ -9703,7 +10010,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 67;
+const SAVE_VERSION: u32 = 68;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

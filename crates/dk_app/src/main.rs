@@ -27,7 +27,7 @@ use bevy::window::{MonitorSelection, PresentMode, WindowMode};
 use dk_agents::{
     item_value, AnimalKind, PlayerAction,
     load_sim, save_sim, BuildingKind, DesignationKind, Faction, FarmState, ItemKind, ItemState,
-    SiegeLeader, SiegeRoster, Sim, SquadOrder,
+    SiegeLeader, SiegeRoster, Sim, SquadOrder, Uniform,
 };
 use dk_core::Season;
 use dk_history::World;
@@ -80,6 +80,8 @@ ZONES & LABOR\n\
   i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
   Defend / Station / Train (toolbar) ... order your squads: hunt all, hold a\n\
     clicked post, or drill and defend only themselves\n\
+  Melee / Marks (toolbar) ... arm squads with steel or crossbows; marksdwarves\n\
+    fire bolts from range (forge crossbows and bolts at the forge first)\n\
   c ... cancel designations\n\
 \n\
 FORTRESS\n\
@@ -286,6 +288,9 @@ enum Tool {
     /// Set every squad's standing order. Station uses the clicked tile as the
     /// post; Defend and Train ignore the tile and apply at once.
     Order(OrderTool),
+    /// Arm every squad as melee steel or crossbows. Applies at once (the tile
+    /// is ignored).
+    Arm(Uniform),
 }
 
 /// The three standing orders a player can give the fort's squads, as toolbar
@@ -595,6 +600,8 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Order(OrderTool::Defend), label: "Defend", key: "", tip: "Squads hunt any hostile in the fort", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Station), label: "Station", key: "", tip: "Squads hold the clicked post, striking only what nears it", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Train), label: "Train", key: "", tip: "Squads drill at the barracks and defend only themselves", cat: 3 },
+    ToolButton { tool: Tool::Arm(Uniform::Melee), label: "Melee", key: "", tip: "Arm squads with swords, axes, and shields", cat: 3 },
+    ToolButton { tool: Tool::Arm(Uniform::Ranged), label: "Marks", key: "", tip: "Arm squads with crossbows (forge crossbows and bolts, then they fire from range)", cat: 3 },
     ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
 ];
 
@@ -2088,6 +2095,11 @@ fn apply_active_tool(
             // every squad.
             for s in 0..sim.squads.len() {
                 sim.set_squad_order(s, order);
+            }
+        }
+        Tool::Arm(uniform) => {
+            for s in 0..sim.squads.len() {
+                sim.set_squad_uniform(s, uniform);
             }
         }
         Tool::Rect(kind) => match active.anchor {
@@ -4969,13 +4981,23 @@ fn update_hud(
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
     let alarm_txt = if sim.0.alarm { " [SOUNDED]" } else { "" };
-    // The fort's soldiers share one standing order in this UI; show it so the
-    // player knows whether their squads will sally, hold, or drill.
-    let squad_txt = match sim.0.squads.first().map(|s| s.order) {
+    // The fort's soldiers share one standing order and uniform in this UI; show
+    // them so the player knows whether their squads will sally, hold, or drill,
+    // and how they are armed. A marksdwarf fort also shows its bolt stock.
+    let squad_txt = match sim.0.squads.first() {
         None => String::new(),
-        Some(SquadOrder::Defend) => "   orders: DEFEND".to_string(),
-        Some(SquadOrder::Train) => "   orders: TRAIN".to_string(),
-        Some(SquadOrder::Station(p)) => format!("   orders: STATION ({}, {})", p.x, p.y),
+        Some(sq) => {
+            let order = match sq.order {
+                SquadOrder::Defend => "DEFEND".to_string(),
+                SquadOrder::Train => "TRAIN".to_string(),
+                SquadOrder::Station(p) => format!("STATION ({}, {})", p.x, p.y),
+            };
+            let arm = match sq.uniform {
+                Uniform::Melee => "melee".to_string(),
+                Uniform::Ranged => format!("marks · {} bolts", sim.0.bolts),
+            };
+            format!("   orders: {order} · {arm}")
+        }
     };
     let vampire_txt = if sim.0.stats.drained > 0 {
         format!("   ** a vampire walks among us: {} drained **", sim.0.stats.drained)

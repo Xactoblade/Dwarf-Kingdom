@@ -87,6 +87,12 @@ impl Tile {
     pub fn is_solid(&self) -> bool {
         self.shape == TileShape::Solid
     }
+
+    /// Does this tile stop a line of sight (and a bolt)? Walls and shut gates
+    /// do; open floor, stairs, and ramps do not.
+    pub fn blocks_sight(&self) -> bool {
+        matches!(self.shape, TileShape::Solid | TileShape::Gate)
+    }
 }
 
 /// Dense 3D tile map. Phase 0/1 keeps a flat vec; chunking arrives with
@@ -153,6 +159,48 @@ impl Map {
     pub fn walkable(&self, p: Pos) -> bool {
         self.tile_at(p)
             .is_some_and(|t| t.shape.is_walkable() && t.water < DEEP_WATER && t.magma == 0)
+    }
+
+    /// Is there a clear shot from `from` to `to` — an unobstructed straight
+    /// line a bolt (or an eye) could travel? Only same-level shots count; a
+    /// wall or shut gate anywhere between the two endpoints blocks it. The
+    /// endpoints themselves are not tested (the shooter and target stand on
+    /// walkable tiles). Uses an integer Bresenham walk so it is exact and
+    /// draws no rng.
+    pub fn clear_shot(&self, from: Pos, to: Pos) -> bool {
+        if from.z != to.z {
+            return false;
+        }
+        let (mut x, mut y) = (from.x, from.y);
+        let (dx, dy) = ((to.x - x).abs(), (to.y - y).abs());
+        let (sx, sy) = ((to.x - x).signum(), (to.y - y).signum());
+        let mut err = dx - dy;
+        loop {
+            if (x, y) == (to.x, to.y) {
+                return true;
+            }
+            // Advance one step along the line, then test the tile we land on
+            // (skipping the shooter's own tile; the loop exits on reaching the
+            // target before testing it).
+            let e2 = 2 * err;
+            if e2 > -dy {
+                err -= dy;
+                x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                y += sy;
+            }
+            if (x, y) == (to.x, to.y) {
+                return true;
+            }
+            if self
+                .tile_at(Pos::new(x, y, from.z))
+                .is_none_or(|t| t.blocks_sight())
+            {
+                return false;
+            }
+        }
     }
 
     pub fn magma_at(&self, p: Pos) -> u8 {
