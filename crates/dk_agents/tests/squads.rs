@@ -182,6 +182,51 @@ fn a_stationed_squad_holds_its_post_but_strikes_what_comes_near() {
 }
 
 #[test]
+fn a_stationed_soldier_breaks_to_eat_and_is_freed_when_stood_down() {
+    // Regression: holding a post must not be a starvation trap. A stationed
+    // soldier that grows hungry breaks off to eat, and standing the squad down
+    // releases it from the post rather than freezing it there forever.
+    let (mut sim, raws, raider) = open_arena();
+    sim.debug_kill_dwarf(raider); // peacetime — nothing to fight
+    let post = Pos::new(12, 12, 1);
+    sim.set_squad_order(0, SquadOrder::Station(post));
+
+    // Let it settle onto the post, then starve it.
+    for _ in 0..1_500 {
+        sim.step(&raws);
+    }
+    sim.dwarves[0].hunger = 95.0;
+
+    // Over the next stretch the pressing hunger must pull it off the post to be
+    // fed — its task leaves Station at least once (it does not hold and starve).
+    let mut broke_for_food = false;
+    for _ in 0..4_000 {
+        sim.step(&raws);
+        if !matches!(sim.dwarves[0].task, Task::Station { .. }) {
+            broke_for_food = true;
+        }
+        if !sim.dwarves[0].alive {
+            break;
+        }
+    }
+    assert!(sim.dwarves[0].alive, "a stationed soldier must not starve at its post");
+    assert!(broke_for_food, "a hungry soldier breaks off its post to eat");
+
+    // Stand the squad down: the soldier must be released from the post, not
+    // frozen holding a stale Station task.
+    sim.set_squad_order(0, SquadOrder::Train);
+    let mut released = false;
+    for _ in 0..500 {
+        sim.step(&raws);
+        if !matches!(sim.dwarves[0].task, Task::Station { .. }) {
+            released = true;
+            break;
+        }
+    }
+    assert!(released, "standing down frees a soldier from its old post");
+}
+
+#[test]
 fn a_fallen_soldier_leaves_the_muster_rolls() {
     let (mut sim, _raws) = arena(1);
     sim.toggle_soldier(sim.dwarves[0].pos);

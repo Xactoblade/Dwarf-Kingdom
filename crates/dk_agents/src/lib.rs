@@ -7203,6 +7203,15 @@ impl Sim {
             let my_pos = self.dwarves[i].pos;
             let my_region = self.regions.id(my_pos);
             let order = self.squad_order(i);
+            // A soldier still holding a post after its squad's order changed
+            // away from Station: release it back to normal duties, or it would
+            // stay frozen on the old post (never eating, drilling, or defending)
+            // forever.
+            if !matches!(order, SquadOrder::Station(_))
+                && matches!(self.dwarves[i].task, Task::Station { .. })
+            {
+                self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+            }
             // A stationed squad measures threats from its post, not from the
             // soldier — so the whole line reacts to a foe nearing the gate.
             let watch = match order {
@@ -7232,32 +7241,47 @@ impl Sim {
             // holds there, rather than idling wherever it happened to be.
             if quarry.is_none() {
                 if let SquadOrder::Station(post) = order {
-                    // Already holding near the post: stand guard, step no more.
-                    if my_pos.manhattan(post) <= 1 || !self.map.walkable(post) {
-                        self.dwarves[i].task = Task::Station { spot: post, path: Vec::new() };
+                    // A stationed soldier still breaks for a pressing need —
+                    // hunger, thirst, or exhaustion — so holding a post never
+                    // quietly starves it. Drop to Idle and fall through to the
+                    // needs/job handler, which feeds and rests it; it marches
+                    // back to its post once the need is met.
+                    let needs_break = self.dwarves[i].hunger >= NEED_AT
+                        || self.dwarves[i].thirst >= NEED_AT
+                        || self.dwarves[i].fatigue >= 100.0;
+                    if needs_break {
+                        if matches!(self.dwarves[i].task, Task::Station { .. }) {
+                            self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+                        }
+                    } else {
+                        // Already holding near the post: stand guard, step no more.
+                        if my_pos.manhattan(post) <= 1 || !self.map.walkable(post) {
+                            self.dwarves[i].task =
+                                Task::Station { spot: post, path: Vec::new() };
+                            return;
+                        }
+                        // March to the post — reuse a cached route unless it
+                        // points elsewhere (a fresh order) or has run out.
+                        let mut path = match self.dwarves[i].task.clone() {
+                            Task::Station { spot, path } if spot == post => path,
+                            other => {
+                                // Drop any stale pursuit or job before marching.
+                                if !matches!(other, Task::Station { .. }) {
+                                    self.abandon_task(i);
+                                }
+                                Vec::new()
+                            }
+                        };
+                        if path.is_empty() {
+                            path = path::astar(&self.map, my_pos, post, MAX_ASTAR_NODES)
+                                .unwrap_or_default();
+                        }
+                        if !path.is_empty() && !self.step_along(i, &mut path) {
+                            path.clear();
+                        }
+                        self.dwarves[i].task = Task::Station { spot: post, path };
                         return;
                     }
-                    // March to the post — reuse a cached route unless it points
-                    // elsewhere (a fresh order) or has run out.
-                    let mut path = match self.dwarves[i].task.clone() {
-                        Task::Station { spot, path } if spot == post => path,
-                        other => {
-                            // Drop any stale pursuit or job before marching.
-                            if !matches!(other, Task::Station { .. }) {
-                                self.abandon_task(i);
-                            }
-                            Vec::new()
-                        }
-                    };
-                    if path.is_empty() {
-                        path = path::astar(&self.map, my_pos, post, MAX_ASTAR_NODES)
-                            .unwrap_or_default();
-                    }
-                    if !path.is_empty() && !self.step_along(i, &mut path) {
-                        path.clear();
-                    }
-                    self.dwarves[i].task = Task::Station { spot: post, path };
-                    return;
                 }
             }
             if let Some(q) = quarry {
