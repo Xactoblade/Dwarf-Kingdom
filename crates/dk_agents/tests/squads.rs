@@ -5,7 +5,7 @@
 
 mod common;
 
-use dk_agents::{Faction, Sim, SquadOrder, Task, SQUAD_MAX};
+use dk_agents::{Faction, Sim, SquadOrder, Task, Uniform, SQUAD_MAX};
 use dk_world::path::Pos;
 use dk_world::{Map, Tile};
 
@@ -50,6 +50,33 @@ fn enlisting_musters_a_squad_dismissal_empties_it() {
     sim.toggle_soldier(sim.dwarves[0].pos);
     sim.toggle_soldier(sim.dwarves[1].pos);
     assert!(sim.squads.is_empty(), "an empty squad does not linger");
+}
+
+#[test]
+fn squads_take_their_own_orders_and_uniforms() {
+    // The per-squad UI rests on these: squad_of locates a soldier's squad, and
+    // orders/uniforms set on one squad leave the other untouched. Eleven
+    // soldiers make two squads (cap ten), so we have two to command apart.
+    let (mut sim, _raws) = arena(SQUAD_MAX + 1);
+    for i in 0..(SQUAD_MAX + 1) {
+        sim.toggle_soldier(sim.dwarves[i].pos);
+    }
+    assert_eq!(sim.squads.len(), 2);
+
+    // squad_of finds each soldier's squad; the eleventh is in the second.
+    assert_eq!(sim.squad_of(0), Some(0));
+    assert_eq!(sim.squad_of(SQUAD_MAX), Some(1), "the eleventh soldier is in squad 1");
+    assert_eq!(sim.squad_of(999), None, "a non-existent index belongs to no squad");
+
+    // Command the two squads apart: squad 0 stations and takes crossbows;
+    // squad 1 keeps its default defend/melee.
+    sim.set_squad_order(0, SquadOrder::Station(Pos::new(5, 5, 1)));
+    sim.set_squad_uniform(0, Uniform::Ranged);
+
+    assert!(matches!(sim.squads[0].order, SquadOrder::Station(_)));
+    assert_eq!(sim.squads[0].uniform, Uniform::Ranged);
+    assert_eq!(sim.squads[1].order, SquadOrder::Defend, "the other squad is untouched");
+    assert_eq!(sim.squads[1].uniform, Uniform::Melee);
 }
 
 #[test]

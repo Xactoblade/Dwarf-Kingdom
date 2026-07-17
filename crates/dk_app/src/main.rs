@@ -82,6 +82,7 @@ ZONES & LABOR\n\
     clicked post, or drill and defend only themselves\n\
   Melee / Marks (toolbar) ... arm squads with steel or crossbows; marksdwarves\n\
     fire bolts from range (forge crossbows and bolts at the forge first)\n\
+  Tab / click a soldier ... pick which squad the toolbar orders; none = all\n\
   c ... cancel designations\n\
 \n\
 FORTRESS\n\
@@ -446,6 +447,13 @@ impl MapView {
 #[derive(Resource, Default)]
 struct SelectedDwarf(Option<usize>);
 
+/// The squad the player is commanding, if any. Orders and uniform changes from
+/// the toolbar target this one squad; with none selected they apply to every
+/// squad (a small fort commanded as one body). Set by clicking a soldier or
+/// cycling with Tab.
+#[derive(Resource, Default)]
+struct SelectedSquad(Option<usize>);
+
 /// Root node of the click-a-dwarf info panel.
 #[derive(Component)]
 struct DwarfPanel;
@@ -597,11 +605,11 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Enlist, label: "Enlist", key: "i", tip: "Make the dwarf here a soldier (click again to dismiss)", cat: 3 },
     ToolButton { tool: Tool::Cull, label: "Cull", key: "u", tip: "Mark the animal here to be slaughtered for meat", cat: 3 },
     ToolButton { tool: Tool::WarDog, label: "War Dog", key: "\u{21e7}U", tip: "Train the dog here into a war beast", cat: 3 },
-    ToolButton { tool: Tool::Order(OrderTool::Defend), label: "Defend", key: "", tip: "Squads hunt any hostile in the fort", cat: 3 },
-    ToolButton { tool: Tool::Order(OrderTool::Station), label: "Station", key: "", tip: "Squads hold the clicked post, striking only what nears it", cat: 3 },
-    ToolButton { tool: Tool::Order(OrderTool::Train), label: "Train", key: "", tip: "Squads drill at the barracks and defend only themselves", cat: 3 },
-    ToolButton { tool: Tool::Arm(Uniform::Melee), label: "Melee", key: "", tip: "Arm squads with swords, axes, and shields", cat: 3 },
-    ToolButton { tool: Tool::Arm(Uniform::Ranged), label: "Marks", key: "", tip: "Arm squads with crossbows (forge crossbows and bolts, then they fire from range)", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Defend), label: "Defend", key: "", tip: "Selected squad (or all) hunts any hostile in the fort -- Tab or click a soldier to pick a squad", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Station), label: "Station", key: "", tip: "Selected squad (or all) holds the clicked post, striking only what nears it", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Train), label: "Train", key: "", tip: "Selected squad (or all) drills at the barracks and defends only itself", cat: 3 },
+    ToolButton { tool: Tool::Arm(Uniform::Melee), label: "Melee", key: "", tip: "Arm the selected squad (or all) with swords, axes, and shields", cat: 3 },
+    ToolButton { tool: Tool::Arm(Uniform::Ranged), label: "Marks", key: "", tip: "Arm the selected squad (or all) with crossbows (forge crossbows and bolts, then they fire from range)", cat: 3 },
     ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
 ];
 
@@ -1207,6 +1215,7 @@ fn main() {
         .insert_resource(ActiveTool::default())
         .insert_resource(OpenCategory(Some(0)))
         .insert_resource(SelectedDwarf::default())
+        .insert_resource(SelectedSquad::default())
         .insert_resource(PendingEmbark::default())
         .insert_resource(ShowStocks::default())
         .insert_resource(MoveRepeat(Timer::from_seconds(0.08, TimerMode::Repeating)))
@@ -1231,6 +1240,7 @@ fn main() {
                     handle_mouse,
                     apply_active_tool,
                     select_dwarf,
+                    cycle_squad,
                     accuse_selected,
                     update_dwarf_panel,
                     apply_embark_action,
@@ -2029,12 +2039,14 @@ fn tool_escape(
     mut active: ResMut<ActiveTool>,
     mut open: ResMut<OpenCategory>,
     mut selected: ResMut<SelectedDwarf>,
+    mut squad: ResMut<SelectedSquad>,
 ) {
     if screen.0 != Screen::Playing || !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if selected.0.is_some() {
+    if selected.0.is_some() || squad.0.is_some() {
         selected.0 = None;
+        squad.0 = None;
     } else if active.anchor.is_some() {
         active.anchor = None;
     } else if active.tool.is_some() {
@@ -2054,6 +2066,7 @@ fn apply_active_tool(
     mut active: ResMut<ActiveTool>,
     mut sim: ResMut<SimRes>,
     mut dirty: ResMut<MapDirty>,
+    squad: Res<SelectedSquad>,
 ) {
     if screen.0 != Screen::Playing || active.over_ui {
         return;
@@ -2091,17 +2104,25 @@ fn apply_active_tool(
                 OrderTool::Train => SquadOrder::Train,
                 OrderTool::Station => SquadOrder::Station(here),
             };
-            // A small fort commands its soldiers as one body: the order goes to
-            // every squad.
-            for s in 0..sim.squads.len() {
-                sim.set_squad_order(s, order);
+            // With a squad selected the order goes to it alone; with none, the
+            // whole fort is commanded as one body.
+            match squad.0.filter(|&s| s < sim.squads.len()) {
+                Some(s) => sim.set_squad_order(s, order),
+                None => {
+                    for s in 0..sim.squads.len() {
+                        sim.set_squad_order(s, order);
+                    }
+                }
             }
         }
-        Tool::Arm(uniform) => {
-            for s in 0..sim.squads.len() {
-                sim.set_squad_uniform(s, uniform);
+        Tool::Arm(uniform) => match squad.0.filter(|&s| s < sim.squads.len()) {
+            Some(s) => sim.set_squad_uniform(s, uniform),
+            None => {
+                for s in 0..sim.squads.len() {
+                    sim.set_squad_uniform(s, uniform);
+                }
             }
-        }
+        },
         Tool::Rect(kind) => match active.anchor {
             Some(a) if a.z == here.z => {
                 apply_ui_rect(sim, kind, a, here);
@@ -2123,6 +2144,7 @@ fn select_dwarf(
     view_z: Res<ViewZ>,
     sim: Res<SimRes>,
     mut selected: ResMut<SelectedDwarf>,
+    mut squad: ResMut<SelectedSquad>,
 ) {
     if screen.0 != Screen::Playing || active.over_ui || active.tool.is_some() {
         return;
@@ -2136,10 +2158,39 @@ fn select_dwarf(
     let found = sim.dwarves.iter().position(|d| {
         d.alive && d.faction == dk_agents::Faction::Fort && d.pos == here
     });
-    // Clicking a dwarf opens their sheet; clicking bare ground closes it.
+    // Clicking a dwarf opens their sheet; clicking bare ground closes it. It
+    // also picks up (or clears) that soldier's squad so the toolbar's orders
+    // command it — click a soldier, then click an order.
     if selected.0 != found {
         selected.0 = found;
     }
+    squad.0 = found.and_then(|i| sim.squad_of(i));
+}
+
+/// Tab cycles which squad the toolbar's orders command: none (every squad) →
+/// the first → the second → … → back to none. A quick way to pick a squad
+/// without hunting down one of its soldiers on the map.
+fn cycle_squad(
+    keys: Res<ButtonInput<KeyCode>>,
+    screen: Res<ScreenRes>,
+    sim: Res<SimRes>,
+    mut squad: ResMut<SelectedSquad>,
+) {
+    if screen.0 != Screen::Playing || !keys.just_pressed(KeyCode::Tab) {
+        return;
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
+    let n = sim.squads.len();
+    if n == 0 {
+        squad.0 = None;
+        return;
+    }
+    // none → 0 → 1 → … → n-1 → none.
+    squad.0 = match squad.0 {
+        None => Some(0),
+        Some(s) if s + 1 < n => Some(s + 1),
+        Some(_) => None,
+    };
 }
 
 /// Shift+A brings the selected dwarf to justice on suspicion of vampirism —
@@ -2180,7 +2231,19 @@ fn update_dwarf_panel(
     let show = match (selected.0, sim.0.as_ref()) {
         (Some(i), Some(sim)) if i < sim.dwarves.len() => {
             if let Ok(mut t) = text.single_mut() {
-                t.0 = format!("{}\n\n[Shift+A] accuse of vampirism", sim.biography(i, &reg.0));
+                // If this dwarf soldiers in a squad, note which — clicking them
+                // has selected it, so the toolbar's orders now command it.
+                let squad_line = match sim.squad_of(i) {
+                    Some(s) => format!(
+                        "\ncommands {} -- toolbar orders now target this squad",
+                        sim.squads[s].name
+                    ),
+                    None => String::new(),
+                };
+                t.0 = format!(
+                    "{}{squad_line}\n\n[Shift+A] accuse of vampirism",
+                    sim.biography(i, &reg.0)
+                );
             }
             true
         }
@@ -4534,6 +4597,7 @@ fn update_hud(
     control: Res<SimControl>,
     mode: Res<UiMode>,
     diagnostics: Res<DiagnosticsStore>,
+    squad_sel: Res<SelectedSquad>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     match screen.0 {
@@ -4981,23 +5045,40 @@ fn update_hud(
         .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
     let alarm_txt = if sim.0.alarm { " [SOUNDED]" } else { "" };
-    // The fort's soldiers share one standing order and uniform in this UI; show
-    // them so the player knows whether their squads will sally, hold, or drill,
-    // and how they are armed. A marksdwarf fort also shows its bolt stock.
-    let squad_txt = match sim.0.squads.first() {
-        None => String::new(),
-        Some(sq) => {
+    // The muster roll: one line per squad — its name, strength, standing order,
+    // and how it is armed — with the commanded squad marked by '>'. Toolbar
+    // orders go to the marked squad, or to every squad when none is picked
+    // (Tab cycles the selection; click a soldier to command their squad).
+    let sel = squad_sel.0.filter(|&s| s < sim.0.squads.len());
+    let squad_txt = if sim.0.squads.is_empty() {
+        String::new()
+    } else {
+        let mut lines = String::from("\n-- squads (Tab: select   click a soldier to command)");
+        for (s, sq) in sim.0.squads.iter().enumerate() {
             let order = match sq.order {
-                SquadOrder::Defend => "DEFEND".to_string(),
-                SquadOrder::Train => "TRAIN".to_string(),
-                SquadOrder::Station(p) => format!("STATION ({}, {})", p.x, p.y),
+                SquadOrder::Defend => "defend".to_string(),
+                SquadOrder::Train => "train".to_string(),
+                SquadOrder::Station(p) => format!("station ({},{})", p.x, p.y),
             };
             let arm = match sq.uniform {
                 Uniform::Melee => "melee".to_string(),
-                Uniform::Ranged => format!("marks · {} bolts", sim.0.bolts),
+                Uniform::Ranged => format!("marks[{} bolts]", sim.0.bolts),
             };
-            format!("   orders: {order} · {arm}")
+            let living = sq
+                .members
+                .iter()
+                .filter(|&&m| sim.0.dwarves[m].alive)
+                .count();
+            let mark = if sel == Some(s) { '>' } else { ' ' };
+            lines.push_str(&format!(
+                "\n{mark} {name} ({living}) -- {order} -- {arm}",
+                name = sq.name,
+            ));
         }
+        if sel.is_none() {
+            lines.push_str("\n  (orders apply to ALL squads)");
+        }
+        lines
     };
     let vampire_txt = if sim.0.stats.drained > 0 {
         format!("   ** a vampire walks among us: {} drained **", sim.0.stats.drained)
@@ -5022,7 +5103,7 @@ fn update_hud(
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {} ({})   {}   {:.0} fps\n\
              dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
-             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}{}   poems {}   songs {}{}\n\
+             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}   songs {}{}{}\n\
              Build & dig from the toolbar below (or press its key) -- click a tool, then click the map.   l:lever  t:pull   F1: full controls\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
             view_z.0,
@@ -5059,10 +5140,10 @@ fn update_hud(
             sim.0.veterans(),
             sim.0.armed_soldiers(),
             sim.0.armored_soldiers(),
-            squad_txt,
             sim.0.poems.len(),
             sim.0.songs.len(),
             vampire_txt,
+            squad_txt,
             alarm_txt,
             mode_txt,
             log_tail,

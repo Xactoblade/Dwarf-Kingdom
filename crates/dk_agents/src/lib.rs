@@ -2433,6 +2433,12 @@ impl Sim {
             .map_or(SquadOrder::Defend, |s| s.order)
     }
 
+    /// Which squad a dwarf belongs to, if any — for the UI to select a squad by
+    /// clicking one of its soldiers.
+    pub fn squad_of(&self, dwarf: usize) -> Option<usize> {
+        self.squads.iter().position(|s| s.members.contains(&dwarf))
+    }
+
     /// How the squad this soldier belongs to is armed. Squad-less soldiers
     /// (and the whole fort before the first muster) default to melee.
     fn squad_uniform(&self, i: usize) -> Uniform {
