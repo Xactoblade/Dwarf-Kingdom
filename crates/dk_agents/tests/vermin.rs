@@ -189,23 +189,77 @@ fn a_fort_with_cats_loses_less_than_one_without() {
 
 #[test]
 fn the_seven_eaters_are_dwarf_fortresss_seven() {
-    // DF has 131 vermin and exactly seven carry [VERMIN_EATER]. These are they,
-    // with their PENETRATEPOWER — 1, 2, or 3, against a roll of 0-100.
-    for (k, p) in [
-        (VerminKind::DemonRat, 3),
-        (VerminKind::Rat, 2),
-        (VerminKind::Hamster, 2),
-        (VerminKind::LargeRoach, 2),
-        (VerminKind::RhinoLizard, 2),
-        (VerminKind::Lizard, 1),
-        (VerminKind::FluffyWambler, 1),
+    // DF has 131 vermin and exactly seven carry [VERMIN_EATER] — its own prose
+    // says "many types feed on stockpiles" and its table says seven. These are
+    // the seven.
+    for k in [
+        VerminKind::DemonRat,
+        VerminKind::Rat,
+        VerminKind::Hamster,
+        VerminKind::LargeRoach,
+        VerminKind::RhinoLizard,
+        VerminKind::Lizard,
+        VerminKind::FluffyWambler,
     ] {
-        assert_eq!(k.penetrate_power(), p, "{}", k.name());
         assert!(!k.name().is_empty());
     }
-    // The demon rat is the worst of them.
+}
+
+#[test]
+fn a_vermin_eats_at_the_rate_the_constant_says() {
+    // Pins the cadence. The first version of this gated eating on
+    // `tick % VERMIN_EAT_INTERVAL` while each vermin only acted every 7th tick
+    // — gcd(7, 600) = 1, so the two almost never coincided and the real rate
+    // came out SEVEN TIMES slower than the constant claimed. Nothing caught it
+    // because every other test only asks whether anything was eaten at all.
+    let (mut sim, raws) = fort(9308, Some(VerminKind::Rat));
+    let sp = sim.dwarves[0].pos;
+    for _ in 0..400 {
+        sim.debug_spawn_item(ItemKind::Meal, 0, sp);
+    }
+    let days = 12u64;
+    for _ in 0..dk_core::TICKS_PER_DAY * days {
+        for d in &mut sim.dwarves {
+            d.hunger = 0.0;
+            d.thirst = 0.0;
+        }
+        sim.step(&raws);
+    }
+    // At cap, each vermin takes one meal per VERMIN_EAT_INTERVAL. They arrive
+    // over the first days, so the expected total is a ceiling, not a target.
+    // Computed over the whole window, not per day: the interval is longer than
+    // a day, and per-day integer division rounds it to zero.
+    let window = dk_core::TICKS_PER_DAY * days;
+    let bites_each = window / dk_agents::VERMIN_EAT_INTERVAL;
+    let ceiling = dk_agents::VERMIN_CAP as u64 * bites_each;
+    assert!(bites_each > 0, "the window must be long enough to eat in");
+    let got = sim.stats.food_gnawed as u64;
+    assert!(got > 0, "rats eat");
     assert!(
-        VerminKind::DemonRat.penetrate_power() > VerminKind::Rat.penetrate_power(),
-        "evil ground breeds a better burglar"
+        got <= ceiling,
+        "no vermin eats faster than its cadence ({got} > ceiling {ceiling})"
     );
+    // And not absurdly under it either — that was the bug.
+    assert!(
+        got * 4 >= ceiling,
+        "the rate is roughly what the constant says ({got} vs ceiling {ceiling})"
+    );
+}
+
+#[test]
+fn nobody_butchers_the_cat() {
+    // The Cull tool takes the nearest animal that is not a companion. A cat is
+    // the fort's only answer to vermin; eating it would be a fine way to lose
+    // a larder, and the herder should know better.
+    let (mut sim, _raws) = fort(9307, Some(VerminKind::Rat));
+    let sp = sim.dwarves[0].pos;
+    sim.add_animal(AnimalKind::Cat, sp, true);
+    let cat = sim.animals.len() - 1;
+    sim.add_animal(AnimalKind::Cow, Pos::new(sp.x + 4, sp.y, sp.z), true);
+
+    // The cat is nearer, and must still be passed over.
+    let marked = sim.mark_nearest_animal(sp).expect("something is marked");
+    assert_ne!(marked, cat, "the cat is not livestock");
+    assert_eq!(sim.animals[marked].kind, AnimalKind::Cow, "the cow is");
+    assert!(!sim.animals[cat].marked);
 }

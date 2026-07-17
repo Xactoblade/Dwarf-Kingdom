@@ -63,17 +63,22 @@ pub const MIASMA_RANGE: u32 = 6;
 /// How close a cat must be to catch a vermin.
 pub const CAT_REACH: u32 = 3;
 /// The most vermin a fort's country will support at once.
-pub const VERMIN_CAP: usize = 6;
+pub const VERMIN_CAP: usize = 4;
 /// How often another one creeps in. Ours, not Dwarf Fortress's — the wiki
 /// documents no rate anywhere.
 pub const VERMIN_SPAWN_INTERVAL: u64 = TICKS_PER_DAY / 2;
 /// Vermin are quick, but not that quick.
 pub const VERMIN_WALK_COOLDOWN: u8 = 6;
-/// How often one of them actually gets a mouthful. Ours, not Dwarf Fortress's
-/// — the wiki gives no rate. A vermin is a slow bleed on a larder, not a
-/// plague: left alone with the fort's whole food supply it should cost you a
-/// few meals a season, not empty the place in two days.
-pub const VERMIN_EAT_INTERVAL: u64 = TICKS_PER_DAY / 2;
+/// How often one of them actually gets a mouthful.
+///
+/// Ours, not Dwarf Fortress's — the wiki gives no rate anywhere, so this is a
+/// number I picked and then measured. Twice a day per rat out-ate the fort's
+/// whole kitchen: an uncatted fort lost every meal it cooked and starved two
+/// dwarves in a year. A vermin should be a bleed you notice, not a second
+/// famine. At one bite every two days a catless fort still loses its stores to
+/// them, but slowly enough to see it coming and do something — get a cat, or
+/// pack the larder into casks.
+pub const VERMIN_EAT_INTERVAL: u64 = TICKS_PER_DAY * 2;
 /// Ticks between melee swings.
 pub const ATTACK_COOLDOWN: u8 = 40;
 /// How close a raider must be before a war dog charges it.
@@ -732,17 +737,6 @@ impl VerminKind {
         }
     }
 
-    /// Dwarf Fortress's `PENETRATEPOWER`: how well this one gets into a
-    /// container. The values are 1, 2 or 3 against a roll of 0-100, which is
-    /// to say a barrel very nearly settles the matter — see `can_open`.
-    pub fn penetrate_power(self) -> u8 {
-        match self {
-            VerminKind::DemonRat => 3,
-            VerminKind::Rat | VerminKind::Hamster | VerminKind::LargeRoach
-            | VerminKind::RhinoLizard => 2,
-            VerminKind::Lizard | VerminKind::FluffyWambler => 1,
-        }
-    }
 }
 
 impl AnimalKind {
@@ -787,6 +781,12 @@ pub struct Vermin {
     pub pos: Pos,
     pub alive: bool,
     move_cd: u8,
+    /// Ticks until this one gets another mouthful. Its OWN clock, not the
+    /// world's: a vermin only reaches the eat check on its action ticks (one
+    /// in seven, thanks to `move_cd`), so gating on `tick % INTERVAL == 0`
+    /// sampled a coincidence that almost never happened — the real rate came
+    /// out seven times slower than the constant said.
+    eat_cd: u64,
 }
 
 /// A grazing beast. Simpler than a dwarf: it wanders its pasture, matures,
@@ -2133,8 +2133,14 @@ impl Sim {
             .animals
             .iter()
             .enumerate()
-            // Dogs are companions, not livestock — never marked for the block.
-            .filter(|(_, a)| a.alive && !a.marked && a.kind != AnimalKind::Dog)
+            // Dogs are companions and cats are pest control — neither is
+            // livestock, and neither goes to the block. Butchering the cat that
+            // guards your larder would be a fine way to lose a fort.
+            .filter(|(_, a)| {
+                a.alive
+                    && !a.marked
+                    && !matches!(a.kind, AnimalKind::Dog | AnimalKind::Cat)
+            })
             .min_by_key(|(_, a)| a.pos.manhattan(p))
             .map(|(i, _)| i)?;
         self.animals[idx].marked = true;
@@ -2929,11 +2935,15 @@ impl Sim {
     /// Is this food out where a rat can get at it?
     ///
     /// Dwarf Fortress's rule is one word: vermin "attempt to eat EXPOSED
-    /// food". A container is the counterplay — `PENETRATEPOWER` rolls the
-    /// vermin's 1..3 against 0-100, so a barrel turns away better than
-    /// nineteen tries in twenty. (Material barely matters: metal rolls 0-100
-    /// where wood rolls 0-95, which works out to a third of a percentage point.
-    /// "Metal barrels resist vermin" is true and almost meaningless.)
+    /// food". A container is the counterplay, and we model it as absolute —
+    /// a closed cask is rat-proof.
+    ///
+    /// That is a simplification, and here is its size. DF rolls the vermin's
+    /// `PENETRATEPOWER` — 1, 2 or 3 — against 0-100 (0-95 for wood, 0-90 for
+    /// cloth), so a cask turns away about 97 attempts in 100 whatever it is
+    /// made of. Modelling the roll would buy a 3% leak and a per-material
+    /// spread of a third of a percentage point: "metal barrels resist vermin"
+    /// is true and practically meaningless. Not worth the die.
     ///
     /// So: a cask is not a pantry — it will not stop food ROTTING, that takes
     /// a stockpile — but it is a rat-proof box, which is the other half of why
@@ -2982,7 +2992,6 @@ impl Sim {
             if !self.animals[idx].alive || self.animals[idx].kind != AnimalKind::Cat {
                 continue;
             }
-            self.animals[idx].age = self.animals[idx].age.saturating_add(1);
             if self.animals[idx].move_cd > 0 {
                 self.animals[idx].move_cd -= 1;
                 continue;
@@ -3001,27 +3010,27 @@ impl Sim {
                 continue;
             }
             self.animals[idx].move_cd = WALK_COOLDOWN;
-            // Cats can climb between levels the way vermin cannot be bothered
-            // to; step toward the target on this level, and take a stair if the
-            // target is elsewhere.
-            let (sx, sy) = ((tp.x - cp.x).signum(), (tp.y - cp.y).signum());
-            for step in [
-                Pos::new(cp.x + sx, cp.y + sy, cp.z),
-                Pos::new(cp.x + sx, cp.y, cp.z),
-                Pos::new(cp.x, cp.y + sy, cp.z),
-            ] {
-                if step != cp && self.map.walkable(step) {
-                    self.animals[idx].pos = step;
-                    break;
+            if tp.z == cp.z {
+                // Same floor: a cheap step is enough.
+                let (sx, sy) = ((tp.x - cp.x).signum(), (tp.y - cp.y).signum());
+                for step in [
+                    Pos::new(cp.x + sx, cp.y + sy, cp.z),
+                    Pos::new(cp.x + sx, cp.y, cp.z),
+                    Pos::new(cp.x, cp.y + sy, cp.z),
+                ] {
+                    if step != cp && self.map.walkable(step) {
+                        self.animals[idx].pos = step;
+                        break;
+                    }
                 }
-            }
-            // Different level: let it find the surface there, as livestock do.
-            if self.animals[idx].pos.z != tp.z {
-                if let Some(z) = self
-                    .map
-                    .walk_surface_z(self.animals[idx].pos.x as usize, self.animals[idx].pos.y as usize)
-                {
-                    self.animals[idx].pos.z = z as i32;
+            } else if let Some(p) = path::astar(&self.map, cp, tp, MAX_ASTAR_NODES / 4) {
+                // Another floor: walk the fort's own stairs down to it. A cat
+                // that snapped to `walk_surface_z` instead climbed out through
+                // the rock onto the mountaintop and could never come back —
+                // which made it useless in every fort that keeps its larder
+                // underground, i.e. every fort.
+                if let Some(&next) = p.get(1) {
+                    self.animals[idx].pos = next;
                 }
             }
         }
@@ -3084,12 +3093,20 @@ impl Sim {
                 None => self.random_surface_spot(),
             };
             if let Some(pos) = spot {
-                self.vermin.push(Vermin { kind, pos, alive: true, move_cd: 0 });
+                self.vermin.push(Vermin {
+                    kind,
+                    pos,
+                    alive: true,
+                    move_cd: 0,
+                    eat_cd: VERMIN_EAT_INTERVAL,
+                });
             }
         }
 
         // They go for the food, and eat what is not put away properly.
         for v in 0..self.vermin.len() {
+            // Hunger counts down on every tick, not only the ones it acts on.
+            self.vermin[v].eat_cd = self.vermin[v].eat_cd.saturating_sub(1);
             if self.vermin[v].move_cd > 0 {
                 self.vermin[v].move_cd -= 1;
                 continue;
@@ -3117,9 +3134,10 @@ impl Sim {
             if fp == vp {
                 // Dinner — but only now and then. A rat sitting on the larder
                 // nibbles; it does not inhale it.
-                if self.clock.tick % VERMIN_EAT_INTERVAL != 0 {
+                if self.vermin[v].eat_cd > 0 {
                     continue;
                 }
+                self.vermin[v].eat_cd = VERMIN_EAT_INTERVAL;
                 self.items[food].consumed = true;
                 self.stats.food_gnawed += 1;
                 if self.stats.food_gnawed % 5 == 1 {
@@ -3130,10 +3148,15 @@ impl Sim {
                 }
                 continue;
             }
-            // Standing over it but a level off: squeeze through. They are
-            // vermin — a floor is not an obstacle, it is a route.
+            // Standing over it but a level off: squeeze through. A floor is
+            // no obstacle to a rat — but rock is. One level at a time, and
+            // only onto somewhere it could actually stand, or a sealed larder
+            // under bedrock would be no safer than an open table.
             if fp.x == vp.x && fp.y == vp.y && fp.z != vp.z {
-                self.vermin[v].pos = fp;
+                let step = Pos::new(vp.x, vp.y, vp.z + (fp.z - vp.z).signum());
+                if self.map.walkable(step) {
+                    self.vermin[v].pos = step;
+                }
                 continue;
             }
             // Shuffle toward it. No pathfinding — they are vermin, they get
@@ -9087,7 +9110,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 63;
+const SAVE_VERSION: u32 = 64;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
