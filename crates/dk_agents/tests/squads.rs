@@ -298,6 +298,73 @@ fn a_stationed_soldier_breaks_to_eat_and_is_freed_when_stood_down() {
 }
 
 #[test]
+fn a_patrolling_squad_walks_its_beat_and_strikes_what_nears_it() {
+    let (mut sim, raws) = arena(1);
+    sim.dwarves[0].pos = Pos::new(5, 20, 1);
+    arm_soldier(&mut sim, &raws, 0);
+    let (a, b) = (Pos::new(5, 20, 1), Pos::new(34, 20, 1));
+    sim.set_squad_order(0, SquadOrder::Patrol(a, b));
+
+    // Over time the soldier sweeps the whole beat — it reaches near both ends.
+    let (mut near_a, mut near_b) = (false, false);
+    for _ in 0..6_000 {
+        sim.step(&raws);
+        let p = sim.dwarves[0].pos;
+        if p.manhattan(a) <= 2 {
+            near_a = true;
+        }
+        if p.manhattan(b) <= 2 {
+            near_b = true;
+        }
+        if near_a && near_b {
+            break;
+        }
+    }
+    assert!(near_a && near_b, "a patrol walks back and forth across its beat");
+    assert!(matches!(sim.dwarves[0].task, Task::Patrol { .. }));
+
+    // A raider strays onto the route: the patrol breaks off and cuts it down.
+    let raider = sim.debug_spawn_raider_at(Pos::new(20, 20, 1), &raws);
+    let mut struck = false;
+    for _ in 0..6_000 {
+        sim.step(&raws);
+        if !sim.dwarves[raider].alive {
+            struck = true;
+            break;
+        }
+        if !sim.dwarves[0].alive {
+            break;
+        }
+    }
+    assert!(struck, "a patrol strikes what strays onto its beat");
+}
+
+#[test]
+fn a_patrol_stood_down_returns_to_normal_duty() {
+    // Changing a patrolling squad's order must release the soldier from the
+    // beat (the same stale-task guard Station has).
+    let (mut sim, raws) = arena(1);
+    sim.dwarves[0].pos = Pos::new(5, 20, 1);
+    arm_soldier(&mut sim, &raws, 0);
+    sim.set_squad_order(0, SquadOrder::Patrol(Pos::new(5, 20, 1), Pos::new(30, 20, 1)));
+    for _ in 0..300 {
+        sim.step(&raws);
+    }
+    assert!(matches!(sim.dwarves[0].task, Task::Patrol { .. }));
+
+    sim.set_squad_order(0, SquadOrder::Train);
+    let mut released = false;
+    for _ in 0..500 {
+        sim.step(&raws);
+        if !matches!(sim.dwarves[0].task, Task::Patrol { .. }) {
+            released = true;
+            break;
+        }
+    }
+    assert!(released, "standing down frees a soldier from its patrol");
+}
+
+#[test]
 fn a_fallen_soldier_leaves_the_muster_rolls() {
     let (mut sim, _raws) = arena(1);
     sim.toggle_soldier(sim.dwarves[0].pos);

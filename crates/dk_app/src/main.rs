@@ -78,8 +78,8 @@ ZONES & LABOR\n\
   Shift+L ... library (scholars write treatises, read them in Legends)\n\
   u ... cull an animal      Shift+U ... war-train a dog\n\
   i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
-  Defend / Station / Train (toolbar) ... order your squads: hunt all, hold a\n\
-    clicked post, or drill and defend only themselves\n\
+  Defend / Station / Patrol / Train (toolbar) ... order your squads: hunt all,\n\
+    hold a clicked post, walk a beat between two clicked points, or drill\n\
   Melee / Marks (toolbar) ... arm squads with steel or crossbows; marksdwarves\n\
     fire bolts from range (forge crossbows and bolts at the forge first)\n\
   Tab / click a soldier ... pick which squad the toolbar orders; none = all\n\
@@ -306,6 +306,8 @@ enum Tool {
 enum OrderTool {
     Defend,
     Station,
+    /// Two clicks: the two ends of a back-and-forth beat.
+    Patrol,
     Train,
 }
 
@@ -613,6 +615,7 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::WarDog, label: "War Dog", key: "\u{21e7}U", tip: "Train the dog here into a war beast", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Defend), label: "Defend", key: "", tip: "Selected squad (or all) hunts any hostile in the fort -- Tab or click a soldier to pick a squad", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Station), label: "Station", key: "", tip: "Selected squad (or all) holds the clicked post, striking only what nears it", cat: 3 },
+    ToolButton { tool: Tool::Order(OrderTool::Patrol), label: "Patrol", key: "", tip: "Selected squad (or all) walks a beat between two clicked points, striking what nears the route", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Train), label: "Train", key: "", tip: "Selected squad (or all) drills at the barracks and defends only itself", cat: 3 },
     ToolButton { tool: Tool::Arm(Uniform::Melee), label: "Melee", key: "", tip: "Arm the selected squad (or all) with swords, axes, and shields", cat: 3 },
     ToolButton { tool: Tool::Arm(Uniform::Ranged), label: "Marks", key: "", tip: "Arm the selected squad (or all) with crossbows (forge crossbows and bolts, then they fire from range)", cat: 3 },
@@ -2115,18 +2118,33 @@ fn apply_active_tool(
             sim.toggle_soldier(here);
         }
         Tool::Order(order) => {
-            let order = match order {
-                OrderTool::Defend => SquadOrder::Defend,
-                OrderTool::Train => SquadOrder::Train,
-                OrderTool::Station => SquadOrder::Station(here),
+            // Patrol needs two clicks — the two ends of the beat — so it lays an
+            // anchor on the first and completes on the second. The rest apply at
+            // one click.
+            let squad_order = match order {
+                OrderTool::Defend => Some(SquadOrder::Defend),
+                OrderTool::Train => Some(SquadOrder::Train),
+                OrderTool::Station => Some(SquadOrder::Station(here)),
+                OrderTool::Patrol => match active.anchor {
+                    Some(a) if a.z == here.z => {
+                        active.anchor = None;
+                        Some(SquadOrder::Patrol(a, here))
+                    }
+                    _ => {
+                        active.anchor = Some(here);
+                        None
+                    }
+                },
             };
             // With a squad selected the order goes to it alone; with none, the
             // whole fort is commanded as one body.
-            match squad.0.filter(|&s| s < sim.squads.len()) {
-                Some(s) => sim.set_squad_order(s, order),
-                None => {
-                    for s in 0..sim.squads.len() {
-                        sim.set_squad_order(s, order);
+            if let Some(order) = squad_order {
+                match squad.0.filter(|&s| s < sim.squads.len()) {
+                    Some(s) => sim.set_squad_order(s, order),
+                    None => {
+                        for s in 0..sim.squads.len() {
+                            sim.set_squad_order(s, order);
+                        }
                     }
                 }
             }
@@ -5098,6 +5116,9 @@ fn update_hud(
                 SquadOrder::Defend => "defend".to_string(),
                 SquadOrder::Train => "train".to_string(),
                 SquadOrder::Station(p) => format!("station ({},{})", p.x, p.y),
+                SquadOrder::Patrol(a, b) => {
+                    format!("patrol ({},{})-({},{})", a.x, a.y, b.x, b.y)
+                }
             };
             let arm = match sq.uniform {
                 Uniform::Melee => "melee".to_string(),

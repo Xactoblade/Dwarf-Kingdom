@@ -1383,6 +1383,9 @@ pub enum Task {
     /// Hold a post: a stationed soldier marches to its point and stands guard,
     /// striking only what strays near (the hunt loop handles engagement).
     Station { spot: Pos, path: Vec<Pos> },
+    /// Walk a beat: march between two points, flipping ends on arrival. The
+    /// hunt loop breaks off to strike what strays near the route.
+    Patrol { a: Pos, b: Pos, toward_b: bool, path: Vec<Pos> },
     /// Shelter in a burrow while the alarm sounds.
     Shelter { spot: Pos, path: Vec<Pos> },
     /// Walk to a marked tree and fell it for a log.
@@ -1517,6 +1520,7 @@ impl Dwarf {
             Task::Recover { .. } => "resting in the hospital",
             Task::Spar { .. } => "drilling at the barracks",
             Task::Station { .. } => "holding a post",
+            Task::Patrol { .. } => "walking a patrol",
             Task::Shelter { .. } => "sheltering from the raid",
         }
     }
@@ -1758,6 +1762,9 @@ pub enum SquadOrder {
     /// near. A soldier stationed on a bridge does not chase a beast across the
     /// map and leave the gate open.
     Station(Pos),
+    /// Walk a beat between two points, back and forth, striking what strays
+    /// near the route — a moving guard for a wall or corridor.
+    Patrol(Pos, Pos),
     /// Drill at the barracks. Train through peacetime; still defends itself if
     /// something walks up, but does not go looking for a fight.
     Train,
@@ -2494,6 +2501,9 @@ impl Sim {
                 match order {
                     SquadOrder::Defend => "will defend the fort".to_string(),
                     SquadOrder::Station(p) => format!("holds a post at ({}, {})", p.x, p.y),
+                    SquadOrder::Patrol(a, b) => {
+                        format!("patrols from ({}, {}) to ({}, {})", a.x, a.y, b.x, b.y)
+                    }
                     SquadOrder::Train => "drills at the barracks".to_string(),
                 },
             );
@@ -7489,17 +7499,22 @@ impl Sim {
             let my_pos = self.dwarves[i].pos;
             let my_region = self.regions.id(my_pos);
             let order = self.squad_order(i);
-            // A soldier still holding a post after its squad's order changed
-            // away from Station: release it back to normal duties, or it would
-            // stay frozen on the old post (never eating, drilling, or defending)
-            // forever.
-            if !matches!(order, SquadOrder::Station(_))
-                && matches!(self.dwarves[i].task, Task::Station { .. })
-            {
+            // A soldier still holding a Station/Patrol task after its squad's
+            // order changed away from it: release it back to normal duties, or
+            // it would stay frozen on the old post/beat (never eating, drilling,
+            // or defending) forever.
+            let stale_post = match (&self.dwarves[i].task, order) {
+                (Task::Station { .. }, SquadOrder::Station(_)) => false,
+                (Task::Patrol { .. }, SquadOrder::Patrol(..)) => false,
+                (Task::Station { .. } | Task::Patrol { .. }, _) => true,
+                _ => false,
+            };
+            if stale_post {
                 self.dwarves[i].task = Task::Idle { wander_cd: 3 };
             }
             // A stationed squad measures threats from its post, not from the
-            // soldier — so the whole line reacts to a foe nearing the gate.
+            // soldier — so the whole line reacts to a foe nearing the gate. A
+            // patrol reacts to what strays near the soldier as it walks the beat.
             let watch = match order {
                 SquadOrder::Station(p) => p,
                 _ => my_pos,
@@ -7518,6 +7533,11 @@ impl Sim {
                             SquadOrder::Train => false,
                             // Station: only what strays within reach of the post.
                             SquadOrder::Station(p) => d.pos.manhattan(p) <= STATION_ENGAGE_RANGE,
+                            // Patrol: only what strays within reach of the soldier
+                            // as it walks the beat.
+                            SquadOrder::Patrol(..) => {
+                                d.pos.manhattan(my_pos) <= STATION_ENGAGE_RANGE
+                            }
                             SquadOrder::Defend => true,
                         }
                 })
@@ -7566,6 +7586,51 @@ impl Sim {
                             path.clear();
                         }
                         self.dwarves[i].task = Task::Station { spot: post, path };
+                        return;
+                    }
+                } else if let SquadOrder::Patrol(a, b) = order {
+                    // A patrolling soldier walks its beat between the two ends,
+                    // flipping on arrival — unless a pressing need pulls it off
+                    // to be fed (same starvation guard as Station).
+                    let needs_break = self.dwarves[i].hunger >= NEED_AT
+                        || self.dwarves[i].thirst >= NEED_AT
+                        || self.dwarves[i].fatigue >= 100.0;
+                    if needs_break {
+                        if matches!(self.dwarves[i].task, Task::Patrol { .. }) {
+                            self.dwarves[i].task = Task::Idle { wander_cd: 3 };
+                        }
+                    } else {
+                        // Carry forward which end we're heading for and the
+                        // cached route; a fresh order (or a task that isn't a
+                        // patrol of THIS beat) starts toward the farther end so a
+                        // soldier dropped mid-beat sweeps the whole line.
+                        let (mut toward_b, mut path) = match self.dwarves[i].task.clone() {
+                            Task::Patrol { a: pa, b: pb, toward_b, path } if pa == a && pb == b => {
+                                (toward_b, path)
+                            }
+                            other => {
+                                if !matches!(other, Task::Patrol { .. }) {
+                                    self.abandon_task(i);
+                                }
+                                (my_pos.manhattan(a) >= my_pos.manhattan(b), Vec::new())
+                            }
+                        };
+                        // Reached this end: flip, aim for the other, drop the
+                        // spent route so a fresh one is charted below.
+                        let target = if toward_b { b } else { a };
+                        if my_pos.manhattan(target) <= 1 {
+                            toward_b = !toward_b;
+                            path.clear();
+                        }
+                        if path.is_empty() {
+                            let goal = if toward_b { b } else { a };
+                            path = path::astar(&self.map, my_pos, goal, MAX_ASTAR_NODES)
+                                .unwrap_or_default();
+                        }
+                        if !path.is_empty() && !self.step_along(i, &mut path) {
+                            path.clear();
+                        }
+                        self.dwarves[i].task = Task::Patrol { a, b, toward_b, path };
                         return;
                     }
                 }
@@ -8754,6 +8819,16 @@ impl Sim {
                     self.dwarves[i].task = Task::Station { spot, path: Vec::new() };
                 }
             }
+            Task::Patrol { a, b, toward_b, mut path } => {
+                // Walk the beat. update_dwarf charts the route and flips the
+                // ends; this just advances along it (and drops a spent route so
+                // the next tick recharts).
+                if !path.is_empty() && self.step_along(i, &mut path) {
+                    self.dwarves[i].task = Task::Patrol { a, b, toward_b, path };
+                } else {
+                    self.dwarves[i].task = Task::Patrol { a, b, toward_b, path: Vec::new() };
+                }
+            }
             Task::Tantrum { remaining } => {
                 if remaining == 0 {
                     self.dwarves[i].stress = 50.0;
@@ -9932,6 +10007,7 @@ impl Sim {
             | Task::Recover { .. }
             | Task::Spar { .. }
             | Task::Station { .. }
+            | Task::Patrol { .. }
             | Task::Shelter { .. }
             | Task::DrinkWell { .. } => {}
         }
@@ -10093,7 +10169,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 68;
+const SAVE_VERSION: u32 = 69;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
