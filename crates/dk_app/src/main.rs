@@ -679,6 +679,43 @@ fn data_dir() -> PathBuf {
     panic!("could not locate the data/ directory with material raws");
 }
 
+/// Where a crash is recorded, so a panic that would otherwise vanish with the
+/// terminal leaves something to read afterward.
+fn crash_log_path() -> PathBuf {
+    PathBuf::from("saves/crash.log")
+}
+
+/// Catch a panic and append it — message, location, and backtrace — to
+/// `saves/crash.log`, then fall through to the normal handler (which still
+/// prints to the terminal). Rust panics leave no trace once the window is gone;
+/// this gives "it crashed after a few minutes" something concrete to look at.
+fn install_crash_logger() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // force_capture honours RUST_BACKTRACE if set, and captures regardless
+        // otherwise — we always want the trace in the file.
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let entry = format!(
+            "\n===== crash at unix {secs} =====\n{info}\n\nbacktrace:\n{backtrace}\n",
+        );
+        let _ = std::fs::create_dir_all("saves");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(crash_log_path())
+        {
+            use std::io::Write;
+            let _ = f.write_all(entry.as_bytes());
+        }
+        // Still print to the terminal as usual.
+        default(info);
+    }));
+}
+
 fn save_path() -> PathBuf {
     PathBuf::from("saves/world.bin")
 }
@@ -1092,6 +1129,7 @@ fn default_region(world: &World) -> (usize, usize) {
 }
 
 fn main() {
+    install_crash_logger();
     let raws = Raws::load(&data_dir()).expect("failed to load raws");
     let world = load_or_make_world();
     // DK_SHOT_SCREEN=embark verifies the embark map instead of the fort.
