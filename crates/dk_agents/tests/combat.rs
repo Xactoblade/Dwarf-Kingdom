@@ -127,3 +127,74 @@ fn an_armed_soldier_beats_a_bare_handed_raider() {
     assert!(won, "an armed soldier cuts down a bare-handed raider");
     assert!(sim.dwarves[0].alive, "and lives to tell it");
 }
+
+// --- defence: dodge, block, parry (combat stage 2) ---
+
+fn skilled(sim: &mut Sim, i: usize, level: u32) {
+    // Raise a dwarf's Fighting skill by drilling XP into it.
+    while sim.dwarves[i].skill_level(dk_agents::Skill::Fighting) < level {
+        sim.debug_add_xp(i, dk_agents::Skill::Fighting, 100);
+    }
+}
+
+#[test]
+fn a_shield_and_skill_turn_blows_that_kill_the_unshielded() {
+    // The whole point of the defence layer: two identical soldiers face the
+    // same attacker, but the one with a shield and training lives far longer.
+    let survival = |shield: bool, level: u32| -> u32 {
+        let (mut sim, raws) = duel_fort(7900 + level as u64 + shield as u64 * 7);
+        let def = 0;
+        sim.toggle_soldier(sim.dwarves[def].pos);
+        skilled(&mut sim, def, level);
+        let sp = sim.dwarves[def].pos;
+        if shield {
+            sim.debug_spawn_item(ItemKind::Shield, 0, sp);
+        }
+        // A relentless attacker right next to them, sword in hand.
+        let r = sim.debug_spawn_raider_at(Pos::new(sp.x + 1, sp.y, sp.z), &raws);
+        skilled(&mut sim, r, 3);
+        let iron = raws.materials.index_of("hematite").unwrap();
+        sim.debug_spawn_item(ItemKind::Weapon, iron, sim.dwarves[r].pos);
+        let sword = sim.items.len() - 1;
+        sim.debug_carry_item(sword, r);
+        let mut ticks = 0u32;
+        for t in 0..20_000 {
+            sim.step(&raws);
+            ticks = t;
+            if !sim.dwarves[def].alive {
+                break;
+            }
+        }
+        ticks
+    };
+    let bare = survival(false, 0);
+    let guarded = survival(true, 4);
+    assert!(
+        guarded > bare * 2,
+        "a shielded veteran outlasts a green recruit ({guarded} vs {bare} ticks)"
+    );
+}
+
+#[test]
+fn a_beast_cannot_dodge() {
+    // Beasts are too vast to slip a blow — they must be worn down, which is
+    // why they are dangerous. try_defend returns nothing for them, so a hit on
+    // a beast always lands.
+    let (mut sim, raws) = duel_fort(7950);
+    // A soldier with a good blade against a beast.
+    sim.toggle_soldier(sim.dwarves[0].pos);
+    let iron = raws.materials.index_of("hematite").unwrap();
+    let sp = sim.dwarves[0].pos;
+    sim.debug_spawn_item(ItemKind::Weapon, iron, sp);
+    let beast = sim.spawn_forgotten_beast(Pos::new(sp.x + 1, sp.y, sp.z), &raws);
+    // The beast takes wounds (it cannot dodge), even if it wins the fight.
+    let mut beast_bled = false;
+    for _ in 0..3_000 {
+        sim.step(&raws);
+        if sim.dwarves[beast].body.iter().any(|p| p.hp < p.max_hp) {
+            beast_bled = true;
+            break;
+        }
+    }
+    assert!(beast_bled, "a beast cannot dodge — the blade always finds it");
+}

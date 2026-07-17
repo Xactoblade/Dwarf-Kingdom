@@ -33,19 +33,28 @@ fn a_soldier_marches_on_a_distant_raider() {
     sim.spawn_raider_at(Pos::new(26, 26, 1), &raws);
     let raider = sim.dwarves.len() - 1;
 
-    // Enlist dwarf 0; dwarf 1 stays a civilian.
+    // Enlist dwarf 0 and hand the armoury a blade — raiders come armed now,
+    // so a bare-handed soldier is no soldier at all. Dwarf 1 stays a civilian.
     assert_eq!(sim.toggle_soldier(Pos::new(2, 2, 1)), Some(true));
+    let iron = raws.materials.index_of("hematite").unwrap();
+    sim.debug_spawn_item(dk_agents::ItemKind::Weapon, iron, sim.dwarves[0].pos);
     let start_dist = sim.dwarves[0].pos.manhattan(sim.dwarves[raider].pos);
 
+    // Track the closest the soldier ever came — final distance is a poor proxy
+    // now that a duel with an armed raider can go either way and death freezes
+    // the loser's corpse wherever it fell.
+    let mut closest = start_dist;
     for _ in 0..2_000 {
         sim.step(&raws);
+        if sim.dwarves[0].alive {
+            closest = closest.min(sim.dwarves[0].pos.manhattan(sim.dwarves[raider].pos));
+        }
         if !sim.dwarves[raider].alive {
             break;
         }
     }
-    // The soldier closed on (and likely felled) the raider.
-    let engaged = !sim.dwarves[raider].alive
-        || sim.dwarves[0].pos.manhattan(sim.dwarves[raider].pos) < start_dist / 2;
+    // The soldier hunted the raider down — closed on it, whoever won the fight.
+    let engaged = !sim.dwarves[raider].alive || closest < start_dist / 2;
     assert!(engaged, "an enlisted soldier should hunt the raider down");
     assert!(
         sim.log.iter().any(|(_, m)| m.contains("takes up arms")),

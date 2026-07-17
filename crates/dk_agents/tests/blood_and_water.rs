@@ -149,6 +149,13 @@ fn defenders_win_a_brawl_and_heal_by_resting() {
     sim.rebuild_caches();
     sim.invasions = false;
 
+    // Raiders come armed now — a bare fist barely bruises — so an unarmed
+    // rabble is no match for one. Enlist a defender and hand the armoury a
+    // blade: an armed soldier and two others carry the day.
+    sim.toggle_soldier(sim.dwarves[0].pos);
+    let iron = raws.materials.index_of("hematite").unwrap();
+    sim.debug_spawn_item(dk_agents::ItemKind::Weapon, iron, sim.dwarves[0].pos);
+
     sim.spawn_raider_at(Pos::new(10, 12, 1), &raws);
 
     let mut ticks = 0;
@@ -156,10 +163,10 @@ fn defenders_win_a_brawl_and_heal_by_resting() {
         sim.step(&raws);
         ticks += 1;
     }
-    assert_eq!(sim.alive_hostiles(), 0, "three dwarves should beat one raider");
+    assert_eq!(sim.alive_hostiles(), 0, "an armed defender and two others beat one raider");
     assert!(sim.alive_dwarves() >= 2, "the fort should survive the brawl");
     assert!(
-        sim.log.iter().any(|(_, m)| m.contains("strikes")),
+        sim.log.iter().any(|(_, m)| m.contains(" in the ")),
         "combat must be narrated"
     );
     assert_eq!(sim.stats.raiders_slain + sim.stats.drownings, 1);

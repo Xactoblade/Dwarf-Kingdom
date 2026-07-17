@@ -35,7 +35,7 @@ fn every_kind_is_listed_and_filed() {
     // files into exactly one category, and no kind is missing from the list.
     assert_eq!(
         ItemKind::ALL.len(),
-        26,
+        27,
         "ItemKind::ALL must list every kind — add yours to it"
     );
     let mut seen = std::collections::BTreeSet::new();

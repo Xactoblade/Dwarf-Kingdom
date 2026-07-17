@@ -212,6 +212,10 @@ pub enum ItemKind {
     /// Forged plate — worn by a soldier, it turns aside blows that would maim
     /// an unarmored dwarf. `stuff` = material index it was forged from.
     Armor,
+    /// A shield — held, not worn. It blocks blows outright rather than
+    /// softening them, and a skilled shield-arm turns aside far more than a
+    /// green one. `stuff` = material index.
+    Shield,
     /// A bed built at the mason's workshop. `stuff` = material index. A bulky
     /// trade good, and its owner sleeps better than a dwarf on the bare stone.
     Bed,
@@ -251,7 +255,7 @@ impl ItemKind {
     /// Every kind there is. The compiler cannot hand us this, so adding a kind
     /// means adding it here too — `every_kind_is_listed_and_filed` fails loudly
     /// if you forget.
-    pub const ALL: [ItemKind; 26] = [
+    pub const ALL: [ItemKind; 27] = [
         ItemKind::Boulder,
         ItemKind::Seed,
         ItemKind::Crop,
@@ -268,6 +272,7 @@ impl ItemKind {
         ItemKind::Glass,
         ItemKind::Bar,
         ItemKind::Armor,
+        ItemKind::Shield,
         ItemKind::Bed,
         ItemKind::Clothes,
         ItemKind::Log,
@@ -628,7 +633,7 @@ pub fn stock_category(kind: ItemKind) -> StockCategory {
         | ItemKind::Clothes
         | ItemKind::Instrument
         | ItemKind::Artifact => StockCategory::Goods,
-        ItemKind::Weapon | ItemKind::Armor => StockCategory::Military,
+        ItemKind::Weapon | ItemKind::Armor | ItemKind::Shield => StockCategory::Military,
         ItemKind::Bed | ItemKind::Statue | ItemKind::Barrel | ItemKind::Bin => {
             StockCategory::Furniture
         }
@@ -1264,6 +1269,8 @@ pub enum CraftKind {
     Smelt,
     /// Forge a metal bar into a suit of armor.
     ForgeArmor,
+    /// Work a bar into a shield at the forge.
+    ForgeShield,
     /// Work a stone boulder into a piece of furniture (a bed).
     MakeFurniture,
     /// Sew a bolt of cloth into clothes.
@@ -1432,6 +1439,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::ForgeWeapon, .. } => "forging a weapon",
             Task::Craft { kind: CraftKind::Smelt, .. } => "smelting",
             Task::Craft { kind: CraftKind::ForgeArmor, .. } => "forging armor",
+            Task::Craft { kind: CraftKind::ForgeShield, .. } => "forging a shield",
             Task::Craft { kind: CraftKind::MakeFurniture, .. } => "building furniture",
             Task::Craft { kind: CraftKind::SewClothes, .. } => "sewing clothes",
             Task::Craft { kind: CraftKind::MakeBarrel, .. } => "making a barrel",
@@ -1496,6 +1504,7 @@ pub struct SimStats {
     pub bars_smelted: u32,
     /// Suits of armor forged for the fort's soldiers.
     pub armor_forged: u32,
+    pub shields_forged: u32,
     /// Pieces of furniture (beds) built at the mason's workshop.
     pub furniture_made: u32,
     /// Sets of clothes sewn at the clothier's shop.
@@ -1539,6 +1548,7 @@ struct Wants {
     glass: bool,
     bars: bool,
     armor: bool,
+    shields: bool,
     furniture: bool,
     clothes: bool,
     barrels: bool,
@@ -1644,6 +1654,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Bar => raws.materials.get(item.stuff).value * 8 + 10,
         // A suit of armor: costly plate, dearer than a weapon of the same metal.
         ItemKind::Armor => raws.materials.get(item.stuff).value * 10 + 30,
+        // A shield: plainer than plate, and lighter.
+        ItemKind::Shield => raws.materials.get(item.stuff).value * 6 + 20,
         // A bed: bulky furniture, a solid trade good in its own right.
         ItemKind::Bed => raws.materials.get(item.stuff).value * 6 + 20,
         // Sewn clothes: worth well more than the bolt of cloth they're made of.
@@ -3684,6 +3696,22 @@ impl Sim {
         let name = self.dwarves[hero].name.clone();
         self.log_event(format!("{name} sets out on an adventure."));
 
+        // No hero walks into a saga bare-handed. If they carry no weapon,
+        // hand them a sword to start — the roads are armed now.
+        if self.wielded_weapon(hero).is_none() {
+            let metal = raws
+                .materials
+                .indices_in_category(MaterialCategory::Ore)
+                .into_iter()
+                .find(|&m| raws.materials.get(m).combat.sharpness >= 1.0)
+                .unwrap_or(0);
+            let pos = self.dwarves[hero].pos;
+            self.spawn_item(ItemKind::Weapon, metal, pos);
+            self.set_last_weapon_kind(WeaponKind::Sword);
+            let w = self.items.len() - 1;
+            self.items[w].state = ItemState::Carried { by: hero };
+        }
+
         // Find a lair for the quarry BEFORE touching the roster, so an
         // unsuitable map never costs the fort a historical enemy.
         let hero_pos = self.dwarves[hero].pos;
@@ -4092,6 +4120,17 @@ impl Sim {
     /// Drop a boulder on the ground (scenarios/tests).
     /// Strike a dwarf dead where they stand, for tests that need a corpse or
     /// an heir without staging a siege.
+    /// Put an item into a dwarf's hands — for tests that need an armed raider.
+    pub fn debug_carry_item(&mut self, item: usize, by: usize) {
+        self.items[item].state = ItemState::Carried { by };
+    }
+
+    /// Drill combat prowess into a dwarf — for tests that need a veteran
+    /// without a season of sparring.
+    pub fn debug_add_xp(&mut self, i: usize, skill: Skill, xp: u32) {
+        self.add_xp(i, skill, xp);
+    }
+
     /// Drop a single bare-handed raider on a tile — for combat tests that
     /// want a fight without staging a whole siege.
     pub fn debug_spawn_raider_at(&mut self, pos: Pos, raws: &Raws) -> usize {
@@ -4465,6 +4504,8 @@ impl Sim {
         let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
         r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
         self.dwarves.push(r);
+        let idx = self.dwarves.len() - 1;
+        self.arm_raider(idx, raws);
         self.stats.raiders_arrived += 1;
     }
 
@@ -4535,6 +4576,26 @@ impl Sim {
         }
     }
 
+    /// Put a weapon in a raider's hand. Invaders come armed — an unarmed
+    /// horde is no threat at all now that a bare fist barely bruises — with a
+    /// random weapon of a middling metal, forged somewhere in their own lands.
+    fn arm_raider(&mut self, i: usize, raws: &Raws) {
+        // A weapon-grade metal from the raws, so a raider's blade actually
+        // cuts. Falls back to the first material if none is marked.
+        let metal = raws
+            .materials
+            .indices_in_category(MaterialCategory::Ore)
+            .into_iter()
+            .find(|&m| raws.materials.get(m).combat.sharpness >= 1.0)
+            .unwrap_or(0);
+        let kind = WeaponKind::ALL[self.rng.gen_range(0..WeaponKind::ALL.len())];
+        let pos = self.dwarves[i].pos;
+        self.spawn_item(ItemKind::Weapon, metal, pos);
+        self.set_last_weapon_kind(kind);
+        let w = self.items.len() - 1;
+        self.items[w].state = ItemState::Carried { by: i };
+    }
+
     /// Spawn a raiding party at the map edge. Public for tests/scenarios.
     pub fn spawn_raiders(&mut self, count: usize, raws: &Raws) {
         let mut spawned = 0;
@@ -4551,6 +4612,8 @@ impl Sim {
                     let mut r = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
                     r.name = format!("raider {}", names::dwarf_name(&mut self.rng));
                     self.dwarves.push(r);
+                    let idx = self.dwarves.len() - 1;
+                    self.arm_raider(idx, raws);
                     self.stats.raiders_arrived += 1;
                     spawned += 1;
                 }
@@ -5598,6 +5661,7 @@ impl Sim {
         let mut pending_glass = 0usize;
         let mut pending_bars = 0usize;
         let mut pending_armor = 0usize;
+        let mut pending_shields = 0usize;
         let mut pending_furniture = 0usize;
         let mut pending_clothes = 0usize;
         let mut pending_barrels = 0usize;
@@ -5617,6 +5681,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::MakeGlass, .. } => pending_glass += 1,
                     Task::Craft { kind: CraftKind::Smelt, .. } => pending_bars += 1,
                     Task::Craft { kind: CraftKind::ForgeArmor, .. } => pending_armor += 1,
+                    Task::Craft { kind: CraftKind::ForgeShield, .. } => pending_shields += 1,
                     Task::Craft { kind: CraftKind::MakeFurniture, .. } => pending_furniture += 1,
                     Task::Craft { kind: CraftKind::SewClothes, .. } => pending_clothes += 1,
                     Task::Craft { kind: CraftKind::MakeBarrel, .. } => pending_barrels += 1,
@@ -5686,6 +5751,12 @@ impl Sim {
                 let want_armor = has_forge
                     && bars > claimed_bars
                     && armor_on_hand + pending_armor < soldiers;
+                // A shield for every soldier too — the arm that turns a blow
+                // aside is worth as much as the plate that softens it.
+                let shields_on_hand = self.count_kind(ItemKind::Shield);
+                let want_shields = has_forge
+                    && bars > claimed_bars + pending_shields
+                    && shields_on_hand + pending_shields < soldiers;
                 // Smelt ore down into bars — the forge's stock — while stone is
                 // surplus, keeping enough to arm AND armor every soldier plus a
                 // few bars over to trade.
@@ -5764,6 +5835,7 @@ impl Sim {
                     glass: want_glass,
                     bars: want_bars,
                     armor: want_armor,
+                    shields: want_shields,
                     furniture: want_furniture,
                     clothes: want_clothes,
                     barrels: want_barrels,
@@ -5782,6 +5854,7 @@ impl Sim {
                     Some(CraftKind::MakeGlass) => pending_glass += 1,
                     Some(CraftKind::Smelt) => pending_bars += 1,
                     Some(CraftKind::ForgeArmor) => pending_armor += 1,
+                    Some(CraftKind::ForgeShield) => pending_shields += 1,
                     Some(CraftKind::MakeFurniture) => pending_furniture += 1,
                     Some(CraftKind::SewClothes) => pending_clothes += 1,
                     Some(CraftKind::MakeBarrel) => pending_barrels += 1,
@@ -6046,6 +6119,12 @@ impl Sim {
             if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeArmor }, &mut best);
+            }
+        }
+        if w.shields {
+            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeShield }, &mut best);
             }
         }
         // Furniture: work a boulder into a bed at the mason's workshop.
@@ -6725,6 +6804,69 @@ impl Sim {
             .filter(|(_, it)| it.active() && it.kind == ItemKind::Weapon)
             .nth(rank)
             .map(|(idx, _)| idx)
+    }
+
+    /// Does this fighter have a shield on their arm? Soldiers are issued them
+    /// by the armoury's rank order, like everything else.
+    fn wields_shield(&self, i: usize) -> bool {
+        if !self.dwarves[i].soldier || !self.dwarves[i].alive {
+            return false;
+        }
+        let rank = self.armory_rank(i);
+        self.items
+            .iter()
+            .filter(|it| it.active() && it.kind == ItemKind::Shield)
+            .nth(rank)
+            .is_some()
+    }
+
+    /// Does the blow miss? Before any damage, a defender who can gets a chance
+    /// to avoid it — Dwarf Fortress's three independent defences rolled in
+    /// turn: dodge aside, block with a shield, or parry with one's own weapon.
+    /// Returns the word for the log if the blow is turned, `None` if it lands.
+    ///
+    /// Skill is what separates a veteran from a recruit here: a raw dwarf
+    /// scarcely defends, a seasoned one slips half the blows aimed at them.
+    /// Beasts are too vast to dodge or parry, which is why they must be worn
+    /// down. Draws RNG only when a defence is actually possible, so an
+    /// undefended blow (a raw dwarf, a beast) shifts no stream it didn't before.
+    fn try_defend(&mut self, defender: usize) -> Option<&'static str> {
+        let d = &self.dwarves[defender];
+        // The sleeping, the fallen, and the fleeing do not defend.
+        if !d.alive || matches!(d.task, Task::Sleep { .. }) {
+            return None;
+        }
+        let skill = d.skill_level(Skill::Fighting) as f32;
+        let beast = d.beast;
+
+        // Dodge: nimble on the feet, and it improves fast with training.
+        let dodge = if beast { 0.0 } else { 0.03 + skill * 0.04 };
+        if dodge > 0.0 && self.rng.gen_bool(dodge.min(0.9) as f64) {
+            self.add_xp(defender, Skill::Fighting, 3);
+            return Some("dodges");
+        }
+        // Block: a shield turns aside far more than bare skill can, and the
+        // arm behind it only gets better.
+        let block = if !beast && self.wields_shield(defender) {
+            0.20 + skill * 0.04
+        } else {
+            0.0
+        };
+        if block > 0.0 && self.rng.gen_bool(block.min(0.9) as f64) {
+            self.add_xp(defender, Skill::Fighting, 4);
+            return Some("blocks the blow with a shield");
+        }
+        // Parry: an armed fighter turns a blow with their own weapon.
+        let parry = if !beast && self.wielded_weapon(defender).is_some() {
+            skill * 0.03
+        } else {
+            0.0
+        };
+        if parry > 0.0 && self.rng.gen_bool(parry.min(0.9) as f64) {
+            self.add_xp(defender, Skill::Fighting, 2);
+            return Some("parries");
+        }
+        None
     }
 
     /// The suit of armour this fighter wears, as an item index. Only the fort's
@@ -7546,6 +7688,7 @@ impl Sim {
                             | CraftKind::MakeGlass
                             | CraftKind::Smelt
                             | CraftKind::ForgeArmor
+                            | CraftKind::ForgeShield
                             | CraftKind::MakeFurniture
                             | CraftKind::SewClothes
                             | CraftKind::MakeBarrel
@@ -7648,6 +7791,11 @@ impl Sim {
                                 // The bar's metal carries into the plate.
                                 self.stats.armor_forged += 1;
                                 self.spawn_quality_item(ItemKind::Armor, stuff, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
+                            }
+                            CraftKind::ForgeShield => {
+                                self.stats.shields_forged += 1;
+                                self.spawn_quality_item(ItemKind::Shield, stuff, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::MakeFurniture => {
@@ -8362,6 +8510,18 @@ impl Sim {
         }
         self.dwarves[attacker].attack_cd = ATTACK_COOLDOWN;
 
+        // The defender's chance to turn the blow before it ever bites — dodge,
+        // block, or parry. A skilled fighter with a shield lives where a raw
+        // recruit is cut down.
+        if let Some(defence) = self.try_defend(defender) {
+            // The attacker still learns from the exchange.
+            self.add_xp(attacker, Skill::Fighting, 2);
+            let att = self.dwarves[attacker].name.clone();
+            let def = self.dwarves[defender].name.clone();
+            self.log_event(format!("{def} {defence} from {att}."));
+            return;
+        }
+
         // Torso is the biggest target; head the deadliest.
         let roll = self.rng.gen_range(0..8usize);
         let part_kind = match roll {
@@ -8628,8 +8788,20 @@ impl Sim {
     }
 
     fn kill_dwarf(&mut self, i: usize) {
+        // A raider's gear leaves with the raider — it is not fort property, and
+        // making it lootable would tie the fort's weapon count to its body
+        // count and break raider-wealth determinism. Consume it BEFORE
+        // `abandon_task`, which would otherwise drop it to the ground first.
+        // (Adventure mode still spawns a fresh loot blade below — the hero's
+        // spoils are a deliberate, separate thing.)
+        if self.dwarves[i].faction == Faction::Hostile {
+            for it in &mut self.items {
+                if it.state == (ItemState::Carried { by: i }) {
+                    it.consumed = true;
+                }
+            }
+        }
         self.abandon_task(i);
-        self.drop_carried(i);
         // Release anything still pointing at this dwarf.
         for it in &mut self.items {
             if it.reserved_by == Some(i) {
@@ -9329,7 +9501,7 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 65;
+const SAVE_VERSION: u32 = 66;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -9404,6 +9576,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Glass
             | ItemKind::Bar
             | ItemKind::Armor
+            | ItemKind::Shield
             | ItemKind::Bed
             // A log and everything worked from it (see also Barrel/Instrument
             // below stay flat) carries a wood-material index.

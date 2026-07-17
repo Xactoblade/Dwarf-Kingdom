@@ -90,11 +90,16 @@ fn the_hero_carries_their_gear_into_a_new_land() {
 
     sim.relocate_player(another_land(&raws, 2203), &raws);
 
-    // Exactly the carried boulder survives; the grounded one is left behind.
-    let live: Vec<_> = sim.items.iter().filter(|i| i.active()).collect();
-    assert_eq!(live.len(), 1, "only the held item journeys on");
-    let carried = live[0];
-    assert!(matches!(carried.kind, ItemKind::Boulder));
+    // The held boulder journeys on; the grounded one is left behind. (The hero
+    // also carries the sword adventure mode armed them with, so filter to what
+    // this test placed.)
+    let boulders: Vec<_> = sim
+        .items
+        .iter()
+        .filter(|i| i.active() && matches!(i.kind, ItemKind::Boulder))
+        .collect();
+    assert_eq!(boulders.len(), 1, "only the held boulder journeys on");
+    let carried = boulders[0];
     let p = sim.player.unwrap();
     match carried.state {
         ItemState::Carried { by } => {

@@ -488,7 +488,7 @@ const STOCK_GROUPS: &[(&str, &[ItemKind])] = &[
     ),
     ("Furniture", &[ItemKind::Bed]),
     ("Containers", &[ItemKind::Barrel, ItemKind::Bin]),
-    ("Military", &[ItemKind::Weapon, ItemKind::Armor]),
+    ("Military", &[ItemKind::Weapon, ItemKind::Armor, ItemKind::Shield]),
     ("Special", &[ItemKind::Artifact, ItemKind::Corpse]),
 ];
 
@@ -2398,6 +2398,7 @@ fn item_kind_name(k: ItemKind) -> &'static str {
         ItemKind::Bed => "beds",
         ItemKind::Weapon => "weapons",
         ItemKind::Armor => "suits of armor",
+        ItemKind::Shield => "shields",
         ItemKind::Artifact => "artifacts",
         ItemKind::Corpse => "corpses (unburied)",
     }
@@ -4111,6 +4112,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Glass => "blown glass".to_string(),
         ItemKind::Bar => format!("{} bar", raws.materials.get(it.stuff).name),
         ItemKind::Armor => format!("{} armor", raws.materials.get(it.stuff).name),
+        ItemKind::Shield => format!("{} shield", raws.materials.get(it.stuff).name),
         ItemKind::Bed => format!("{} bed", raws.materials.get(it.stuff).name),
         ItemKind::Clothes => "set of clothes".to_string(),
         ItemKind::Log => format!("{} log", raws.materials.get(it.stuff).name),
@@ -4154,6 +4156,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Glass => Color::srgb(0.6, 0.9, 0.88),
         ItemKind::Bar => Color::srgb(0.72, 0.74, 0.8),
         ItemKind::Armor => Color::srgb(0.62, 0.66, 0.78),
+        ItemKind::Shield => Color::srgb(0.55, 0.45, 0.32),
         ItemKind::Bed => item_material_color(raws, stuff),
         ItemKind::Clothes => Color::srgb(0.85, 0.5, 0.7),
         ItemKind::Log => item_material_color(raws, stuff),
@@ -4379,6 +4382,7 @@ fn sync_agent_sprites(
                             ItemKind::Glass => "i_glass",
                             ItemKind::Bar => "i_bar",
                             ItemKind::Armor => "i_armor",
+                            ItemKind::Shield => "i_armor",
                             ItemKind::Bed => "i_bed",
                             ItemKind::Clothes => "i_clothes",
                             ItemKind::Log => "i_log",
@@ -4830,6 +4834,7 @@ fn update_hud(
             ItemKind::Glass => "blown glass (trade good)".to_string(),
             ItemKind::Bar => format!("{} bar (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Armor => format!("{} armor", reg.0.materials.get(it.stuff).name),
+            ItemKind::Shield => format!("{} shield", reg.0.materials.get(it.stuff).name),
             ItemKind::Bed => format!("{} bed (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Clothes => "set of clothes (trade good)".to_string(),
             ItemKind::Log => format!("{} log", reg.0.materials.get(it.stuff).name),
