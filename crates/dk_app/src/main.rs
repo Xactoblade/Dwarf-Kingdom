@@ -83,6 +83,8 @@ ZONES & LABOR\n\
   Melee / Marks (toolbar) ... arm squads with steel or crossbows; marksdwarves\n\
     fire bolts from range (forge crossbows and bolts at the forge first)\n\
   Tab / click a soldier ... pick which squad the toolbar orders; none = all\n\
+  Split Sq / Assign (toolbar) ... click a soldier to peel them into a new squad,\n\
+    or move them into the selected squad -- build a melee line and a marks squad\n\
   c ... cancel designations\n\
 \n\
 FORTRESS\n\
@@ -292,6 +294,10 @@ enum Tool {
     /// Arm every squad as melee steel or crossbows. Applies at once (the tile
     /// is ignored).
     Arm(Uniform),
+    /// Click a soldier to move them into the selected squad.
+    AssignSquad,
+    /// Click a soldier to peel them off into a brand-new squad (then selected).
+    SplitSquad,
 }
 
 /// The three standing orders a player can give the fort's squads, as toolbar
@@ -610,6 +616,8 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Order(OrderTool::Train), label: "Train", key: "", tip: "Selected squad (or all) drills at the barracks and defends only itself", cat: 3 },
     ToolButton { tool: Tool::Arm(Uniform::Melee), label: "Melee", key: "", tip: "Arm the selected squad (or all) with swords, axes, and shields", cat: 3 },
     ToolButton { tool: Tool::Arm(Uniform::Ranged), label: "Marks", key: "", tip: "Arm the selected squad (or all) with crossbows (forge crossbows and bolts, then they fire from range)", cat: 3 },
+    ToolButton { tool: Tool::AssignSquad, label: "Assign", key: "", tip: "Click a soldier to move them into the selected squad (Tab to pick the squad)", cat: 3 },
+    ToolButton { tool: Tool::SplitSquad, label: "Split Sq", key: "", tip: "Click a soldier to peel them into a new squad you can arm and order apart", cat: 3 },
     ToolButton { tool: Tool::Rect(UiKind::Cancel), label: "Cancel", key: "c", tip: "Cancel designations in a rectangle", cat: 3 },
 ];
 
@@ -2056,6 +2064,14 @@ fn tool_escape(
     }
 }
 
+/// The index of a living, enlisted Fort soldier standing on `p`, if any — used
+/// by the muster-editing tools to find who was clicked.
+fn fort_soldier_at(sim: &Sim, p: Pos) -> Option<usize> {
+    sim.dwarves.iter().position(|d| {
+        d.alive && d.faction == dk_agents::Faction::Fort && d.soldier && d.pos == p
+    })
+}
+
 /// Apply the selected toolbar tool where the player clicks the map. Rectangle
 /// tools take two clicks (anchor, then apply); the rest place at one click.
 fn apply_active_tool(
@@ -2066,7 +2082,7 @@ fn apply_active_tool(
     mut active: ResMut<ActiveTool>,
     mut sim: ResMut<SimRes>,
     mut dirty: ResMut<MapDirty>,
-    squad: Res<SelectedSquad>,
+    mut squad: ResMut<SelectedSquad>,
 ) {
     if screen.0 != Screen::Playing || active.over_ui {
         return;
@@ -2123,6 +2139,29 @@ fn apply_active_tool(
                 }
             }
         },
+        Tool::AssignSquad => {
+            // Move the soldier under the cursor into the selected squad. Moving
+            // the last member out of another squad prunes it and shifts
+            // indices, so re-point the selection at wherever the soldier now
+            // stands rather than at a now-stale index.
+            if let (Some(s), Some(d)) = (
+                squad.0.filter(|&s| s < sim.squads.len()),
+                fort_soldier_at(sim, here),
+            ) {
+                if sim.assign_to_squad(d, s) {
+                    squad.0 = sim.squad_of(d);
+                }
+            }
+        }
+        Tool::SplitSquad => {
+            // Peel the soldier under the cursor off into a fresh squad, and
+            // select it so the next Assign clicks fill it.
+            if let Some(d) = fort_soldier_at(sim, here) {
+                if let Some(new) = sim.split_to_new_squad(d) {
+                    squad.0 = Some(new);
+                }
+            }
+        }
         Tool::Rect(kind) => match active.anchor {
             Some(a) if a.z == here.z => {
                 apply_ui_rect(sim, kind, a, here);

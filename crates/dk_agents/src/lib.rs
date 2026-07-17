@@ -2408,6 +2408,83 @@ impl Sim {
         self.squads.retain(|s| !s.members.is_empty());
     }
 
+    /// Whether `dwarf` is an enlisted, living Fort soldier — the only kind that
+    /// belongs to a squad.
+    fn is_enlisted(&self, dwarf: usize) -> bool {
+        self.dwarves
+            .get(dwarf)
+            .is_some_and(|d| d.alive && d.faction == Faction::Fort && d.soldier)
+    }
+
+    /// Move a soldier into `squad`, out of whatever squad they were in — the
+    /// player editing the muster. Returns false if the dwarf is not an enlisted
+    /// soldier, the target index is invalid, the squad is already full, or they
+    /// are already in it. An emptied source squad is struck.
+    pub fn assign_to_squad(&mut self, dwarf: usize, squad: usize) -> bool {
+        if !self.is_enlisted(dwarf) || squad >= self.squads.len() {
+            return false;
+        }
+        if self.squads[squad].members.contains(&dwarf)
+            || self.squads[squad].members.len() >= SQUAD_MAX
+        {
+            return false;
+        }
+        for sq in &mut self.squads {
+            sq.members.retain(|&m| m != dwarf);
+        }
+        self.squads[squad].members.push(dwarf);
+        // The member is already in the target squad object, so pruning empty
+        // source squads can't lose them (indices may shift, but membership
+        // holds).
+        self.squads.retain(|s| !s.members.is_empty());
+        let (sname, dname) = (
+            self.squads
+                .iter()
+                .find(|s| s.members.contains(&dwarf))
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
+            self.dwarves[dwarf].name.clone(),
+        );
+        self.log_event(format!("{dname} joins {sname}."));
+        true
+    }
+
+    /// Peel a soldier off into a brand-new squad of their own — how the player
+    /// splits the muster into a melee line and a marksdwarf squad. Returns the
+    /// new squad's index, or None if the dwarf is not an enlisted soldier or is
+    /// already the sole member of their squad (nothing to split off).
+    pub fn split_to_new_squad(&mut self, dwarf: usize) -> Option<usize> {
+        if !self.is_enlisted(dwarf) {
+            return None;
+        }
+        let cur = self.squad_of(dwarf)?;
+        if self.squads[cur].members.len() <= 1 {
+            return None; // already a squad of one
+        }
+        for sq in &mut self.squads {
+            sq.members.retain(|&m| m != dwarf);
+        }
+        // Name it for the next free ordinal so two squads don't share a name.
+        let n = (1..=self.squads.len() + 1)
+            .find(|&k| {
+                let name = format!("the {} Company", ordinal(k));
+                !self.squads.iter().any(|s| s.name == name)
+            })
+            .unwrap_or(self.squads.len() + 1);
+        self.squads.push(Squad {
+            name: format!("the {} Company", ordinal(n)),
+            members: vec![dwarf],
+            order: SquadOrder::Defend,
+            uniform: Uniform::Melee,
+        });
+        let (sname, dname) = (
+            self.squads.last().unwrap().name.clone(),
+            self.dwarves[dwarf].name.clone(),
+        );
+        self.log_event(format!("{dname} musters {sname}."));
+        Some(self.squads.len() - 1)
+    }
+
     /// Give a squad its standing order — the player's command.
     pub fn set_squad_order(&mut self, squad: usize, order: SquadOrder) {
         if let Some(sq) = self.squads.get_mut(squad) {

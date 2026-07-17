@@ -80,6 +80,50 @@ fn squads_take_their_own_orders_and_uniforms() {
 }
 
 #[test]
+fn the_player_edits_the_muster_split_and_reassign() {
+    // Five soldiers auto-fill one squad. The player peels two off into a second
+    // squad and arms it apart — a melee line and a marksdwarf squad.
+    let (mut sim, _raws) = arena(5);
+    for i in 0..5 {
+        sim.toggle_soldier(sim.dwarves[i].pos);
+    }
+    assert_eq!(sim.squads.len(), 1);
+    assert_eq!(sim.squads[0].members.len(), 5);
+
+    // Split soldier 4 off into a new squad; soldier 3 joins it.
+    let new = sim.split_to_new_squad(4).expect("a five-strong squad can spare one");
+    assert_eq!(sim.squads.len(), 2);
+    assert_eq!(sim.squads[new].members, vec![4]);
+    assert!(sim.assign_to_squad(3, new), "reassigning a soldier succeeds");
+    assert_eq!(sim.squads[new].members, vec![4, 3]);
+    assert_eq!(sim.squads[0].members.len(), 3, "they left the first squad");
+    assert_eq!(sim.squad_of(3), Some(new));
+
+    // Each soldier still belongs to exactly one squad.
+    for i in 0..5 {
+        let count = sim.squads.iter().filter(|s| s.members.contains(&i)).count();
+        assert_eq!(count, 1, "soldier {i} is in exactly one squad");
+    }
+}
+
+#[test]
+fn muster_edits_refuse_the_impossible() {
+    let (mut sim, _raws) = arena(3);
+    // A lone soldier: nothing to split, no squad to join.
+    sim.toggle_soldier(sim.dwarves[0].pos);
+    assert_eq!(sim.split_to_new_squad(0), None, "a squad of one cannot split");
+    assert!(!sim.assign_to_squad(0, 5), "no such squad to join");
+
+    // A civilian is not on any muster roll.
+    assert!(!sim.assign_to_squad(1, 0), "a civilian cannot be assigned to a squad");
+    assert_eq!(sim.split_to_new_squad(1), None, "nor split off one");
+
+    // Enlist a second; assigning to a soldier's own squad is a no-op.
+    sim.toggle_soldier(sim.dwarves[1].pos);
+    assert!(!sim.assign_to_squad(0, 0), "already in that squad");
+}
+
+#[test]
 fn an_eleventh_soldier_musters_a_second_squad() {
     let (mut sim, _raws) = arena(SQUAD_MAX + 1);
     for i in 0..(SQUAD_MAX + 1) {
