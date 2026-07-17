@@ -599,6 +599,7 @@ struct SpritePools {
     dwarves: Vec<Entity>,
     items: Vec<Entity>,
     animals: Vec<Entity>,
+    vermin: Vec<Entity>,
 }
 
 // ---------------------------------------------------------------- components
@@ -771,6 +772,42 @@ fn surface_style(biome: dk_history::Biome) -> dk_world::SurfaceStyle {
     }
 }
 
+/// What vermin this country breeds.
+///
+/// Dwarf Fortress gates its seven food-eaters by where they live: the demon rat
+/// haunts evil ground, the two-legged rhino lizard savage ground, the lizard
+/// hot country, and the fluffy wambler good ground — where it is exactly as
+/// harmless as it sounds and eats your stores anyway. Rats, hamsters and
+/// roaches take everywhere that does not freeze.
+///
+/// Frozen country has none, which is the one mercy of a glacier.
+fn vermin_for(r: &dk_history::Region) -> Option<dk_agents::VerminKind> {
+    use dk_agents::VerminKind;
+    use dk_history::{Alignment, Savagery};
+    if r.temperature <= -5 {
+        return None; // nothing creeps about in the ice
+    }
+    if r.alignment == Alignment::Evil {
+        return Some(VerminKind::DemonRat);
+    }
+    if r.alignment == Alignment::Good {
+        return Some(VerminKind::FluffyWambler);
+    }
+    if r.savagery_class() == Savagery::Savage {
+        return Some(VerminKind::RhinoLizard);
+    }
+    if r.temperature >= 30 && r.biome.is_forest() {
+        return Some(VerminKind::Lizard);
+    }
+    // The common vermin of ordinary country. Which one is a matter of where
+    // you are, not chance — the same land always breeds the same pest.
+    Some(match (r.elevation as usize + r.rainfall as usize) % 3 {
+        0 => VerminKind::Rat,
+        1 => VerminKind::Hamster,
+        _ => VerminKind::LargeRoach,
+    })
+}
+
 /// The mid-point of a local map edge in the given world direction — where a
 /// river crosses in or out to match the overworld's flow.
 fn edge_point(dir: dk_history::Dir, w: usize, h: usize) -> (usize, usize) {
@@ -874,6 +911,8 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
+    // And a cat, which earns its keep on the vermin.
+    sim.add_starting_cat();
     // Scatter a woodland across the surface — dense in forests, sparse on the
     // plains, bare in the desert. Woodcutters fell them (Shift+X) for logs.
     let trees = {
@@ -905,6 +944,8 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
         }
     };
     sim.plant_shrubs(shrubs);
+    // What creeps out of this particular country to eat the larder.
+    sim.vermin_kind = vermin_for(r);
     // Rarely (about one fort in ten), one of the founding seven keeps a dark
     // secret — a vampire, indistinguishable from any other dwarf until
     // fort-mates start turning up drained of blood.
@@ -3412,6 +3453,13 @@ const DOG_COATS: [[f32; 3]; 4] = [
     [0.84, 0.84, 0.82], // grey
 ];
 
+const CAT_COATS: [[f32; 3]; 4] = [
+    [0.86, 0.62, 0.30], // ginger
+    [0.30, 0.28, 0.30], // black
+    [0.92, 0.90, 0.86], // white
+    [0.62, 0.56, 0.48], // tabby
+];
+
 /// Gentle per-citizen tints (near white) so a fort's dwarves read as
 /// individuals in their own homespun rather than a rank of identical figures.
 const DWARF_TINTS: [[f32; 3]; 6] = [
@@ -4128,6 +4176,46 @@ fn sync_agent_sprites(
                 .id(),
         );
     }
+    while pools.vermin.len() < sim.0.vermin.len() {
+        let sprite = match &tileset.0 {
+            Some(ts) => ts.sprite("dog"),
+            None => Sprite {
+                color: Color::srgb(0.5, 0.4, 0.35),
+                custom_size: Some(Vec2::splat(TILE * 0.3)),
+                ..default()
+            },
+        };
+        pools.vermin.push(
+            commands
+                .spawn((sprite, Transform::from_xyz(0.0, 0.0, 1.9), Visibility::Hidden))
+                .id(),
+        );
+    }
+    // Vermin: small, quick, and the reason the larder wants a cask and a cat.
+    for (i, &e) in pools.vermin.iter().enumerate() {
+        let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
+        match sim.0.vermin.get(i) {
+            Some(v) if v.alive && v.pos.z == view_z.0 => {
+                tf.translation.x = v.pos.x as f32 * TILE;
+                tf.translation.y = v.pos.y as f32 * TILE;
+                tf.scale = Vec3::splat(0.34);
+                if let Some(ts) = &tileset.0 {
+                    if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                        atlas.index = ts.index("dog");
+                    }
+                }
+                sprite.color = match v.kind {
+                    dk_agents::VerminKind::DemonRat => Color::srgb(0.55, 0.12, 0.16),
+                    dk_agents::VerminKind::FluffyWambler => Color::srgb(0.95, 0.85, 0.55),
+                    dk_agents::VerminKind::RhinoLizard => Color::srgb(0.45, 0.55, 0.35),
+                    dk_agents::VerminKind::Lizard => Color::srgb(0.40, 0.65, 0.45),
+                    _ => Color::srgb(0.42, 0.36, 0.32),
+                };
+                *vis = Visibility::Visible;
+            }
+            _ => *vis = Visibility::Hidden,
+        }
+    }
 
     for (i, &e) in pools.dwarves.iter().enumerate() {
         let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
@@ -4264,7 +4352,9 @@ fn sync_agent_sprites(
                 let glyph = match a.kind {
                     AnimalKind::Cow => "cow",
                     AnimalKind::Sheep => "sheep",
-                    AnimalKind::Dog => "dog",
+                    // A cat borrows the dog sprite, smaller and tabby — it is
+                    // a four-legged thing at this size either way.
+                    AnimalKind::Dog | AnimalKind::Cat => "dog",
                 };
                 if let Some(ts) = &tileset.0 {
                     if let Some(atlas) = sprite.texture_atlas.as_mut() {
@@ -4272,7 +4362,13 @@ fn sync_agent_sprites(
                     }
                 }
                 // Calves are smaller; the marked flash red, war dogs steel-blue.
-                let scale = if a.is_adult() { 1.0 } else { 0.6 };
+                let scale = if a.kind == AnimalKind::Cat {
+                    0.55 // a cat is a small thing
+                } else if a.is_adult() {
+                    1.0
+                } else {
+                    0.6
+                };
                 tf.scale = Vec3::splat(scale);
                 sprite.color = if a.marked || a.war_marked {
                     Color::srgb(1.0, 0.5, 0.5)
@@ -4284,6 +4380,7 @@ fn sync_agent_sprites(
                         AnimalKind::Cow => COW_COATS[i % COW_COATS.len()],
                         AnimalKind::Sheep => SHEEP_COATS[i % SHEEP_COATS.len()],
                         AnimalKind::Dog => DOG_COATS[i % DOG_COATS.len()],
+                        AnimalKind::Cat => CAT_COATS[i % CAT_COATS.len()],
                     };
                     Color::srgb(coat[0], coat[1], coat[2])
                 };

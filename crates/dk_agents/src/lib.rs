@@ -60,6 +60,20 @@ pub const BATCH: usize = 3;
 pub const SHELF_LIFE_DAYS: u64 = 30;
 /// How far the stench of a rotting meal carries.
 pub const MIASMA_RANGE: u32 = 6;
+/// How close a cat must be to catch a vermin.
+pub const CAT_REACH: u32 = 3;
+/// The most vermin a fort's country will support at once.
+pub const VERMIN_CAP: usize = 6;
+/// How often another one creeps in. Ours, not Dwarf Fortress's — the wiki
+/// documents no rate anywhere.
+pub const VERMIN_SPAWN_INTERVAL: u64 = TICKS_PER_DAY / 2;
+/// Vermin are quick, but not that quick.
+pub const VERMIN_WALK_COOLDOWN: u8 = 6;
+/// How often one of them actually gets a mouthful. Ours, not Dwarf Fortress's
+/// — the wiki gives no rate. A vermin is a slow bleed on a larder, not a
+/// plague: left alone with the fort's whole food supply it should cost you a
+/// few meals a season, not empty the place in two days.
+pub const VERMIN_EAT_INTERVAL: u64 = TICKS_PER_DAY / 2;
 /// Ticks between melee swings.
 pub const ATTACK_COOLDOWN: u8 = 40;
 /// How close a raider must be before a war dog charges it.
@@ -677,6 +691,58 @@ pub enum AnimalKind {
     /// A working dog: not raised for meat, but can be trained to guard the
     /// fort and fight off raiders.
     Dog,
+    /// A cat: not raised for anything. It kills the vermin that eat the fort's
+    /// food, which is the only reason a dwarf tolerates one.
+    Cat,
+}
+
+/// The vermin that eat a fort's food.
+///
+/// Dwarf Fortress has 131 kinds of vermin and exactly SEVEN of them carry
+/// `[VERMIN_EATER]` — "the vermin creature will attempt to eat exposed food".
+/// The wiki's own prose says "many types feed on stockpiles"; its table says
+/// seven. These are the seven, and which country each haunts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerminKind {
+    /// Evil country only. The worst of them, and it knows how to get into
+    /// things.
+    DemonRat,
+    Rat,
+    Hamster,
+    LargeRoach,
+    /// Savage country only.
+    RhinoLizard,
+    /// Hot country only.
+    Lizard,
+    /// Good country only. It is exactly as harmless as it sounds, and it still
+    /// eats your food.
+    FluffyWambler,
+}
+
+impl VerminKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            VerminKind::DemonRat => "demon rat",
+            VerminKind::Rat => "rat",
+            VerminKind::Hamster => "hamster",
+            VerminKind::LargeRoach => "large roach",
+            VerminKind::RhinoLizard => "two-legged rhino lizard",
+            VerminKind::Lizard => "lizard",
+            VerminKind::FluffyWambler => "fluffy wambler",
+        }
+    }
+
+    /// Dwarf Fortress's `PENETRATEPOWER`: how well this one gets into a
+    /// container. The values are 1, 2 or 3 against a roll of 0-100, which is
+    /// to say a barrel very nearly settles the matter — see `can_open`.
+    pub fn penetrate_power(self) -> u8 {
+        match self {
+            VerminKind::DemonRat => 3,
+            VerminKind::Rat | VerminKind::Hamster | VerminKind::LargeRoach
+            | VerminKind::RhinoLizard => 2,
+            VerminKind::Lizard | VerminKind::FluffyWambler => 1,
+        }
+    }
 }
 
 impl AnimalKind {
@@ -685,6 +751,7 @@ impl AnimalKind {
             AnimalKind::Cow => "cow",
             AnimalKind::Sheep => "sheep",
             AnimalKind::Dog => "dog",
+            AnimalKind::Cat => "cat",
         }
     }
 
@@ -694,6 +761,8 @@ impl AnimalKind {
             AnimalKind::Cow => 5,
             AnimalKind::Sheep => 3,
             AnimalKind::Dog => 1,
+            // A dwarf would have to be very hungry indeed.
+            AnimalKind::Cat => 1,
         }
     }
 
@@ -709,6 +778,15 @@ impl AnimalKind {
             _ => 30,
         }
     }
+}
+
+/// A single vermin, skulking about the fort.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Vermin {
+    pub kind: VerminKind,
+    pub pos: Pos,
+    pub alive: bool,
+    move_cd: u8,
 }
 
 /// A grazing beast. Simpler than a dwarf: it wanders its pasture, matures,
@@ -1266,6 +1344,10 @@ pub struct SimStats {
     pub bins_made: u32,
     /// Food that turned for want of a stockpile to keep it in.
     pub food_spoiled: u32,
+    /// Food carried off by vermin that got at it.
+    pub food_gnawed: u32,
+    /// Vermin the fort's cats have killed.
+    pub vermin_slain: u32,
     /// Statues carved at the mason's workshop.
     pub statues_carved: u32,
     /// Instruments crafted at the carpenter's shop.
@@ -1542,6 +1624,13 @@ pub struct Sim {
     /// Set when a hostile (not the fort) kills a trader — the caravan
     /// scatters but the civ blames the raiders, not you.
     trader_lost_to_raiders: bool,
+    /// The vermin that infest this fort — set from the region it embarked on,
+    /// and the reason a larder wants barrels and a cat.
+    pub vermin: Vec<Vermin>,
+    /// What kind of vermin this country breeds, if any. Set by the app at
+    /// embark from the region's biome and alignment; `None` leaves the fort
+    /// (and every headless test) entirely vermin-free.
+    pub vermin_kind: Option<VerminKind>,
     /// The fort's baron (dwarf index), once population earns one.
     pub baron: Option<usize>,
     /// The baron's current demand.
@@ -1647,6 +1736,8 @@ impl Sim {
             caravan: None,
             trade_ban_until: 0,
             trader_lost_to_raiders: false,
+            vermin: Vec::new(),
+            vermin_kind: None,
             baron: None,
             mandate: None,
             log: Vec::new(),
@@ -2317,6 +2408,20 @@ impl Sim {
         }
     }
 
+    /// Set a cat down near the wagon. It is good for nothing except killing
+    /// the vermin that eat the fort's food, which is reason enough — a fort
+    /// that embarked without one and settled evil ground would watch demon rats
+    /// carry off its larder with no answer. Kept out of `add_embark_supplies`
+    /// so headless tests keep a stable RNG stream.
+    pub fn add_starting_cat(&mut self) {
+        let cx = self.map.width as i32 / 2;
+        let cy = self.map.height as i32 / 2;
+        let ox = cx - 5;
+        if let Some(z) = self.map.walk_surface_z(ox.max(0) as usize, (cy + 4).max(0) as usize) {
+            self.add_animal(AnimalKind::Cat, Pos::new(ox, cy + 4, z as i32), true);
+        }
+    }
+
     /// Is there a tree standing on this tile?
     pub fn tree_at(&self, p: Pos) -> bool {
         self.trees.contains_key(&p)
@@ -2819,6 +2924,288 @@ impl Sim {
             })
             .min_by_key(|(_, it)| it.pos.manhattan(near))
             .map(|(c, _)| c)
+    }
+
+    /// Is this food out where a rat can get at it?
+    ///
+    /// Dwarf Fortress's rule is one word: vermin "attempt to eat EXPOSED
+    /// food". A container is the counterplay — `PENETRATEPOWER` rolls the
+    /// vermin's 1..3 against 0-100, so a barrel turns away better than
+    /// nineteen tries in twenty. (Material barely matters: metal rolls 0-100
+    /// where wood rolls 0-95, which works out to a third of a percentage point.
+    /// "Metal barrels resist vermin" is true and almost meaningless.)
+    ///
+    /// So: a cask is not a pantry — it will not stop food ROTTING, that takes
+    /// a stockpile — but it is a rat-proof box, which is the other half of why
+    /// a fort wants one.
+    pub fn food_exposed(&self, i: usize) -> bool {
+        match self.items[i].state {
+            ItemState::Inside { container } => {
+                // In a container, and the container still exists: the rat has
+                // to get through it first.
+                !self
+                    .items
+                    .get(container)
+                    .is_some_and(|c| c.active() && is_container(c.kind))
+            }
+            ItemState::Carried { .. } => false, // in someone's hands
+            _ => true,
+        }
+    }
+
+    /// A cat works the larder.
+    ///
+    /// Dwarf Fortress: a vermin hunter goes "randomly walking between places
+    /// with food laying on the ground or in stockpiles, to check for possible
+    /// VERMIN_EATER vermin". So a cat walks toward the food, which is where the
+    /// rats will be — it does not graze, and it does not need to be told.
+    ///
+    /// Gated on there being a cat at all, so a catless fort draws no RNG here.
+    fn tick_cats(&mut self) {
+        if !self.animals.iter().any(|a| a.alive && a.kind == AnimalKind::Cat) {
+            return;
+        }
+        // The larder: wherever exposed food is lying. A cat with nothing to
+        // guard just sits.
+        let larder: Vec<Pos> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(i, it)| {
+                it.active()
+                    && matches!(it.kind, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry)
+                    && self.food_exposed(*i)
+            })
+            .map(|(_, it)| it.pos)
+            .collect();
+        for idx in 0..self.animals.len() {
+            if !self.animals[idx].alive || self.animals[idx].kind != AnimalKind::Cat {
+                continue;
+            }
+            self.animals[idx].age = self.animals[idx].age.saturating_add(1);
+            if self.animals[idx].move_cd > 0 {
+                self.animals[idx].move_cd -= 1;
+                continue;
+            }
+            let cp = self.animals[idx].pos;
+            // A rat in sight comes first; otherwise walk the larder.
+            let target = self
+                .vermin
+                .iter()
+                .filter(|v| v.alive)
+                .min_by_key(|v| v.pos.manhattan(cp))
+                .map(|v| v.pos)
+                .or_else(|| larder.iter().min_by_key(|p| p.manhattan(cp)).copied());
+            let Some(tp) = target else { continue };
+            if tp == cp {
+                continue;
+            }
+            self.animals[idx].move_cd = WALK_COOLDOWN;
+            // Cats can climb between levels the way vermin cannot be bothered
+            // to; step toward the target on this level, and take a stair if the
+            // target is elsewhere.
+            let (sx, sy) = ((tp.x - cp.x).signum(), (tp.y - cp.y).signum());
+            for step in [
+                Pos::new(cp.x + sx, cp.y + sy, cp.z),
+                Pos::new(cp.x + sx, cp.y, cp.z),
+                Pos::new(cp.x, cp.y + sy, cp.z),
+            ] {
+                if step != cp && self.map.walkable(step) {
+                    self.animals[idx].pos = step;
+                    break;
+                }
+            }
+            // Different level: let it find the surface there, as livestock do.
+            if self.animals[idx].pos.z != tp.z {
+                if let Some(z) = self
+                    .map
+                    .walk_surface_z(self.animals[idx].pos.x as usize, self.animals[idx].pos.y as usize)
+                {
+                    self.animals[idx].pos.z = z as i32;
+                }
+            }
+        }
+    }
+
+    /// Vermin eat the fort's food, and cats eat the vermin.
+    ///
+    /// The country decides which vermin you get — evil ground breeds demon
+    /// rats, savage ground rhino lizards, good ground the fluffy wambler, which
+    /// is exactly as harmless as it sounds and still eats your stores. They
+    /// spawn from the land itself ("do not breed, but 'spawn', spontaneously
+    /// appearing in their natural environment"), not from refuse.
+    ///
+    /// Gated on `vermin_kind`, which only the app sets at embark — so a
+    /// headless fort has no vermin, draws no RNG here, and is byte-identical.
+    ///
+    /// The rate and the amount are OURS. The wiki documents neither anywhere,
+    /// and I would rather pick a number and say so than dress a guess up as a
+    /// fact.
+    fn tick_vermin(&mut self) {
+        let Some(kind) = self.vermin_kind else { return };
+        // Cats hunt: "randomly walking between places with food laying on the
+        // ground or in stockpiles, to check for possible VERMIN_EATER vermin".
+        // A cat near a vermin kills it and leaves the remains.
+        for v in 0..self.vermin.len() {
+            if !self.vermin[v].alive {
+                continue;
+            }
+            let vp = self.vermin[v].pos;
+            let cat = self.animals.iter().any(|a| {
+                a.alive
+                    && a.kind == AnimalKind::Cat
+                    && a.pos.z == vp.z
+                    && a.pos.manhattan(vp) <= CAT_REACH
+            });
+            if cat {
+                self.vermin[v].alive = false;
+                self.stats.vermin_slain += 1;
+            }
+        }
+        self.vermin.retain(|v| v.alive);
+
+        // A new one creeps in now and then, up to what the country supports —
+        // and it creeps in near the food, because that is what draws it. (A rat
+        // spawned at random across the map would as often as not appear on
+        // another z-level and never find the larder at all.)
+        if self.vermin.len() < VERMIN_CAP && self.clock.tick % VERMIN_SPAWN_INTERVAL == 0 {
+            let larder = self
+                .items
+                .iter()
+                .enumerate()
+                .find(|(i, it)| {
+                    it.active()
+                        && matches!(it.kind, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry)
+                        && self.food_exposed(*i)
+                })
+                .map(|(_, it)| it.pos);
+            let spot = match larder {
+                Some(p) => self.walkable_near(p, 6),
+                None => self.random_surface_spot(),
+            };
+            if let Some(pos) = spot {
+                self.vermin.push(Vermin { kind, pos, alive: true, move_cd: 0 });
+            }
+        }
+
+        // They go for the food, and eat what is not put away properly.
+        for v in 0..self.vermin.len() {
+            if self.vermin[v].move_cd > 0 {
+                self.vermin[v].move_cd -= 1;
+                continue;
+            }
+            self.vermin[v].move_cd = VERMIN_WALK_COOLDOWN;
+            let vp = self.vermin[v].pos;
+            // The nearest exposed food, which is the only kind they can eat.
+            // Any exposed food anywhere, nearest first. Not just this level:
+            // a rat that could only smell its own z-level would sit one floor
+            // above the larder forever.
+            let prey = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(i, it)| {
+                    it.active()
+                        && matches!(it.kind, ItemKind::Meal | ItemKind::Crop | ItemKind::Berry)
+                        && self.food_exposed(*i)
+                })
+                .min_by_key(|(_, it)| {
+                    it.pos.manhattan(vp) + (it.pos.z - vp.z).unsigned_abs() * 4
+                })
+                .map(|(i, it)| (i, it.pos));
+            let Some((food, fp)) = prey else { continue };
+            if fp == vp {
+                // Dinner — but only now and then. A rat sitting on the larder
+                // nibbles; it does not inhale it.
+                if self.clock.tick % VERMIN_EAT_INTERVAL != 0 {
+                    continue;
+                }
+                self.items[food].consumed = true;
+                self.stats.food_gnawed += 1;
+                if self.stats.food_gnawed % 5 == 1 {
+                    self.log_event(format!(
+                        "Vermin are at the food — a {} is eating what has not been packed away.",
+                        self.vermin[v].kind.name()
+                    ));
+                }
+                continue;
+            }
+            // Standing over it but a level off: squeeze through. They are
+            // vermin — a floor is not an obstacle, it is a route.
+            if fp.x == vp.x && fp.y == vp.y && fp.z != vp.z {
+                self.vermin[v].pos = fp;
+                continue;
+            }
+            // Shuffle toward it. No pathfinding — they are vermin, they get
+            // where they are going eventually. Try the diagonal, then either
+            // axis alone, so a wall does not pin them.
+            //
+            // Each column is tried at the rat's own level, one level toward
+            // the food, and at whatever the ground there is: a rat that could
+            // only walk its own z would sit at the foot of a hill forever
+            // watching the larder on top of it.
+            let (sx, sy) = ((fp.x - vp.x).signum(), (fp.y - vp.y).signum());
+            let dz = (fp.z - vp.z).signum();
+            'step: for (nx, ny) in [
+                (vp.x + sx, vp.y + sy),
+                (vp.x + sx, vp.y),
+                (vp.x, vp.y + sy),
+            ] {
+                if nx < 0 || ny < 0 || nx >= self.map.width as i32 || ny >= self.map.height as i32 {
+                    continue;
+                }
+                let ground = self.map.walk_surface_z(nx as usize, ny as usize);
+                let levels = [
+                    Some(vp.z),
+                    (dz != 0).then_some(vp.z + dz),
+                    ground.map(|z| z as i32),
+                ];
+                for nz in levels.into_iter().flatten() {
+                    let step = Pos::new(nx, ny, nz);
+                    if step != vp && self.map.walkable(step) {
+                        self.vermin[v].pos = step;
+                        break 'step;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A walkable tile within `radius` of `p` — where a vermin slips in from.
+    ///
+    /// Snaps to each column's own walkable surface rather than insisting on
+    /// `p`'s exact level: on rough ground almost nothing at one fixed z is
+    /// walkable, and a rat that cannot find a way in is a mechanic that never
+    /// fires.
+    fn walkable_near(&mut self, p: Pos, radius: i32) -> Option<Pos> {
+        for _ in 0..12 {
+            let dx = self.rng.gen_range(-radius..=radius);
+            let dy = self.rng.gen_range(-radius..=radius);
+            let (x, y) = (p.x + dx, p.y + dy);
+            if x < 1 || y < 1 || x >= self.map.width as i32 - 1 || y >= self.map.height as i32 - 1 {
+                continue;
+            }
+            let q = Pos::new(x, y, p.z);
+            if self.map.walkable(q) {
+                return Some(q);
+            }
+            if let Some(z) = self.map.walk_surface_z(x as usize, y as usize) {
+                return Some(Pos::new(x, y, z as i32));
+            }
+        }
+        self.map.walkable(p).then_some(p)
+    }
+
+    /// A walkable surface tile somewhere on the map, for vermin to creep in at.
+    fn random_surface_spot(&mut self) -> Option<Pos> {
+        for _ in 0..8 {
+            let x = self.rng.gen_range(1..self.map.width - 1);
+            let y = self.rng.gen_range(1..self.map.height - 1);
+            if let Some(z) = self.map.walk_surface_z(x, y) {
+                return Some(Pos::new(x as i32, y as i32, z as i32));
+            }
+        }
+        None
     }
 
     /// Is this food somewhere it will keep?
@@ -3739,6 +4126,8 @@ impl Sim {
             self.tick_animals_husbandry();
             self.tick_spoilage();
         }
+        self.tick_cats();
+        self.tick_vermin();
 
         // Season boundary: migrants, moods, and (later years) raiders.
         if self.clock.tick % season_ticks == 0 && self.clock.tick > 0 {
@@ -4102,6 +4491,12 @@ impl Sim {
             // here so the cooldown isn't decremented twice (they'd charge
             // faster than WALK_COOLDOWN intends) and no wander RNG is drawn.
             if self.animals[idx].war {
+                continue;
+            }
+            // Nor do cats: they work the larder, and `tick_cats` owns their
+            // move_cd. A cat that wandered off like a sheep would be no use at
+            // all — which is exactly what happened when they did.
+            if self.animals[idx].kind == AnimalKind::Cat {
                 continue;
             }
             if self.animals[idx].move_cd > 0 {
