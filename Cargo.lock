@@ -1884,6 +1884,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "bincode",
  "dk_agents",
  "dk_core",
  "dk_history",

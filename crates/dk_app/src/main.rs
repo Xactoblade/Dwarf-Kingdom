@@ -644,6 +644,63 @@ fn world_seed_path() -> PathBuf {
     PathBuf::from("saves/world_seed")
 }
 
+fn world_path() -> PathBuf {
+    PathBuf::from("saves/world.gen")
+}
+
+/// Bumped whenever worldgen changes shape enough that the same seed would
+/// build a different world. Stored with the saved world so a stale file is
+/// noticed rather than silently misread.
+const WORLDGEN_VERSION: u32 = 1;
+
+/// The world this game is played in.
+///
+/// Built from a seed once, and then KEPT. That matters more than it sounds:
+/// the world used to be re-derived from the seed at every launch, so any
+/// change to worldgen quietly rebuilt it into a different place — and a
+/// fortress retired at region (20, 26) would come back to find its region was
+/// now ocean, its reclaim marker gone, and Enter doing nothing at all. The fort
+/// file sat on disk with no way to reach it. Saving the world instead of the
+/// recipe makes every fort in it safe from every future change to how worlds
+/// are made.
+fn load_or_make_world() -> World {
+    let seed = resolve_world_seed();
+    if !screenshot_mode_on() {
+        if let Ok(bytes) = std::fs::read(world_path()) {
+            match bincode::deserialize::<(u32, World)>(&bytes) {
+                Ok((v, world)) if v == WORLDGEN_VERSION && world.seed == seed => {
+                    info!("world loaded from {}", world_path().display());
+                    return world;
+                }
+                Ok((v, _)) => warn!(
+                    "saved world is from worldgen v{v} (this is v{WORLDGEN_VERSION}) — rebuilding it"
+                ),
+                Err(e) => warn!("saved world unreadable ({e}); rebuilding it"),
+            }
+        }
+    }
+    let world = World::generate(seed, OW, OW, HISTORY_YEARS);
+    persist_world(&world);
+    world
+}
+
+fn persist_world(world: &World) {
+    if screenshot_mode_on() {
+        return;
+    }
+    if let Some(dir) = world_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match bincode::serialize(&(WORLDGEN_VERSION, world)) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(world_path(), bytes) {
+                warn!("could not save the world: {e}");
+            }
+        }
+        Err(e) => warn!("could not serialize the world: {e}"),
+    }
+}
+
 /// The seed for this game's world.
 ///
 /// Persisted, so your world is the same world every launch and the fortresses
@@ -993,7 +1050,7 @@ fn default_region(world: &World) -> (usize, usize) {
 
 fn main() {
     let raws = Raws::load(&data_dir()).expect("failed to load raws");
-    let world = World::generate(resolve_world_seed(), OW, OW, HISTORY_YEARS);
+    let world = load_or_make_world();
     // DK_SHOT_SCREEN=embark verifies the embark map instead of the fort.
     let shot_embark = std::env::var("DK_SHOT_SCREEN").is_ok_and(|v| v == "embark");
     let (screen, sim) = if screenshot_mode_on() && !shot_embark {
@@ -2269,6 +2326,9 @@ fn apply_embark_action(
             let seed = fresh_world_seed();
             persist_world_seed(seed);
             world.0 = World::generate(seed, OW, OW, HISTORY_YEARS);
+            // Keep it, or the next launch would find the old world's file and
+            // play that instead.
+            persist_world(&world.0);
             cursor.x = 0;
             cursor.y = 0;
             dirty.0 = true;
@@ -2650,6 +2710,7 @@ fn handle_input(
             let seed = fresh_world_seed();
             persist_world_seed(seed);
             world.0 = World::generate(seed, OW, OW, HISTORY_YEARS);
+            persist_world(&world.0);
             cursor.x = 0;
             cursor.y = 0;
             dirty.0 = true;
@@ -3223,9 +3284,13 @@ fn handle_input(
     // Save / load.
     if keys.just_pressed(KeyCode::F5) {
         match save_sim(&sim.0, &save_path(), &reg.0) {
-            Ok(()) => info!("world saved to {}", save_path().display()),
+            Ok(()) => info!("fortress saved to {}", save_path().display()),
             Err(e) => error!("save failed: {e:#}"),
         }
+        // The world has been living too — wars, deaths, cities burned — while
+        // this fort dug. Keep that with it, or reloading would rewind the world
+        // to the day it was made and lose every year the fort watched pass.
+        persist_world(&world.0);
     }
     if keys.just_pressed(KeyCode::F9) {
         match load_sim(&save_path(), &reg.0) {

@@ -11,4 +11,5 @@ dk_agents = { path = "../dk_agents" }
 dk_history = { path = "../dk_history" }
 bevy = "0.16"
 anyhow = { workspace = true }
+bincode = { workspace = true }
 rand = { workspace = true }

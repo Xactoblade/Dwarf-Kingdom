@@ -392,3 +392,121 @@ fn a_world_is_not_one_endless_plain() {
         assert!(land * 5 >= n * 2, "seed {seed}: enough land ({land}/{n})");
     }
 }
+
+#[test]
+fn determinism_survives_the_rejection_loop() {
+    // `generate_verified` may throw several worlds away before it keeps one,
+    // and each attempt eats more of the same RNG stream. That is fine — but
+    // only as long as the same seed rejects the same worlds in the same order
+    // and lands on the same one. If it ever did not, a seed would stop meaning
+    // a world, which is the whole promise of a seed.
+    for seed in [3u64, 7, 11, 2027] {
+        let a = World::generate(seed, 48, 48, 40);
+        let b = World::generate(seed, 48, 48, 40);
+        let land = |w: &World| {
+            w.overworld
+                .regions
+                .iter()
+                .map(|r| (r.elevation, r.rainfall, r.drainage, r.temperature, r.subregion))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(land(&a), land(&b), "seed {seed}: the same land");
+        assert_eq!(a.overworld.volcanoes, b.overworld.volcanoes, "seed {seed}: the same fires");
+        assert_eq!(a.legends_lines(), b.legends_lines(), "seed {seed}: the same history");
+    }
+}
+
+#[test]
+fn a_lake_is_a_basin_not_a_mountaintop() {
+    // `flow == None` means only "no neighbour is strictly lower", which is
+    // equally true of a summit and of flat ground. The elevation curve used to
+    // clamp, pinning a fifth of the world at exactly 400 in flat tabletops, and
+    // every one of those tables was flagged a lake: measured, 3621 of 3844
+    // lakes across forty worlds sat on mountains, and embarking on one carved a
+    // pond into a peak.
+    for seed in 0..20u64 {
+        let w = World::generate(seed, 48, 48, 5);
+        for r in &w.overworld.regions {
+            if r.lake {
+                assert!(
+                    r.elevation < Overworld::MOUNTAIN_LEVEL,
+                    "seed {seed}: a lake at elevation {} is on a mountain",
+                    r.elevation
+                );
+            }
+        }
+        // And the curve must not manufacture plateaus at the ceiling.
+        let pinned = w
+            .overworld
+            .regions
+            .iter()
+            .filter(|r| r.elevation >= Overworld::MAX_ELEVATION)
+            .count();
+        assert!(
+            pinned * 50 < w.overworld.regions.len(),
+            "seed {seed}: {pinned} tiles pinned at max elevation — the curve is clipping"
+        );
+    }
+}
+
+#[test]
+fn a_world_is_not_all_mountain_and_has_a_coast() {
+    // Every check in verify() was a floor, and floors let the opposite failure
+    // straight through: mountains are embarkable, so a world that is half
+    // mountain passes every "enough of X" test while leaving room for nothing
+    // else. Measured before the ceilings: twelve seeds in thirty came out a
+    // quarter mountain or more, one of them 54%, and one world had 2.3% ocean —
+    // no coastline at all.
+    for seed in 0..24u64 {
+        let w = World::generate(seed, 48, 48, 5);
+        let n = w.overworld.regions.len();
+        let mtn = w
+            .overworld
+            .regions
+            .iter()
+            .filter(|r| r.biome == Biome::Mountains)
+            .count();
+        assert!(mtn * 4 <= n, "seed {seed}: {mtn}/{n} is mountain");
+        let sea = w
+            .overworld
+            .regions
+            .iter()
+            .filter(|r| !r.biome.embarkable())
+            .count();
+        assert!(sea * 10 >= n, "seed {seed}: only {sea}/{n} is sea — no coast");
+    }
+}
+
+#[test]
+fn the_shadow_falls_behind_each_range_not_just_on_average() {
+    // The pooled average can pass while every individual range is a coin flip,
+    // which is exactly what happened: measured 71 of 142 crossings had a drier
+    // lee — chance — while the mean looked fine. Ask per crossing.
+    let (mut drier, mut total) = (0usize, 0usize);
+    for seed in 0..10u64 {
+        let ow = &World::generate(seed, 48, 48, 5).overworld;
+        for y in 0..ow.height {
+            for x in 3..ow.width - 3 {
+                if ow.get(x, y).biome != Biome::Mountains {
+                    continue;
+                }
+                let (windward, lee) = (ow.get(x - 3, y), ow.get(x + 3, y));
+                let usable = |r: &dk_history::Region| {
+                    r.biome.embarkable() && r.biome != Biome::Mountains
+                };
+                if !usable(windward) || !usable(lee) {
+                    continue;
+                }
+                total += 1;
+                if lee.rainfall < windward.rainfall {
+                    drier += 1;
+                }
+            }
+        }
+    }
+    assert!(total >= 20, "enough range crossings to judge ({total})");
+    assert!(
+        drier * 3 >= total * 2,
+        "the lee is drier at most ranges, not half of them ({drier}/{total})"
+    );
+}
