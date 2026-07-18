@@ -837,10 +837,39 @@ fn persist_world_seed(seed: u64) {
     let _ = std::fs::write(world_seed_path(), seed.to_string());
 }
 
+/// Replace `world` with a brand-new one: a fresh seed, a freshly simulated
+/// history, persisted so the next launch keeps it, and the previous world's
+/// retired forts cleared so none of them can reclaim into the new world. This
+/// is what "New game" runs, so it always starts somewhere genuinely new.
+fn forge_new_world(world: &mut World) {
+    let seed = fresh_world_seed();
+    persist_world_seed(seed);
+    *world = World::generate(seed, OW, OW, HISTORY_YEARS);
+    persist_world(world);
+    clear_retired_forts();
+}
+
 /// A retired fortress is kept in its own file, named for its region, so it
 /// endures in the world and can be reclaimed by returning to that spot.
 fn fort_path(region: (usize, usize)) -> PathBuf {
     PathBuf::from(format!("saves/fort_{}_{}.bin", region.0, region.1))
+}
+
+/// Delete every retired-fort file. Reclaim is keyed by region coordinates,
+/// which mean nothing once the world is regenerated — an old fort at region
+/// (24,24) would wrongly reload in a brand-new world's (24,24). So a New Game
+/// (a fresh world) clears them first, and old dwarves never haunt a new world.
+/// The F5 quicksave (saves/world.bin, reached by Continue) is left untouched.
+fn clear_retired_forts() {
+    if let Ok(dir) = std::fs::read_dir("saves") {
+        for entry in dir.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("fort_") && name.ends_with(".bin") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// The assets directory lives at the workspace root, not the app crate.
@@ -1698,14 +1727,14 @@ fn setup(
     let title_img: Handle<Image> = asset_server.load("title.png");
     let has_save = save_path().exists();
     let menu = if has_save {
-        "[Enter]   New game  --  choose where to settle\n\n\
+        "[Enter]   New game  --  a fresh world, choose where to settle\n\n\
          [C]   Continue your saved fort\n\n\
-         [P]   Quick start  --  auto-pick a good spot\n\n\
+         [P]   Quick start  --  a fresh world, auto-pick a spot\n\n\
          [A]   Adventure  --  wander the world as a lone hero\n\n\
          [Q]   Quit"
     } else {
-        "[Enter]   New game  --  choose where to settle\n\n\
-         [P]   Quick start  --  auto-pick a good spot\n\n\
+        "[Enter]   New game  --  a fresh world, choose where to settle\n\n\
+         [P]   Quick start  --  a fresh world, auto-pick a spot\n\n\
          [A]   Adventure  --  wander the world as a lone hero\n\n\
          [Q]   Quit"
     };
@@ -2616,12 +2645,9 @@ fn apply_embark_action(
             dirty.0 = true;
         }
         EmbarkAction::NewWorld => {
-            let seed = fresh_world_seed();
-            persist_world_seed(seed);
-            world.0 = World::generate(seed, OW, OW, HISTORY_YEARS);
-            // Keep it, or the next launch would find the old world's file and
-            // play that instead.
-            persist_world(&world.0);
+            // Forge a fresh world (persisted so the next launch keeps it) and
+            // clear the old world's retired forts so none reclaim into it.
+            forge_new_world(&mut world.0);
             cursor.x = 0;
             cursor.y = 0;
             dirty.0 = true;
@@ -2667,7 +2693,7 @@ fn title_visibility(
 fn title_input(
     keys: Res<ButtonInput<KeyCode>>,
     reg: Res<Registry>,
-    world: Res<WorldRes>,
+    mut world: ResMut<WorldRes>,
     has_save: Res<HasSave>,
     mut screen: ResMut<ScreenRes>,
     mut sim: ResMut<SimRes>,
@@ -2681,7 +2707,10 @@ fn title_input(
         return;
     }
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
-        // New game: to the world map, cursor on a welcoming spot to start from.
+        // New game: forge a BRAND-NEW world (so New game never drops you back
+        // into an old save), clear any retired forts of the previous world, and
+        // open the world map to choose where to settle.
+        forge_new_world(&mut world.0);
         let region = pick_embark_region(&world.0);
         cursor.x = (region.0 as i32 * 2).min(MAP_W as i32 - 1);
         cursor.y = (region.1 as i32 * 2).min(MAP_H as i32 - 1);
@@ -2700,9 +2729,11 @@ fn title_input(
             Err(e) => error!("continue failed: {e:#}"),
         }
     } else if keys.just_pressed(KeyCode::KeyP) {
-        // Quick start: auto-pick a good spot and found a fort at once.
+        // Quick start: a fresh world, auto-pick a good spot, and found a NEW
+        // fort at once (never a reclaim of your old dwarves).
+        forge_new_world(&mut world.0);
         let region = pick_embark_region(&world.0);
-        let new_sim = found_fort(&world.0, &reg.0, region);
+        let new_sim = embark(&world.0, &reg.0, region);
         enter_fort_at(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
     } else if keys.just_pressed(KeyCode::KeyA) {
         // Adventure: found the spot, then take the field as a lone hero.
