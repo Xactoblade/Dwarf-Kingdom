@@ -1822,10 +1822,11 @@ fn handle_mouse(
     }
     if zoom.abs() > 0.01 {
         let factor = if zoom > 0.0 { 0.9 } else { 1.1 };
-        cam_tf.scale = (cam_tf.scale * factor).clamp(
-            Vec3::splat(0.2),
-            Vec3::splat(4.0),
-        );
+        // Scale X and Y only, pinning Z at 1.0: scaling a 2D camera's Z shrinks
+        // the orthographic depth range and clips every sprite out of view — the
+        // screen goes black on zoom-in.
+        let s = (cam_tf.scale.x * factor).clamp(0.2, 4.0);
+        cam_tf.scale = Vec3::new(s, s, 1.0);
     }
 
     // Right/middle drag: pan.
@@ -1897,7 +1898,8 @@ fn clamp_camera_to_map(tf: &mut Transform, win_w: f32, win_h: f32) {
     // so a wide 4K screen zooms in enough to fill just like a laptop does.
     let fit = (map_w / win_w).min(map_h / win_h);
     let s = tf.scale.x.min(fit).max(0.2);
-    tf.scale = Vec3::new(s, s, tf.scale.z);
+    // Z pinned at 1.0 — a 2D camera scaled in Z clips its sprites away.
+    tf.scale = Vec3::new(s, s, 1.0);
     let half_vw = win_w * 0.5 * s;
     let half_vh = win_h * 0.5 * s;
     tf.translation.x = if half_vw * 2.0 >= map_w {
@@ -3477,11 +3479,15 @@ fn handle_input(
         if keys.pressed(KeyCode::KeyE) {
             tf.translation.x += pan;
         }
+        // Scale X and Y only, Z pinned at 1.0 — scaling a 2D camera's Z clips
+        // every sprite out and blacks the screen (see the wheel-zoom note).
         if keys.just_pressed(KeyCode::Equal) {
-            tf.scale = (tf.scale * 0.8).clamp(Vec3::splat(0.2), Vec3::splat(4.0));
+            let s = (tf.scale.x * 0.8).clamp(0.2, 4.0);
+            tf.scale = Vec3::new(s, s, 1.0);
         }
         if keys.just_pressed(KeyCode::Minus) {
-            tf.scale = (tf.scale * 1.25).clamp(Vec3::splat(0.2), Vec3::splat(4.0));
+            let s = (tf.scale.x * 1.25).clamp(0.2, 4.0);
+            tf.scale = Vec3::new(s, s, 1.0);
         }
     }
 
