@@ -305,14 +305,27 @@ impl Weather {
     }
 }
 
-/// Gem varieties, indexed by `Item::stuff` for RoughGem/CutGem.
-pub const GEM_KINDS: [(&str, [u8; 3]); 6] = [
+/// Gem varieties, indexed by `Item::stuff` for RoughGem/CutGem. Append only —
+/// a saved fort stores gems by this index, so the existing order must not move.
+pub const GEM_KINDS: [(&str, [u8; 3]); 18] = [
     ("ruby", [200, 40, 60]),
     ("emerald", [40, 190, 90]),
     ("sapphire", [50, 90, 210]),
     ("amethyst", [160, 80, 200]),
     ("topaz", [220, 180, 60]),
     ("opal", [210, 220, 230]),
+    ("diamond", [235, 240, 250]),
+    ("garnet", [150, 30, 45]),
+    ("aquamarine", [130, 210, 210]),
+    ("citrine", [232, 196, 92]),
+    ("jade", [86, 176, 128]),
+    ("onyx", [44, 44, 52]),
+    ("turquoise", [72, 200, 190]),
+    ("lapis lazuli", [46, 76, 178]),
+    ("malachite", [34, 150, 92]),
+    ("jasper", [172, 84, 60]),
+    ("agate", [192, 156, 126]),
+    ("peridot", [172, 210, 84]),
 ];
 
 pub fn gem_name(idx: u16) -> &'static str {
@@ -10169,7 +10182,10 @@ pub fn sync_world(sim: &mut Sim, world: &mut dk_history::World) {
 // ------------------------------------------------------------------- saves
 
 const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
-const SAVE_VERSION: u32 = 69;
+// v70: broadened the stone list (new sedimentary/igneous/metamorphic rocks +
+// obsidian), which shifts material indices, so a pre-v70 fort save would read
+// the wrong stone — reject it rather than misinterpret.
+const SAVE_VERSION: u32 = 70;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

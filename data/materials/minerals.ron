@@ -7,19 +7,34 @@
     MaterialDef(id: "sand",      name: "Sand",      category: Soil,        color: (194, 172, 118), value: 1),
 
     // --- Sedimentary stone ---
-    MaterialDef(id: "sandstone", name: "Sandstone", category: Sedimentary, color: (176, 145, 97),  value: 1),
-    MaterialDef(id: "limestone", name: "Limestone", category: Sedimentary, color: (184, 178, 160), value: 1),
-    MaterialDef(id: "shale",     name: "Shale",     category: Sedimentary, color: (106, 110, 118), value: 1),
-    MaterialDef(id: "mudstone",  name: "Mudstone",  category: Sedimentary, color: (128, 112, 96),  value: 1),
+    MaterialDef(id: "sandstone",     name: "Sandstone",     category: Sedimentary, color: (176, 145, 97),  value: 1),
+    MaterialDef(id: "limestone",     name: "Limestone",     category: Sedimentary, color: (184, 178, 160), value: 1),
+    MaterialDef(id: "shale",         name: "Shale",         category: Sedimentary, color: (106, 110, 118), value: 1),
+    MaterialDef(id: "mudstone",      name: "Mudstone",      category: Sedimentary, color: (128, 112, 96),  value: 1),
+    MaterialDef(id: "siltstone",     name: "Siltstone",     category: Sedimentary, color: (150, 138, 120), value: 1),
+    MaterialDef(id: "chalk",         name: "Chalk",         category: Sedimentary, color: (232, 230, 222), value: 1),
+    MaterialDef(id: "dolomite",      name: "Dolomite",      category: Sedimentary, color: (198, 190, 175), value: 1),
+    MaterialDef(id: "chert",         name: "Chert",         category: Sedimentary, color: (120, 116, 108), value: 1),
+    MaterialDef(id: "conglomerate",  name: "Conglomerate",  category: Sedimentary, color: (160, 130, 110), value: 1),
 
     // --- Igneous stone ---
     MaterialDef(id: "granite",   name: "Granite",   category: Igneous,     color: (140, 130, 128), value: 1),
     MaterialDef(id: "basalt",    name: "Basalt",    category: Igneous,     color: (72, 70, 74),    value: 1),
     MaterialDef(id: "gabbro",    name: "Gabbro",    category: Igneous,     color: (88, 92, 88),    value: 1),
+    MaterialDef(id: "diorite",   name: "Diorite",   category: Igneous,     color: (150, 150, 155), value: 1),
+    MaterialDef(id: "rhyolite",  name: "Rhyolite",  category: Igneous,     color: (170, 130, 120), value: 1),
+    MaterialDef(id: "andesite",  name: "Andesite",  category: Igneous,     color: (120, 112, 108), value: 1),
+    // Obsidian: volcanic glass — dark, and sharp enough to edge a blade.
+    MaterialDef(id: "obsidian",  name: "Obsidian",  category: Igneous,     color: (28, 26, 34),    value: 3,
+        combat: CombatStats(sharpness: 2.6, density: 2.4, hardness: 55.0)),
 
     // --- Metamorphic stone ---
     MaterialDef(id: "marble",    name: "Marble",    category: Metamorphic, color: (214, 210, 200), value: 2),
     MaterialDef(id: "gneiss",    name: "Gneiss",    category: Metamorphic, color: (120, 108, 100), value: 1),
+    MaterialDef(id: "slate",     name: "Slate",     category: Metamorphic, color: (78, 82, 92),    value: 1),
+    MaterialDef(id: "quartzite", name: "Quartzite", category: Metamorphic, color: (206, 198, 190), value: 2),
+    MaterialDef(id: "schist",    name: "Schist",    category: Metamorphic, color: (110, 116, 110), value: 1),
+    MaterialDef(id: "phyllite",  name: "Phyllite",  category: Metamorphic, color: (96, 100, 104),  value: 1),
 
     // --- Ores ---
     MaterialDef(id: "hematite",  name: "Hematite",   category: Ore,        color: (155, 66, 58),   value: 8,
