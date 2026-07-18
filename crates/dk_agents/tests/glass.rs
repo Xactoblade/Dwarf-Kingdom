@@ -30,12 +30,27 @@ fn glass_is_the_finest_ordinary_trade_good() {
         made_at: 0,
             variant: 0,
     };
-    let cut_gem = dk_agents::Item { kind: ItemKind::CutGem, ..glass.clone() };
+    // Glass is the finest ORDINARY (renewable) trade good: it beats a common
+    // cut gem. Rare stones are another matter — a cut diamond outshines it.
+    let common_gem = dk_agents::Item {
+        kind: ItemKind::CutGem,
+        stuff: 16, // agate, the humblest of the eighteen gems
+        ..glass.clone()
+    };
     assert!(
-        item_value(&glass, &raws) >= item_value(&cut_gem, &raws),
-        "blown glass is at least as prized as a cut gem"
+        item_value(&glass, &raws) >= item_value(&common_gem, &raws),
+        "blown glass beats a common cut gem"
     );
-    // Quality lifts it further.
+    let cut_diamond = dk_agents::Item {
+        kind: ItemKind::CutGem,
+        stuff: 6, // diamond, the rarest
+        ..glass.clone()
+    };
+    assert!(
+        item_value(&cut_diamond, &raws) > item_value(&glass, &raws),
+        "but a rare cut diamond is dearer still"
+    );
+    // Quality lifts glass further.
     let masterwork = dk_agents::Item { quality: 5, ..glass.clone() };
     assert!(item_value(&masterwork, &raws) > item_value(&glass, &raws));
 }

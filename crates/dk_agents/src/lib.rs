@@ -305,35 +305,42 @@ impl Weather {
     }
 }
 
-/// Gem varieties, indexed by `Item::stuff` for RoughGem/CutGem. Append only —
-/// a saved fort stores gems by this index, so the existing order must not move.
-pub const GEM_KINDS: [(&str, [u8; 3]); 18] = [
-    ("ruby", [200, 40, 60]),
-    ("emerald", [40, 190, 90]),
-    ("sapphire", [50, 90, 210]),
-    ("amethyst", [160, 80, 200]),
-    ("topaz", [220, 180, 60]),
-    ("opal", [210, 220, 230]),
-    ("diamond", [235, 240, 250]),
-    ("garnet", [150, 30, 45]),
-    ("aquamarine", [130, 210, 210]),
-    ("citrine", [232, 196, 92]),
-    ("jade", [86, 176, 128]),
-    ("onyx", [44, 44, 52]),
-    ("turquoise", [72, 200, 190]),
-    ("lapis lazuli", [46, 76, 178]),
-    ("malachite", [34, 150, 92]),
-    ("jasper", [172, 84, 60]),
-    ("agate", [192, 156, 126]),
-    ("peridot", [172, 210, 84]),
+/// Gem varieties: (name, display color, value tier). Indexed by `Item::stuff`
+/// for RoughGem/CutGem. Append only — a saved fort stores gems by this index, so
+/// the existing order must not move. The value tier (1 ornamental .. 6 the
+/// rarest) scales the worth of a cut stone, so a diamond dwarfs an agate.
+pub const GEM_KINDS: [(&str, [u8; 3], u32); 18] = [
+    ("ruby", [200, 40, 60], 5),
+    ("emerald", [40, 190, 90], 5),
+    ("sapphire", [50, 90, 210], 5),
+    ("amethyst", [160, 80, 200], 3),
+    ("topaz", [220, 180, 60], 3),
+    ("opal", [210, 220, 230], 3),
+    ("diamond", [235, 240, 250], 6),
+    ("garnet", [150, 30, 45], 3),
+    ("aquamarine", [130, 210, 210], 3),
+    ("citrine", [232, 196, 92], 2),
+    ("jade", [86, 176, 128], 3),
+    ("onyx", [44, 44, 52], 2),
+    ("turquoise", [72, 200, 190], 2),
+    ("lapis lazuli", [46, 76, 178], 3),
+    ("malachite", [34, 150, 92], 2),
+    ("jasper", [172, 84, 60], 2),
+    ("agate", [192, 156, 126], 1),
+    ("peridot", [172, 210, 84], 2),
 ];
 
 pub fn gem_name(idx: u16) -> &'static str {
-    GEM_KINDS.get(idx as usize).map(|(n, _)| *n).unwrap_or("gem")
+    GEM_KINDS.get(idx as usize).map(|(n, _, _)| *n).unwrap_or("gem")
 }
 
 pub fn gem_color(idx: u16) -> [u8; 3] {
-    GEM_KINDS.get(idx as usize).map(|(_, c)| *c).unwrap_or([180, 180, 200])
+    GEM_KINDS.get(idx as usize).map(|(_, c, _)| *c).unwrap_or([180, 180, 200])
+}
+
+/// A gem's value tier (1 ornamental .. 6 rarest); scales its trade worth.
+pub fn gem_value(idx: u16) -> u32 {
+    GEM_KINDS.get(idx as usize).map(|(_, _, v)| *v).unwrap_or(2)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1720,9 +1727,11 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Wool => 4,
         // Cloth is a fine, renewable trade good.
         ItemKind::Cloth => 18,
-        ItemKind::RoughGem => 12,
-        // A cut gem is the fort's finest legitimate trade good.
-        ItemKind::CutGem => 70,
+        // A rough gem, worth more the rarer the stone.
+        ItemKind::RoughGem => 4 * gem_value(item.stuff),
+        // A cut gem is the fort's finest legitimate trade good — a cut diamond
+        // (tier 6) fetches far more than a cut agate (tier 1).
+        ItemKind::CutGem => 24 * gem_value(item.stuff),
         // A forged weapon: worth several times its metal, and it arms a soldier.
         ItemKind::Weapon => raws.materials.get(item.stuff).value * 10 + 20,
         // Blown glass: the fort's finest ordinary trade good.
