@@ -742,7 +742,9 @@ fn world_path() -> PathBuf {
 ///
 /// v2: megabeasts, Ages, and artifacts joined history; the sim runs 200 years
 /// instead of 80, and the World struct gained `beasts`/`artifacts` fields.
-const WORLDGEN_VERSION: u32 = 2;
+/// v3: sites gained a `kind` (city/fortress/hamlet/retreat/dark fortress) and
+/// a per-site `population`, which shifts the history RNG stream.
+const WORLDGEN_VERSION: u32 = 3;
 
 /// The world this game is played in.
 ///
@@ -953,6 +955,12 @@ fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
     if !arts.is_empty() {
         lines.push("=== Artifacts of Legend ===".to_string());
         lines.extend(arts);
+        lines.push(String::new());
+    }
+    let sites = world.site_lines();
+    if !sites.is_empty() {
+        lines.push("=== The Settlements ===".to_string());
+        lines.extend(sites);
         lines.push(String::new());
     }
     lines.push("=== The Chronicle ===".to_string());
@@ -4544,10 +4552,29 @@ fn redraw_tiles(
             if world.0.overworld.volcanoes.contains(&(rx, ry)) {
                 rgb = [0.95, 0.35, 0.12];
             }
-            // Mark civilization sites — worth seeing in every view.
-            if world.0.sites.iter().any(|st| st.region == (rx, ry) && !st.ruined) {
-                rgb = [0.95, 0.9, 0.5];
-                glyph = "artifact";
+            // Mark settlements with a distinct silhouette per kind — a standing
+            // site if one is here, else its ruins — in every view.
+            let here = world
+                .0
+                .sites
+                .iter()
+                .find(|st| st.region == (rx, ry) && !st.ruined)
+                .or_else(|| world.0.sites.iter().find(|st| st.region == (rx, ry)));
+            if let Some(site) = here {
+                use dk_history::SiteKind::*;
+                let (g, c) = if site.ruined {
+                    ("m_ruins", [0.55, 0.5, 0.45])
+                } else {
+                    match site.kind {
+                        City => ("m_city", [0.96, 0.86, 0.38]),
+                        Fortress => ("m_fortress", [0.80, 0.83, 0.90]),
+                        Hamlet => ("m_hamlet", [0.90, 0.76, 0.48]),
+                        ForestRetreat => ("m_retreat", [0.55, 0.82, 0.42]),
+                        DarkFortress => ("m_darkfort", [0.85, 0.28, 0.22]),
+                    }
+                };
+                glyph = g;
+                rgb = c;
             }
             if let Some(handles) = &tileset.0 {
                 if let Some(atlas) = sprite.texture_atlas.as_mut() {
@@ -5022,7 +5049,21 @@ fn update_hud(
                 .iter()
                 .find(|st| st.region == (rx, ry) && !st.ruined)
                 .map(|st| {
-                    format!("   here: {} ({})", st.name, world.0.civs[st.civ].name)
+                    format!(
+                        "   here: {}, a {} of {} (pop. {})",
+                        st.name,
+                        st.kind.noun(),
+                        world.0.civs[st.civ].name,
+                        st.population
+                    )
+                })
+                .or_else(|| {
+                    world
+                        .0
+                        .sites
+                        .iter()
+                        .find(|st| st.region == (rx, ry))
+                        .map(|st| format!("   here: {}, a {} now in ruins", st.name, st.kind.noun()))
                 })
                 .unwrap_or_default();
             let enemy = world

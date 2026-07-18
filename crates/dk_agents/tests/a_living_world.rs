@@ -125,10 +125,17 @@ fn a_fort_hears_nothing_of_peoples_it_has_never_met() {
 #[test]
 fn a_trade_partner_razed_out_of_existence_stops_sending_caravans() {
     let (mut sim, mut world, _raws) = fort_in_world(2027);
-    let partner = sim.trade_partner.clone().expect("worldgen gives a friendly neighbor");
+    // Trade with a friendly people that still stands, so razing it below is a
+    // real fall — worldgen's beasts and wars may already have wiped the civ the
+    // fort would otherwise have picked.
+    let civ = world
+        .civs
+        .iter()
+        .position(|c| !c.race.hostile() && c.sites.iter().any(|&s| !world.sites[s].ruined))
+        .expect("some friendly people still stands");
+    sim.trade_partner = Some(world.civs[civ].name.clone());
 
     // The wars abroad go badly for them: every site falls.
-    let civ = world.civs.iter().position(|c| c.name == partner).unwrap();
     for s in world.civs[civ].sites.clone() {
         world.sites[s].ruined = true;
     }

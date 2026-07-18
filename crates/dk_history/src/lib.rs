@@ -1096,13 +1096,52 @@ pub struct Civilization {
     pub sites: Vec<usize>,
 }
 
+/// What kind of place a site is. Each people builds after its own fashion —
+/// dwarves raise fortresses and hill hamlets, humans found cities and villages,
+/// elves keep forest retreats, goblins squat in dark fortresses — and each
+/// draws its own mark on the world map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SiteKind {
+    City,
+    Fortress,
+    Hamlet,
+    ForestRetreat,
+    DarkFortress,
+}
+
+impl SiteKind {
+    pub fn noun(self) -> &'static str {
+        match self {
+            SiteKind::City => "city",
+            SiteKind::Fortress => "fortress",
+            SiteKind::Hamlet => "hamlet",
+            SiteKind::ForestRetreat => "forest retreat",
+            SiteKind::DarkFortress => "dark fortress",
+        }
+    }
+
+    /// The place a people builds — its capital is grand, its later holds humble.
+    fn for_race(race: Race, capital: bool) -> SiteKind {
+        match (race, capital) {
+            (Race::Human, true) => SiteKind::City,
+            (Race::Human, false) => SiteKind::Hamlet,
+            (Race::Dwarven, true) => SiteKind::Fortress,
+            (Race::Dwarven, false) => SiteKind::Hamlet,
+            (Race::Elven, _) => SiteKind::ForestRetreat,
+            (Race::Goblin, _) => SiteKind::DarkFortress,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Site {
     pub id: usize,
     pub name: String,
     pub civ: usize,
+    pub kind: SiteKind,
     pub region: (usize, usize),
     pub founded_year: u32,
+    pub population: u32,
     pub ruined: bool,
 }
 
@@ -1335,12 +1374,37 @@ impl World {
         }
         let id = self.sites.len();
         let race = self.civs[civ].race;
+        // The first site a people raises is its capital, and grander for it.
+        let capital = self.civs[civ].sites.is_empty();
+        let kind = SiteKind::for_race(race, capital);
         let name = names::site_name(rng, race);
+        let population = match kind {
+            SiteKind::City => rng.gen_range(800..1600),
+            SiteKind::DarkFortress => rng.gen_range(500..1200),
+            SiteKind::Fortress => rng.gen_range(400..1000),
+            SiteKind::ForestRetreat => rng.gen_range(150..500),
+            SiteKind::Hamlet => rng.gen_range(40..250),
+        };
         self.event(
             year,
-            format!("{} of the {} founded {}.", cap(&self.civs[civ].name), race.name(), name),
+            format!(
+                "{} of the {} founded {}, a {}.",
+                cap(&self.civs[civ].name),
+                race.name(),
+                name,
+                kind.noun()
+            ),
         );
-        self.sites.push(Site { id, name, civ, region: spot, founded_year: year, ruined: false });
+        self.sites.push(Site {
+            id,
+            name,
+            civ,
+            kind,
+            region: spot,
+            founded_year: year,
+            population,
+            ruined: false,
+        });
         self.civs[civ].sites.push(id);
     }
 
@@ -1935,6 +1999,30 @@ impl World {
             .collect()
     }
 
+    /// One line per settlement, grandest first, for the Legends browser.
+    pub fn site_lines(&self) -> Vec<String> {
+        let mut order: Vec<&Site> = self.sites.iter().collect();
+        // Standing before ruined, then by population — capitals rise to the top.
+        order.sort_by_key(|s| (s.ruined, std::cmp::Reverse(s.population)));
+        order
+            .iter()
+            .map(|s| {
+                let civ = &self.civs[s.civ].name;
+                if s.ruined {
+                    format!(
+                        "{}, a {} of {} — now in ruins (founded year {})",
+                        s.name, s.kind.noun(), civ, s.founded_year
+                    )
+                } else {
+                    format!(
+                        "{}, a {} of {} — pop. {} (founded year {})",
+                        s.name, s.kind.noun(), civ, s.population, s.founded_year
+                    )
+                }
+            })
+            .collect()
+    }
+
     /// One line per artifact, for the Legends browser.
     pub fn artifact_lines(&self) -> Vec<String> {
         self.artifacts
@@ -2014,9 +2102,17 @@ mod tests {
     #[test]
     fn a_civ_with_every_site_in_ruins_has_fallen() {
         let mut w = World::generate(3, 48, 48, 60);
-        let name = w.civs[0].name.clone();
+        // Pick a people that still stands — beasts and wars may already have
+        // razed some civs outright, so don't assume civ 0 survived.
+        let civ = w
+            .civs
+            .iter()
+            .find(|c| c.sites.iter().any(|&s| !w.sites[s].ruined))
+            .map(|c| c.id)
+            .expect("some people still stand");
+        let name = w.civs[civ].name.clone();
         assert!(!w.civ_fallen(&name), "a civ with standing sites lives");
-        for s in w.civs[0].sites.clone() {
+        for s in w.civs[civ].sites.clone() {
             w.sites[s].ruined = true;
         }
         assert!(w.civ_fallen(&name), "every site razed means the people are gone");

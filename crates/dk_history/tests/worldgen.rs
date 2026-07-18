@@ -416,6 +416,37 @@ fn the_world_has_beasts_ages_and_artifacts() {
 }
 
 #[test]
+fn every_people_builds_after_its_own_fashion() {
+    use dk_history::{Race, SiteKind};
+    let w = World::generate(31337, 48, 48, 200);
+    // Every site has a kind and a population, and the kind fits the founders.
+    for s in &w.sites {
+        assert!(s.population > 0, "{} has people in it", s.name);
+        let race = w.civs[s.civ].race;
+        match race {
+            Race::Elven => assert_eq!(s.kind, SiteKind::ForestRetreat),
+            Race::Goblin => assert_eq!(s.kind, SiteKind::DarkFortress),
+            Race::Human => assert!(matches!(s.kind, SiteKind::City | SiteKind::Hamlet)),
+            Race::Dwarven => assert!(matches!(s.kind, SiteKind::Fortress | SiteKind::Hamlet)),
+        }
+    }
+    // A civ's capital (its first site) is its grand kind, not a hamlet.
+    for c in &w.civs {
+        if let Some(&first) = c.sites.first() {
+            let cap = w.sites[first].kind;
+            assert!(
+                !matches!(cap, SiteKind::Hamlet),
+                "{}'s capital {} is no mere hamlet",
+                c.name, w.sites[first].name
+            );
+        }
+    }
+    // Deterministic like everything else.
+    let b = World::generate(31337, 48, 48, 200);
+    assert_eq!(w.site_lines(), b.site_lines());
+}
+
+#[test]
 fn determinism_survives_the_rejection_loop() {
     // `generate_verified` may throw several worlds away before it keeps one,
     // and each attempt eats more of the same RNG stream. That is fine — but
