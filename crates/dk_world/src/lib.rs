@@ -627,6 +627,62 @@ pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usi
             break;
         }
     }
+
+    // --- Embark clearing: a fort should begin in the open, not in a random dip
+    // ringed by higher ground (which reads as being walled in by rock) nor on a
+    // sheer peak. Level a flat, buildable area at the map centre and let it
+    // taper one level per ring back to the natural terrain, so the whole surface
+    // stays a single walkable region that ramps can bridge. Only on full-size
+    // fortress maps — small maps (unit tests) would be swallowed whole.
+    if width >= 64 && height >= 64 {
+        let (cx, cy) = (width / 2, height / 2);
+        let r = 12usize; // radius of the flat clearing
+        // Target: the median surface height over the central window, so the
+        // clearing sits at the natural lie of the land, neither cut nor filled
+        // more than it must be.
+        let mut window: Vec<usize> = Vec::new();
+        for y in cy.saturating_sub(r)..=(cy + r).min(height - 1) {
+            for x in cx.saturating_sub(r)..=(cx + r).min(width - 1) {
+                window.push(heights[y * width + x]);
+            }
+        }
+        window.sort_unstable();
+        let target = window[window.len() / 2];
+        for y in 0..height {
+            for x in 0..width {
+                let d = (x as i64 - cx as i64).abs().max((y as i64 - cy as i64).abs()) as usize;
+                if d <= r {
+                    heights[y * width + x] = target;
+                } else {
+                    // Fade the clearing's influence out one level per ring.
+                    let ring = d - r;
+                    let nat = heights[y * width + x];
+                    heights[y * width + x] = nat.clamp(target.saturating_sub(ring), target + ring);
+                }
+            }
+        }
+        // Re-relax so the taper never leaves a step taller than a ramp can climb.
+        loop {
+            let mut changed = false;
+            for y in 0..height {
+                for x in 0..width {
+                    let h = heights[y * width + x];
+                    let mut min_n = usize::MAX;
+                    if x > 0 { min_n = min_n.min(heights[y * width + x - 1]); }
+                    if x + 1 < width { min_n = min_n.min(heights[y * width + x + 1]); }
+                    if y > 0 { min_n = min_n.min(heights[(y - 1) * width + x]); }
+                    if y + 1 < height { min_n = min_n.min(heights[(y + 1) * width + x]); }
+                    if min_n != usize::MAX && h > min_n + 1 {
+                        heights[y * width + x] = min_n + 1;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
     let height_at = |x: usize, y: usize| heights[y * width + x];
 
     // --- Column fill: soil on top, then sedimentary, then igneous with
