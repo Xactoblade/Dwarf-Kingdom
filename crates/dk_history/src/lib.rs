@@ -1139,6 +1139,86 @@ pub struct Figure {
     pub grudges: Vec<(u32, String)>,
 }
 
+/// The great monsters of the world — dragons, titans, and their kin. Their
+/// life and death is what carves history into named Ages, exactly as in Dwarf
+/// Fortress: while they roam, the world is young and mythic; when the last is
+/// slain, the Age of Heroes gives way to quieter times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BeastKind {
+    Dragon,
+    Titan,
+    Roc,
+    Hydra,
+    Colossus,
+    Ettin,
+    Cyclops,
+    Minotaur,
+}
+
+impl BeastKind {
+    pub fn noun(self) -> &'static str {
+        match self {
+            BeastKind::Dragon => "dragon",
+            BeastKind::Titan => "titan",
+            BeastKind::Roc => "roc",
+            BeastKind::Hydra => "hydra",
+            BeastKind::Colossus => "bronze colossus",
+            BeastKind::Ettin => "ettin",
+            BeastKind::Cyclops => "cyclops",
+            BeastKind::Minotaur => "minotaur",
+        }
+    }
+
+    pub const ALL: [BeastKind; 8] = [
+        BeastKind::Dragon,
+        BeastKind::Titan,
+        BeastKind::Roc,
+        BeastKind::Hydra,
+        BeastKind::Colossus,
+        BeastKind::Ettin,
+        BeastKind::Cyclops,
+        BeastKind::Minotaur,
+    ];
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Megabeast {
+    pub id: usize,
+    pub name: String,
+    pub kind: BeastKind,
+    /// Where it lairs and where heroes must go to end it.
+    pub lair: (usize, usize),
+    pub born_year: i64,
+    pub died_year: Option<u32>,
+    /// The name of the hero who slew it, once one does.
+    pub slayer: Option<String>,
+    pub kills: u32,
+    pub razed: u32,
+}
+
+/// A legendary object — forged by a namable hand, sometimes carried off by a
+/// beast or lost in a fallen hall.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Artifact {
+    pub id: usize,
+    pub name: String,
+    /// "a steel battle axe", "an adamantine crown".
+    pub kind: String,
+    pub creator: String,
+    pub civ: usize,
+    pub created_year: u32,
+    /// Stolen by a beast or entombed in ruins — its whereabouts unknown.
+    pub lost: bool,
+}
+
+/// A named span of history, in the manner of Dwarf Fortress's Ages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Age {
+    pub name: String,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoricalEvent {
     pub year: u32,
@@ -1152,6 +1232,10 @@ pub struct World {
     pub civs: Vec<Civilization>,
     pub sites: Vec<Site>,
     pub figures: Vec<Figure>,
+    #[serde(default)]
+    pub beasts: Vec<Megabeast>,
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
     pub events: Vec<HistoricalEvent>,
     pub years_simulated: u32,
 }
@@ -1178,6 +1262,8 @@ impl World {
             civs: Vec::new(),
             sites: Vec::new(),
             figures: Vec::new(),
+            beasts: Vec::new(),
+            artifacts: Vec::new(),
             events: Vec::new(),
             years_simulated: 0,
         };
@@ -1280,6 +1366,195 @@ impl World {
         id
     }
 
+    /// The name of the country a region belongs to — for beast lairs and deeds.
+    fn region_name_at(&self, at: (usize, usize)) -> String {
+        let sub = self.overworld.get(at.0, at.1).subregion;
+        self.overworld.named[sub].name.clone()
+    }
+
+    /// Loose a handful of great beasts upon the young world, each lairing in
+    /// wild, high, or sinister country far from the hearths of the civilized.
+    fn spawn_beasts(&mut self, rng: &mut ChaCha8Rng) {
+        let count = 4 + rng.gen_range(0..4); // 4..=7 great beasts
+        for _ in 0..count {
+            let mut lair = (
+                rng.gen_range(0..self.overworld.width),
+                rng.gen_range(0..self.overworld.height),
+            );
+            // Prefer a mountain fastness, a savage waste, or an evil land.
+            for _ in 0..24 {
+                let x = rng.gen_range(0..self.overworld.width);
+                let y = rng.gen_range(0..self.overworld.height);
+                let r = self.overworld.get(x, y);
+                if r.biome.embarkable()
+                    && (r.biome == Biome::Mountains
+                        || r.savagery >= 66
+                        || r.alignment == Alignment::Evil)
+                {
+                    lair = (x, y);
+                    break;
+                }
+            }
+            let kind = BeastKind::ALL[rng.gen_range(0..BeastKind::ALL.len())];
+            let name = names::beast_name(rng);
+            let born_year = -(rng.gen_range(50i64..400));
+            let id = self.beasts.len();
+            let where_ = self.region_name_at(lair);
+            self.event(
+                0,
+                format!("In the first age, {}, a {}, awoke in {}.", name, kind.noun(), where_),
+            );
+            self.beasts.push(Megabeast {
+                id,
+                name,
+                kind,
+                lair,
+                born_year,
+                died_year: None,
+                slayer: None,
+                kills: 0,
+                razed: 0,
+            });
+        }
+    }
+
+    /// One year in the lives of the great beasts: a rampage, and the rise of a
+    /// hero who marches on a lair to end one (and usually does).
+    fn beast_year(&mut self, rng: &mut ChaCha8Rng, year: u32) {
+        let living: Vec<usize> =
+            self.beasts.iter().filter(|b| b.died_year.is_none()).map(|b| b.id).collect();
+        if living.is_empty() {
+            return;
+        }
+
+        // A rampage against the nearest standing settlement.
+        if rng.gen_ratio(1, 3) {
+            let bid = living[rng.gen_range(0..living.len())];
+            let lair = self.beasts[bid].lair;
+            if let Some(site_id) = self
+                .sites
+                .iter()
+                .filter(|s| !s.ruined)
+                .min_by_key(|s| s.region.0.abs_diff(lair.0) + s.region.1.abs_diff(lair.1))
+                .map(|s| s.id)
+            {
+                let dead = rng.gen_range(3..40);
+                let civ = self.sites[site_id].civ;
+                self.civs[civ].population =
+                    self.civs[civ].population.saturating_sub(dead).max(50);
+                self.beasts[bid].kills += dead;
+                let bname = self.beasts[bid].name.clone();
+                let kind = self.beasts[bid].kind.noun();
+                let sname = self.sites[site_id].name.clone();
+                if dead > 18 && rng.gen_ratio(1, 2) {
+                    self.sites[site_id].ruined = true;
+                    self.beasts[bid].razed += 1;
+                    self.event(
+                        year,
+                        format!(
+                            "{}, the {}, descended upon {} and laid it to ruin, {} slain.",
+                            bname, kind, sname, dead
+                        ),
+                    );
+                } else {
+                    self.event(
+                        year,
+                        format!(
+                            "{}, the {}, fell upon {}; {} were slain before it withdrew.",
+                            bname, kind, sname, dead
+                        ),
+                    );
+                }
+            }
+        }
+
+        // A hero marches on a lair. Beasts are hardy and heroes rare, so the
+        // great monsters cast a long shadow over the early ages before they
+        // fall. Many who march do not return.
+        if rng.gen_ratio(1, 8) {
+            let bid = living[rng.gen_range(0..living.len())];
+            let civs: Vec<usize> =
+                self.civs.iter().filter(|c| !c.race.hostile()).map(|c| c.id).collect();
+            if civs.is_empty() {
+                return;
+            }
+            let civ = civs[rng.gen_range(0..civs.len())];
+            let hero = self.spawn_figure(rng, civ, Role::Warrior, year);
+            let bname = self.beasts[bid].name.clone();
+            let kind = self.beasts[bid].kind.noun();
+            let where_ = self.region_name_at(self.beasts[bid].lair);
+            let civ_name = self.civs[civ].name.clone();
+            if rng.gen_ratio(2, 3) {
+                self.beasts[bid].died_year = Some(year);
+                self.figures[hero].kills += 1;
+                let hname = self.figures[hero].name.clone();
+                self.beasts[bid].slayer = Some(hname.clone());
+                self.event(
+                    year,
+                    format!("{} of {} slew {}, the {}, in {}.", hname, civ_name, bname, kind, where_),
+                );
+                // A deed of legend sometimes yields a trophy of legend.
+                if rng.gen_ratio(1, 2) {
+                    let occ = format!("to mark the slaying of {}", bname);
+                    self.forge_named_artifact(rng, civ, hname, year, &occ);
+                }
+            } else {
+                self.figures[hero].died_year = Some(year);
+                self.beasts[bid].kills += 1;
+                let hname = self.figures[hero].name.clone();
+                self.event(
+                    year,
+                    format!(
+                        "{} of {} marched on {}, the {}, and perished in {}.",
+                        hname, civ_name, bname, kind, where_
+                    ),
+                );
+            }
+        }
+    }
+
+    /// A living, named figure forges an artifact out of the ordinary run of days.
+    fn forge_artifact(&mut self, rng: &mut ChaCha8Rng, year: u32) {
+        let makers: Vec<usize> =
+            self.figures.iter().filter(|f| f.died_year.is_none()).map(|f| f.id).collect();
+        if makers.is_empty() {
+            return;
+        }
+        let f = makers[rng.gen_range(0..makers.len())];
+        let (name, civ) = (self.figures[f].name.clone(), self.figures[f].civ);
+        self.forge_named_artifact(rng, civ, name, year, "");
+    }
+
+    /// Mint a named artifact by `creator` of `civ`, recording it in the annals.
+    fn forge_named_artifact(
+        &mut self,
+        rng: &mut ChaCha8Rng,
+        civ: usize,
+        creator: String,
+        year: u32,
+        occasion: &str,
+    ) {
+        let id = self.artifacts.len();
+        let aname = names::artifact_name(rng);
+        let kind = names::artifact_kind(rng);
+        let civ_name = self.civs[civ].name.clone();
+        let tail = if occasion.is_empty() {
+            ".".to_string()
+        } else {
+            format!(", {}.", occasion)
+        };
+        self.event(year, format!("{} of {} forged {}, {}{}", creator, civ_name, aname, kind, tail));
+        self.artifacts.push(Artifact {
+            id,
+            name: aname,
+            kind,
+            creator,
+            civ,
+            created_year: year,
+            lost: false,
+        });
+    }
+
     fn simulate(&mut self, rng: &mut ChaCha8Rng, years: u32) {
         if self.civs.is_empty() {
             // A barren world (no suitable biomes) has no history to tell.
@@ -1297,6 +1572,8 @@ impl World {
             };
             self.spawn_figure(rng, c, extra, 0);
         }
+        // And loose the great beasts upon the young world.
+        self.spawn_beasts(rng);
 
         for year in 1..=years {
             self.simulate_year(rng, year);
@@ -1382,6 +1659,16 @@ impl World {
             ) {
                 self.battle(rng, a, d, year);
             }
+        }
+
+        // The great beasts stir: a living megabeast may descend on a settlement,
+        // and now and then a hero rises to end one — the pulse that drives the
+        // Ages of the world.
+        self.beast_year(rng, year);
+
+        // Now and then a namable hand forges something the world remembers.
+        if rng.gen_ratio(1, 5) {
+            self.forge_artifact(rng, year);
         }
 
         // Mortality among the named.
@@ -1567,6 +1854,95 @@ impl World {
         self.events
             .iter()
             .map(|e| format!("Year {:>3}: {}", e.year, e.text))
+            .collect()
+    }
+
+    /// The named Ages of the world, carved by the life and death of its great
+    /// beasts — Dwarf Fortress's device for giving a history shape. While every
+    /// beast still roams it is the Age of Myth; as they fall it passes through
+    /// Legends and Heroes; when the last is slain, the Age of the Sword begins.
+    pub fn ages(&self) -> Vec<Age> {
+        let total = self.beasts.len();
+        if total == 0 {
+            return vec![Age {
+                name: "the Age of Civilization".into(),
+                start: 0,
+                end: self.years_simulated,
+            }];
+        }
+        let mut deaths: Vec<u32> = self.beasts.iter().filter_map(|b| b.died_year).collect();
+        deaths.sort_unstable();
+        let living_at = |y: u32| total - deaths.iter().filter(|&&d| d <= y).count();
+        let age_name = |living: usize| -> &'static str {
+            if living == total {
+                "the Age of Myth"
+            } else if living * 2 > total {
+                "the Age of Legends"
+            } else if living > 0 {
+                "the Age of Heroes"
+            } else {
+                "the Age of the Sword"
+            }
+        };
+        let mut ages: Vec<Age> = Vec::new();
+        let mut cur = age_name(living_at(0)).to_string();
+        let mut start = 0u32;
+        for y in 1..=self.years_simulated {
+            let next = age_name(living_at(y)).to_string();
+            if next != cur {
+                ages.push(Age { name: std::mem::replace(&mut cur, next), start, end: y });
+                start = y;
+            }
+        }
+        ages.push(Age { name: cur, start, end: self.years_simulated });
+        ages
+    }
+
+    /// The age the world stands in now — for the embark header.
+    pub fn current_age(&self) -> String {
+        self.ages()
+            .last()
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "the Age of Myth".to_string())
+    }
+
+    /// One line per Age, for the Legends browser.
+    pub fn ages_lines(&self) -> Vec<String> {
+        self.ages()
+            .iter()
+            .map(|a| format!("{} — year {} to {}", a.name, a.start, a.end))
+            .collect()
+    }
+
+    /// One line per great beast: where it lairs, or who laid it low.
+    pub fn beast_lines(&self) -> Vec<String> {
+        self.beasts
+            .iter()
+            .map(|b| match (&b.slayer, b.died_year) {
+                (Some(slayer), Some(dy)) => format!(
+                    "{}, the {} — {} slain, {} sites razed; slain by {} in year {}",
+                    b.name, b.kind.noun(), b.kills, b.razed, slayer, dy
+                ),
+                _ => format!(
+                    "{}, the {} — still stalks {} ({} slain, {} sites razed)",
+                    b.name,
+                    b.kind.noun(),
+                    self.region_name_at(b.lair),
+                    b.kills,
+                    b.razed
+                ),
+            })
+            .collect()
+    }
+
+    /// One line per artifact, for the Legends browser.
+    pub fn artifact_lines(&self) -> Vec<String> {
+        self.artifacts
+            .iter()
+            .map(|a| {
+                let lost = if a.lost { " (now lost)" } else { "" };
+                format!("{}, {}, forged by {} in year {}{}", a.name, a.kind, a.creator, a.created_year, lost)
+            })
             .collect()
     }
 }

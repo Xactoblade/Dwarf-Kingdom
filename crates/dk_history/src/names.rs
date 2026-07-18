@@ -127,3 +127,84 @@ const REGION_OF: [&str; 24] = [
 pub fn region_name(rng: &mut ChaCha8Rng, kind: &str) -> String {
     format!("the {} of {}", kind, pick(rng, &REGION_OF))
 }
+
+// --------------------------------------------------------------- megabeasts
+
+const BEAST_ON: [&str; 14] = [
+    "Ssz", "Ang", "Vor", "Uth", "Ngar", "Koru", "Zmey", "Axu", "Grend", "Mor", "Tyr", "Oku",
+    "Bael", "Xar",
+];
+const BEAST_END: [&str; 12] = [
+    "oth", "ax", "uth", "gan", "mor", "ith", "ug", "and", "esh", "oros", "ull", "yx",
+];
+const BEAST_EPITHET: [&str; 12] = [
+    "the Ashen",
+    "the World-Ender",
+    "Deepgnawer",
+    "the Scaled Doom",
+    "Fireborn",
+    "the Old Terror",
+    "Stonecrusher",
+    "the Winged Night",
+    "the Unbroken",
+    "Bloodmaw",
+    "the Sky's Ruin",
+    "the Sleepless",
+];
+
+/// A megabeast's name: an ancient, guttural word and a title of dread.
+pub fn beast_name(rng: &mut ChaCha8Rng) -> String {
+    format!(
+        "{}{} {}",
+        pick(rng, &BEAST_ON),
+        pick(rng, &BEAST_END),
+        pick(rng, &BEAST_EPITHET)
+    )
+}
+
+// ---------------------------------------------------------------- artifacts
+
+const ART_ON: [&str; 12] = [
+    "Ng", "Kel", "Zol", "Dur", "Bomr", "Ast", "Uzol", "Ing", "Ral", "Thob", "Vel", "Osz",
+];
+const ART_MID: [&str; 8] = ["ol", "az", "ar", "um", "esh", "ir", "od", "un"];
+const ART_END: [&str; 8] = ["tar", "mun", "shu", "kil", "grath", "dim", "los", "reth"];
+
+/// An artifact's proper name — a made-up dwarven word, "Ngoltar", "Kelazmun".
+pub fn artifact_name(rng: &mut ChaCha8Rng) -> String {
+    let mut s = String::from(pick(rng, &ART_ON));
+    if rng.gen_ratio(1, 2) {
+        s.push_str(pick(rng, &ART_MID));
+    }
+    s.push_str(pick(rng, &ART_END));
+    s
+}
+
+const ART_MATERIAL: [&str; 8] =
+    ["steel", "silver", "gold", "copper", "bronze", "obsidian", "platinum", "adamantine"];
+const ART_ITEM: [&str; 12] = [
+    "battle axe",
+    "short sword",
+    "war hammer",
+    "shield",
+    "crown",
+    "scepter",
+    "amulet",
+    "statue",
+    "goblet",
+    "breastplate",
+    "ring",
+    "mace",
+];
+
+/// What an artifact is — "an adamantine crown", "a steel battle axe".
+pub fn artifact_kind(rng: &mut ChaCha8Rng) -> String {
+    let mat = pick(rng, &ART_MATERIAL);
+    let item = pick(rng, &ART_ITEM);
+    let article = if matches!(mat.chars().next(), Some('a' | 'e' | 'i' | 'o' | 'u')) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{} {} {}", article, mat, item)
+}

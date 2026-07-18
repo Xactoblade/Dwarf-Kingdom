@@ -44,7 +44,7 @@ const WORLD_SEED: u64 = 20260710;
 const DWARF_COUNT: usize = 7;
 /// Overworld regions (rendered 2x on the 96x96 tile grid).
 const OW: usize = 48;
-const HISTORY_YEARS: u32 = 80;
+const HISTORY_YEARS: u32 = 200;
 /// Lines per page in the Legends viewer.
 const LEGENDS_PAGE: usize = 30;
 
@@ -739,7 +739,10 @@ fn world_path() -> PathBuf {
 /// Bumped whenever worldgen changes shape enough that the same seed would
 /// build a different world. Stored with the saved world so a stale file is
 /// noticed rather than silently misread.
-const WORLDGEN_VERSION: u32 = 1;
+///
+/// v2: megabeasts, Ages, and artifacts joined history; the sim runs 200 years
+/// instead of 80, and the World struct gained `beasts`/`artifacts` fields.
+const WORLDGEN_VERSION: u32 = 2;
 
 /// The world this game is played in.
 ///
@@ -896,6 +899,15 @@ fn screenshot_mode_on() -> bool {
 
 /// Build the fortress sim for a chosen overworld region.
 /// The deterministic local map for an overworld region.
+/// Capitalize the first letter — age names begin with a lowercase "the".
+fn cap_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 /// The full Legends scroll: the active fortress's own anthology of poetry
 /// first (latest works up top), then the recorded history of the world.
 fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
@@ -923,6 +935,27 @@ fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
             lines.push(String::new());
         }
     }
+    // The shape of history first: its Ages, its great beasts, its treasures —
+    // then the chronicle itself, year by year.
+    let ages = world.ages_lines();
+    if !ages.is_empty() {
+        lines.push("=== The Ages of the World ===".to_string());
+        lines.extend(ages);
+        lines.push(String::new());
+    }
+    let beasts = world.beast_lines();
+    if !beasts.is_empty() {
+        lines.push("=== The Great Beasts ===".to_string());
+        lines.extend(beasts);
+        lines.push(String::new());
+    }
+    let arts = world.artifact_lines();
+    if !arts.is_empty() {
+        lines.push("=== Artifacts of Legend ===".to_string());
+        lines.extend(arts);
+        lines.push(String::new());
+    }
+    lines.push("=== The Chronicle ===".to_string());
     lines.extend(world.legends_lines());
     lines
 }
@@ -1169,9 +1202,11 @@ fn main() {
     install_crash_logger();
     let raws = Raws::load(&data_dir()).expect("failed to load raws");
     let world = load_or_make_world();
-    // DK_SHOT_SCREEN=embark verifies the embark map instead of the fort.
-    let shot_embark = std::env::var("DK_SHOT_SCREEN").is_ok_and(|v| v == "embark");
-    let (screen, sim) = if screenshot_mode_on() && !shot_embark {
+    // DK_SHOT_SCREEN=embark|legends|title opens a menu screen instead of
+    // embarking straight into a fort (screenshot verification only).
+    let shot_screen = std::env::var("DK_SHOT_SCREEN").unwrap_or_default();
+    let want_menu = matches!(shot_screen.as_str(), "embark" | "legends" | "title");
+    let (screen, sim) = if screenshot_mode_on() && !want_menu {
         // DK_SHOT_BIOME=mountain embarks in the highest-elevation region so the
         // mountainous terrain can be captured (screenshot builds only).
         let shot_biome = std::env::var("DK_SHOT_BIOME").unwrap_or_default();
@@ -1246,8 +1281,13 @@ fn main() {
         (Screen::Playing, Some(sim))
     } else {
         // Open on the start screen (title art + menu), not straight into the
-        // world map.
-        (Screen::Title, None)
+        // world map — unless a screenshot run asked for a specific menu screen.
+        let screen = match shot_screen.as_str() {
+            "embark" => Screen::Embark,
+            "legends" => Screen::Legends,
+            _ => Screen::Title,
+        };
+        (screen, None)
     };
     let start_z = sim
         .as_ref()
@@ -5027,6 +5067,7 @@ fn update_hud(
                 text.0 = format!(
                     "Dwarf Kingdom :: Choose your embark   (world seed {} — n: forge a new world)\n\
                      {} years of history · {} civilizations · {} sites · {} named figures\n\
+                     {} · {} great beasts · {} artifacts\n\
                      {} ({}) — {}{}{}\n\
                      surroundings: {} · temperature {}C · elevation {} · rainfall {} · drainage {}\n\
                      {} · {}{}\n\
@@ -5039,6 +5080,9 @@ fn update_hud(
                     world.0.civs.len(),
                     world.0.sites.len(),
                     world.0.figures.len(),
+                    cap_first(&world.0.current_age()),
+                    world.0.beasts.len(),
+                    world.0.artifacts.len(),
                     world.0.overworld.named[region.subregion].name,
                     world.0.overworld.named[region.subregion].size_class(),
                     region.biome.name(),

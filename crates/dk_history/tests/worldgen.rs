@@ -394,6 +394,28 @@ fn a_world_is_not_one_endless_plain() {
 }
 
 #[test]
+fn the_world_has_beasts_ages_and_artifacts() {
+    // The DF-flavored history layer: great beasts walk the young world, their
+    // deaths carve it into named Ages, and legendary things get forged.
+    let w = World::generate(31337, 48, 48, 200);
+    assert!(!w.beasts.is_empty(), "great beasts walk the young world");
+    assert!(!w.artifacts.is_empty(), "something worth remembering was made");
+    let ages = w.ages();
+    assert_eq!(ages.first().unwrap().name, "the Age of Myth", "history opens in myth");
+    assert_eq!(ages.first().unwrap().start, 0);
+    assert_eq!(ages.last().unwrap().end, w.years_simulated, "the ages cover all of time");
+    // Ages march forward in time without gaps or overlaps.
+    for pair in ages.windows(2) {
+        assert_eq!(pair[0].end, pair[1].start, "one age ends where the next begins");
+    }
+    // The whole new layer is as deterministic as the rest of worldgen.
+    let b = World::generate(31337, 48, 48, 200);
+    assert_eq!(w.beast_lines(), b.beast_lines());
+    assert_eq!(w.artifact_lines(), b.artifact_lines());
+    assert_eq!(w.ages_lines(), b.ages_lines());
+}
+
+#[test]
 fn determinism_survives_the_rejection_loop() {
     // `generate_verified` may throw several worlds away before it keeps one,
     // and each attempt eats more of the same RNG stream. That is fine — but
