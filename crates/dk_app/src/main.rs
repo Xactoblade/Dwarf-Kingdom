@@ -1334,6 +1334,7 @@ fn main() {
                     title_input,
                     title_visibility,
                     apply_embark_action,
+                    frame_embark_camera,
                     handle_input,
                     handle_trade_input,
                     toolbar_visibility,
@@ -2937,6 +2938,28 @@ fn cycle_map_view(
     }
 }
 
+/// When the embark screen opens, frame the whole world at once — DF's world
+/// panel shows the entire map, and a cursor that can wander off a zoomed-in
+/// view is a poor way to choose where to settle. Runs only on the frame the
+/// screen changes, so the player can still pan/zoom afterward.
+fn frame_embark_camera(
+    screen: Res<ScreenRes>,
+    windows: Query<&Window>,
+    mut camera: Query<&mut Transform, With<Camera2d>>,
+) {
+    if screen.0 != Screen::Embark || !screen.is_changed() {
+        return;
+    }
+    if let (Ok(mut tf), Ok(win)) = (camera.single_mut(), windows.single()) {
+        let map_w = MAP_W as f32 * TILE;
+        let map_h = MAP_H as f32 * TILE;
+        let fit = (map_w / win.width()).min(map_h / win.height());
+        tf.scale = Vec3::new(fit, fit, 1.0);
+        tf.translation.x = map_w * 0.5;
+        tf.translation.y = map_h * 0.5;
+    }
+}
+
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -4446,16 +4469,33 @@ fn redraw_tiles(
                 use dk_history::Biome::*;
                 let v2 = ((t.x ^ (t.y << 1)) & 1) as usize; // 0/1 across the block
                 let v3 = ((t.x + t.y * 2) % 3) as usize; // 0/1/2 across the block
+                // Checkerboard across the whole grid: within each region's 2x2
+                // block, two diagonal tiles carry the bold terrain feature (a
+                // peak, a forest clump, a dune, a hill) and the other two the
+                // base ground texture — so mountains read as a rugged range and
+                // forests as a canopy, not a grid of identical triangles.
+                let feat = (t.x + t.y) % 2 == 0;
+                let grass = ["grass_a", "grass_b", "grass_c"][v3];
+                let dirt = ["dirt_a", "dirt_b"][v2];
                 glyph = if region.lake || region.river {
                     "water"
                 } else {
                     match region.biome {
                         Ocean | Lake => "water",
-                        Mountains | Glacier => ["rock_a", "rock_b"][v2],
-                        Tundra | SandDesert | RockyWasteland | Badlands => {
-                            ["dirt_a", "dirt_b"][v2]
+                        Mountains | Glacier => {
+                            if feat { "peak" } else { ["rock_a", "rock_b"][v2] }
                         }
-                        _ => ["grass_a", "grass_b", "grass_c"][v3],
+                        BroadleafForest | ConiferForest | Taiga => {
+                            if feat { "forest" } else { grass }
+                        }
+                        SandDesert | RockyWasteland | Badlands => {
+                            if feat { "dune" } else { dirt }
+                        }
+                        Grassland | Savanna | Shrubland => {
+                            if feat && region.hilly() { "hills" } else { grass }
+                        }
+                        Tundra => dirt,
+                        Marsh | Swamp => grass,
                     }
                 };
             }

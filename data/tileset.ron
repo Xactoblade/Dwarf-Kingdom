@@ -30,6 +30,9 @@ TilesetDef(
         "i_bed": 51, "i_clothes": 52, "i_statue": 53, "i_instrument": 54,
         "i_armor": 55, "i_gem": 56, "i_cloth": 57, "i_leather": 58, "i_wool": 59,
         "i_glass": 60, "i_craft": 61,
+        // World-map terrain features (grayscale, tinted by biome color),
+        // drawn on the embark overview so it reads as land, not a color grid.
+        "peak": 62, "hills": 63, "dune": 64, "forest": 65,
     },
     tinted: ["wall", "floor", "stairs", "ramp", "gate", "farm", "block",
              "boulder", "seed", "crop", "tree", "tree_conifer",
@@ -37,5 +40,6 @@ TilesetDef(
              "dirt_a", "dirt_b", "rock_a", "rock_b", "water", "bush", "stone",
              "reed", "i_log", "i_bar", "i_barrel", "i_bin", "i_bed", "i_clothes",
              "i_statue", "i_instrument", "i_armor", "i_gem", "i_cloth",
-             "i_leather", "i_wool", "i_glass", "i_craft"],
+             "i_leather", "i_wool", "i_glass", "i_craft",
+             "peak", "hills", "dune", "forest"],
 )
