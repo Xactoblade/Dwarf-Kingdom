@@ -124,11 +124,18 @@ struct ScreenRes(Screen);
 #[derive(Resource)]
 struct WorldRes(World);
 
-/// Legends viewer state: scroll offset and which screen to return to.
+/// Legends viewer state: a browser over categories of history. `scroll` pages
+/// the current view; `category` is the active tab (Figures/Sites/Beasts/Gods/
+/// Artifacts/Chronicle); `cursor` is the highlighted entry in an index list;
+/// `detail` holds the opened entry's index when viewing its page. `from` is the
+/// screen to return to on close.
 #[derive(Resource)]
 struct LegendsState {
     scroll: usize,
     from: Screen,
+    category: usize,
+    cursor: usize,
+    detail: Option<usize>,
 }
 
 /// Trade screen state: which column, cursor row, and the selected deal.
@@ -572,10 +579,10 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Rect(UiKind::Mine), label: "Mine", key: "d", tip: "Dig out stone, carving tunnels and rooms", cat: 0 },
     ToolButton { tool: Tool::Rect(UiKind::Stairs), label: "Stairs", key: "x", tip: "Carve stairs up and down between z-levels", cat: 0 },
     ToolButton { tool: Tool::Rect(UiKind::Channel), label: "Channel", key: "h", tip: "Dig a channel: opens the floor, water pours in", cat: 0 },
-    ToolButton { tool: Tool::Rect(UiKind::Chop), label: "Chop", key: "\u{21e7}X", tip: "Fell trees for logs (drag over a stand of trees)", cat: 0 },
-    ToolButton { tool: Tool::Rect(UiKind::Gather), label: "Gather", key: "\u{21e7}G", tip: "Forage wild shrubs for edible berries (drag over a berry patch)", cat: 0 },
-    ToolButton { tool: Tool::Wall, label: "Wall", key: "\u{21e7}B", tip: "Plan a constructed wall; masons haul stone and raise it", cat: 0 },
-    ToolButton { tool: Tool::Engrave, label: "Engrave", key: "\u{21e7}D", tip: "Smooth a wall and carve a scene from the fort's history", cat: 0 },
+    ToolButton { tool: Tool::Rect(UiKind::Chop), label: "Chop", key: "^X", tip: "Fell trees for logs (drag over a stand of trees)", cat: 0 },
+    ToolButton { tool: Tool::Rect(UiKind::Gather), label: "Gather", key: "^G", tip: "Forage wild shrubs for edible berries (drag over a berry patch)", cat: 0 },
+    ToolButton { tool: Tool::Wall, label: "Wall", key: "^B", tip: "Plan a constructed wall; masons haul stone and raise it", cat: 0 },
+    ToolButton { tool: Tool::Engrave, label: "Engrave", key: "^D", tip: "Smooth a wall and carve a scene from the fort's history", cat: 0 },
     // --- Zones (cat 1)
     ToolButton { tool: Tool::Rect(UiKind::Stockpile), label: "Stockpile", key: "p", tip: "A zone where haulers stack loose goods", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Farm), label: "Farm", key: "f", tip: "A plot for planting and harvesting crops", cat: 1 },
@@ -583,20 +590,20 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Rect(UiKind::Tavern), label: "Tavern", key: "o", tip: "Dwarves drink and shed stress here", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Temple), label: "Temple", key: "'", tip: "A place of worship for solace", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Fishery), label: "Fishery", key: "z", tip: "Fishers work the water beside this zone", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::Hospital), label: "Hospital", key: "\u{21e7}H", tip: "The wounded rest here and mend far faster", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::Barracks), label: "Barracks", key: "\u{21e7}I", tip: "Soldiers drill here to become veterans", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::Burrow), label: "Burrow", key: "\u{21e7}Z", tip: "A safe room civilians flee to when the alarm sounds", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::Library), label: "Library", key: "\u{21e7}L", tip: "Scholars write treatises here", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::Bedroom), label: "Bedroom", key: "\u{21e7}R", tip: "Beds here become bedrooms — their owners wake happier", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::DiningHall), label: "Dining", key: "\u{21e7}E", tip: "Dwarves carry their food here and eat in company", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Hospital), label: "Hospital", key: "^H", tip: "The wounded rest here and mend far faster", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Barracks), label: "Barracks", key: "^I", tip: "Soldiers drill here to become veterans", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Burrow), label: "Burrow", key: "^Z", tip: "A safe room civilians flee to when the alarm sounds", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Library), label: "Library", key: "^L", tip: "Scholars write treatises here", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::Bedroom), label: "Bedroom", key: "^R", tip: "Beds here become bedrooms - their owners wake happier", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::DiningHall), label: "Dining", key: "^E", tip: "Dwarves carry their food here and eat in company", cat: 1 },
     // Piles: a stockpile told what it is for. The generic one above takes
     // anything; these take one class each, so the larder stays a larder.
     ToolButton { tool: Tool::Rect(UiKind::Stockpile), label: "Any", key: "p", tip: "A pile that takes whatever is brought to it", cat: 4 },
-    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Food)), label: "Food", key: "", tip: "Meals, drink, crops, seeds — barrels stand here", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Food)), label: "Food", key: "", tip: "Meals, drink, crops, seeds - barrels stand here", cat: 4 },
     ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Stone)), label: "Stone", key: "", tip: "Boulders, for the mason's reach", cat: 4 },
     ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Wood)), label: "Wood", key: "", tip: "Felled logs, for the carpenter's reach", cat: 4 },
-    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Bars)), label: "Bars", key: "", tip: "Smelted metal — bins stand here", cat: 4 },
-    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Goods)), label: "Goods", key: "", tip: "Crafts, cloth, leather, gems, glass — bins stand here", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Bars)), label: "Bars", key: "", tip: "Smelted metal - bins stand here", cat: 4 },
+    ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Goods)), label: "Goods", key: "", tip: "Crafts, cloth, leather, gems, glass - bins stand here", cat: 4 },
     ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Military)), label: "Arms", key: "", tip: "Weapons and armor for the squad", cat: 4 },
     ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Furniture)), label: "Furniture", key: "", tip: "Beds, statues, and empty casks", cat: 4 },
     ToolButton { tool: Tool::Rect(UiKind::Pile(dk_agents::StockCategory::Refuse)), label: "Refuse", key: "", tip: "The dead, until they are buried", cat: 4 },
@@ -606,21 +613,21 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Build(BuildingKind::Craftsdwarf), label: "Crafts", key: "m", tip: "Turns stone into decorative trade goods", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Loom), label: "Loom", key: "j", tip: "Weaves wool into cloth", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Jeweler), label: "Jeweler", key: ";", tip: "Cuts rough gems into brilliant ones", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Smelter), label: "Smelter", key: "\u{21e7}M", tip: "Smelts ore boulders into metal bars", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Forge), label: "Forge", key: "\u{21e7}F", tip: "Forges bars into weapons and armor", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Mason), label: "Mason", key: "\u{21e7}K", tip: "Carves stone into beds and statues", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Carpenter), label: "Carpenter", key: "\u{21e7}J", tip: "Works logs into barrels and instruments", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Clothier), label: "Clothier", key: "\u{21e7}C", tip: "Sews cloth into clothes", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Tanner), label: "Tanner", key: "\u{21e7}N", tip: "Tans hides into leather", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::GlassFurnace), label: "Glass", key: "\u{21e7}G", tip: "Melts stone into blown glass", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Well), label: "Well", key: "\u{21e7}P", tip: "Draw water when the drink runs out", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::Trap), label: "Trap", key: "\u{21e7}T", tip: "A weapon trap that shreds raiders", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Smelter), label: "Smelter", key: "^M", tip: "Smelts ore boulders into metal bars", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Forge), label: "Forge", key: "^F", tip: "Forges bars into weapons and armor", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Mason), label: "Mason", key: "^K", tip: "Carves stone into beds and statues", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Carpenter), label: "Carpenter", key: "^J", tip: "Works logs into barrels and instruments", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Clothier), label: "Clothier", key: "^C", tip: "Sews cloth into clothes", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Tanner), label: "Tanner", key: "^N", tip: "Tans hides into leather", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::GlassFurnace), label: "Glass", key: "^G", tip: "Melts stone into blown glass", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Well), label: "Well", key: "^P", tip: "Draw water when the drink runs out", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::Trap), label: "Trap", key: "^T", tip: "A weapon trap that shreds raiders", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Tomb), label: "Tomb", key: "b", tip: "Bury the dead so their ghosts rest", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Floodgate), label: "Gate", key: "g", tip: "A floodgate, opened and shut by a linked lever", cat: 2 },
     // --- Orders (cat 3)
     ToolButton { tool: Tool::Enlist, label: "Enlist", key: "i", tip: "Make the dwarf here a soldier (click again to dismiss)", cat: 3 },
     ToolButton { tool: Tool::Cull, label: "Cull", key: "u", tip: "Mark the animal here to be slaughtered for meat", cat: 3 },
-    ToolButton { tool: Tool::WarDog, label: "War Dog", key: "\u{21e7}U", tip: "Train the dog here into a war beast", cat: 3 },
+    ToolButton { tool: Tool::WarDog, label: "War Dog", key: "^U", tip: "Train the dog here into a war beast", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Defend), label: "Defend", key: "", tip: "Selected squad (or all) hunts any hostile in the fort -- Tab or click a soldier to pick a squad", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Station), label: "Station", key: "", tip: "Selected squad (or all) holds the clicked post, striking only what nears it", cat: 3 },
     ToolButton { tool: Tool::Order(OrderTool::Patrol), label: "Patrol", key: "", tip: "Selected squad (or all) walks a beat between two clicked points, striking what nears the route", cat: 3 },
@@ -769,7 +776,7 @@ fn load_or_make_world() -> World {
                     return world;
                 }
                 Ok((v, _)) => warn!(
-                    "saved world is from worldgen v{v} (this is v{WORLDGEN_VERSION}) — rebuilding it"
+                    "saved world is from worldgen v{v} (this is v{WORLDGEN_VERSION}) - rebuilding it"
                 ),
                 Err(e) => warn!("saved world unreadable ({e}); rebuilding it"),
             }
@@ -911,6 +918,183 @@ fn cap_first(s: &str) -> String {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
     }
+}
+
+/// The Legends browser's tabs. The last, Chronicle, is the flat scroll of
+/// everything; the rest are indexes you can drill into.
+const LEGEND_CATS: [&str; 6] = ["Figures", "Sites", "Beasts", "Gods", "Artifacts", "Chronicle"];
+
+/// One browsable entry: a one-line `label` for the index, a `key` used to find
+/// the events that mention it, and `facts` for the head of its detail page.
+struct LegendEntry {
+    label: String,
+    key: String,
+    facts: Vec<String>,
+}
+
+/// The entries of a browser tab (0..=4; Chronicle has none — it is the roll).
+fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
+    match cat {
+        0 => {
+            // Figures, the greatest slayers first.
+            let mut fs: Vec<&dk_history::Figure> = world.figures.iter().collect();
+            fs.sort_by_key(|f| (std::cmp::Reverse(f.kills), f.id));
+            fs.iter()
+                .map(|f| {
+                    let civ = &world.civs[f.civ].name;
+                    let role = if f.necromancer { "necromancer" } else { f.role.name() };
+                    let kills = if f.kills > 0 { format!(" | {} kills", f.kills) } else { String::new() };
+                    let dead = if f.died_year.is_some() { " (dead)" } else { "" };
+                    let label = format!("{} - {} of {}{}{}", f.name, role, civ, kills, dead);
+                    let mut facts = vec![
+                        format!("{}, {} of {}", f.name, role, civ),
+                        format!(
+                            "born {} | {}",
+                            f.born_year,
+                            f.died_year.map(|y| format!("died year {y}")).unwrap_or_else(|| "still living".into())
+                        ),
+                    ];
+                    if f.kills > 0 {
+                        facts.push(format!("{} slain in battle", f.kills));
+                    }
+                    if let Some(g) = f.worships {
+                        facts.push(format!("worships {}", world.deities[g].name));
+                    }
+                    if f.necromancer {
+                        facts.push("has unearthed the secret of life and death".into());
+                    }
+                    if !f.grudges.is_empty() {
+                        facts.push(format!("nurses {} grudge(s)", f.grudges.len()));
+                    }
+                    LegendEntry { label, key: f.name.clone(), facts }
+                })
+                .collect()
+        }
+        1 => {
+            // Sites, grandest first.
+            let mut ss: Vec<&dk_history::Site> = world.sites.iter().collect();
+            ss.sort_by_key(|s| (s.ruined, std::cmp::Reverse(s.population)));
+            ss.iter()
+                .map(|s| {
+                    let civ = &world.civs[s.civ].name;
+                    let ruin = if s.ruined { " (ruins)" } else { "" };
+                    let label = format!("{} - {} of {}{}", s.name, s.kind.noun(), civ, ruin);
+                    let facts = vec![
+                        format!("{}, a {} of {}", s.name, s.kind.noun(), civ),
+                        if s.ruined { "now in ruins".into() } else { format!("population {}", s.population) },
+                        format!("founded in year {}", s.founded_year),
+                    ];
+                    LegendEntry { label, key: s.name.clone(), facts }
+                })
+                .collect()
+        }
+        2 => world
+            .beasts
+            .iter()
+            .map(|b| {
+                let label = match &b.slayer {
+                    Some(s) => format!("{}, the {} - slain by {}", b.name, b.kind.noun(), s),
+                    None => format!("{}, the {} - at large", b.name, b.kind.noun()),
+                };
+                let mut facts = vec![
+                    format!("{}, a {}", b.name, b.kind.noun()),
+                    format!("{} slain, {} sites razed", b.kills, b.razed),
+                ];
+                match (&b.slayer, b.died_year) {
+                    (Some(s), Some(y)) => facts.push(format!("slain by {} in year {}", s, y)),
+                    _ => facts.push("still stalks the world".into()),
+                }
+                LegendEntry { label, key: b.name.clone(), facts }
+            })
+            .collect(),
+        3 => {
+            let mut ds: Vec<&dk_history::Deity> = world.deities.iter().collect();
+            let count = |id: usize| world.figures.iter().filter(|f| f.worships == Some(id)).count();
+            ds.sort_by_key(|d| std::cmp::Reverse(count(d.id)));
+            ds.iter()
+                .map(|d| {
+                    let spheres = d.spheres.iter().map(|s| s.noun()).collect::<Vec<_>>().join(", ");
+                    let n = count(d.id);
+                    let label = format!("{} - deity of {} | {} worshippers", d.name, spheres, n);
+                    let facts = vec![
+                        format!("{}, deity of {}", d.name, spheres),
+                        format!("{} known worshippers", n),
+                    ];
+                    LegendEntry { label, key: d.name.clone(), facts }
+                })
+                .collect()
+        }
+        4 => world
+            .artifacts
+            .iter()
+            .map(|a| {
+                let lost = if a.lost { " (lost)" } else { "" };
+                let label = format!("{}, {}{}", a.name, a.kind, lost);
+                let facts = vec![
+                    format!("{}, {}", a.name, a.kind),
+                    format!("forged by {} in year {}", a.creator, a.created_year),
+                ];
+                LegendEntry { label, key: a.name.clone(), facts }
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// An entry's detail page: its facts, then every chronicle line that names it.
+fn legend_detail(world: &World, entry: &LegendEntry) -> Vec<String> {
+    let mut out = entry.facts.clone();
+    out.push(String::new());
+    out.push("- Chronicled deeds -".to_string());
+    let mut any = false;
+    for e in &world.events {
+        if e.text.contains(&entry.key) {
+            out.push(format!("Year {:>3}: {}", e.year, e.text));
+            any = true;
+        }
+    }
+    if !any {
+        out.push("(no deeds recorded in the annals)".to_string());
+    }
+    out
+}
+
+/// Produce the title line and body lines for the Legends browser in its current
+/// state — a category index, a drilled-in detail page, or the full Chronicle.
+fn legends_view(sim: Option<&Sim>, world: &World, st: &LegendsState) -> (String, Vec<String>) {
+    let wname: &str = if world.name.is_empty() { "the world" } else { &world.name };
+    let cat = st.category.min(LEGEND_CATS.len() - 1);
+    // The Chronicle tab: the whole roll, no drill-down.
+    if cat == LEGEND_CATS.len() - 1 {
+        let body = legends_all(sim, world);
+        let title = format!(
+            "Legends of {} :: Chronicle - {} entries   [< > tabs | up/down scroll | y close]",
+            wname,
+            body.len()
+        );
+        return (title, body);
+    }
+    let entries = legend_entries(world, cat);
+    // A drilled-in detail page.
+    if let Some(i) = st.detail {
+        if let Some(entry) = entries.get(i) {
+            let title = format!("{} :: {}   [Esc back | up/down scroll | y close]", wname, entry.label);
+            return (title, legend_detail(world, entry));
+        }
+    }
+    // The category index, cursor-marked.
+    let body: Vec<String> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| if i == st.cursor { format!("> {}", e.label) } else { format!("  {}", e.label) })
+        .collect();
+    let title = format!(
+        "Legends of {} :: {} ({})   [< > tabs | up/down move | Enter open | y close]",
+        wname,
+        LEGEND_CATS[cat],
+        entries.len()
+    );
+    (title, body)
 }
 
 /// The full Legends scroll: the active fortress's own anthology of poetry
@@ -1346,7 +1530,13 @@ fn main() {
         .insert_resource(Registry(raws))
         .insert_resource(WorldRes(world))
         .insert_resource(ScreenRes(screen))
-        .insert_resource(LegendsState { scroll: 0, from: Screen::Embark })
+        .insert_resource(LegendsState {
+            scroll: 0,
+            from: Screen::Embark,
+            category: 0,
+            cursor: 0,
+            detail: None,
+        })
         .insert_resource(TradeState::default())
         .insert_resource(HasSave(save_path().exists()))
         .insert_resource(SimRes(sim))
@@ -2100,7 +2290,7 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
         UiKind::Mine => {
             if sim.designate_rect(DesignationKind::Mine, a, b) == 0 {
                 sim.log_event(
-                    "Nothing solid to mine there. Mining only cuts rock walls — on the \
+                    "Nothing solid to mine there. Mining only cuts rock walls - on the \
                      open surface, dig Stairs (x) downward first to reach stone, or mine \
                      into a hillside."
                         .to_string(),
@@ -3082,27 +3272,76 @@ fn handle_input(
         dirty.0 = true;
         return;
     }
-    // ---- Legends screen: scroll and close.
+    // ---- Legends browser: tabs, an index cursor, and drill-down pages.
     if screen.0 == Screen::Legends {
-        // The view never scrolls past the last full page.
-        let total = legends_all(sim.0.as_ref(), &world.0).len();
+        let n_cats = LEGEND_CATS.len();
+        let is_chronicle = legends.category == n_cats - 1;
+        let in_detail = legends.detail.is_some();
+        let list_mode = !is_chronicle && !in_detail;
+        let entry_count = if list_mode { legend_entries(&world.0, legends.category).len() } else { 0 };
+        // Total lines in whatever view is showing, for scroll clamping.
+        let total = legends_view(sim.0.as_ref(), &world.0, &legends).1.len();
         let max_scroll = total.saturating_sub(LEGENDS_PAGE);
         let held = |key: KeyCode, keys: &ButtonInput<KeyCode>, repeat: &MoveRepeat| {
             keys.just_pressed(key) || (keys.pressed(key) && repeat.0.just_finished())
         };
-        if held(KeyCode::ArrowDown, &keys, &repeat) {
-            legends.scroll = (legends.scroll + 1).min(max_scroll);
+
+        // Tabs: left/right switch category (not while drilled into a page).
+        if !in_detail {
+            let step = if keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::BracketRight) {
+                1
+            } else if keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::BracketLeft) {
+                n_cats - 1
+            } else {
+                0
+            };
+            if step != 0 {
+                legends.category = (legends.category + step) % n_cats;
+                legends.cursor = 0;
+                legends.scroll = 0;
+            }
         }
-        if held(KeyCode::ArrowUp, &keys, &repeat) {
-            legends.scroll = legends.scroll.saturating_sub(1);
+
+        if list_mode && entry_count > 0 {
+            // Move the entry cursor and keep it on screen.
+            if held(KeyCode::ArrowDown, &keys, &repeat) {
+                legends.cursor = (legends.cursor + 1).min(entry_count - 1);
+            }
+            if held(KeyCode::ArrowUp, &keys, &repeat) {
+                legends.cursor = legends.cursor.saturating_sub(1);
+            }
+            if legends.cursor < legends.scroll {
+                legends.scroll = legends.cursor;
+            } else if legends.cursor >= legends.scroll + LEGENDS_PAGE {
+                legends.scroll = legends.cursor + 1 - LEGENDS_PAGE;
+            }
+            // Open the highlighted entry's page.
+            if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+                legends.detail = Some(legends.cursor);
+                legends.scroll = 0;
+            }
+        } else {
+            // Chronicle or a detail page: plain scrolling.
+            if held(KeyCode::ArrowDown, &keys, &repeat) {
+                legends.scroll = (legends.scroll + 1).min(max_scroll);
+            }
+            if held(KeyCode::ArrowUp, &keys, &repeat) {
+                legends.scroll = legends.scroll.saturating_sub(1);
+            }
+            if keys.just_pressed(KeyCode::PageDown) {
+                legends.scroll = (legends.scroll + LEGENDS_PAGE).min(max_scroll);
+            }
+            if keys.just_pressed(KeyCode::PageUp) {
+                legends.scroll = legends.scroll.saturating_sub(LEGENDS_PAGE);
+            }
         }
-        if keys.just_pressed(KeyCode::PageDown) {
-            legends.scroll = (legends.scroll + LEGENDS_PAGE).min(max_scroll);
-        }
-        if keys.just_pressed(KeyCode::PageUp) {
-            legends.scroll = legends.scroll.saturating_sub(LEGENDS_PAGE);
-        }
-        if keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::Escape) {
+
+        // Esc backs out of a page, then closes; y always closes.
+        if keys.just_pressed(KeyCode::Escape) && in_detail {
+            legends.detail = None;
+            legends.scroll = 0;
+            dirty.0 = true;
+        } else if keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::Escape) {
             screen.0 = if sim.0.is_some() { legends.from } else { Screen::Embark };
             dirty.0 = true;
         }
@@ -5135,20 +5374,20 @@ fn update_hud(
             } else {
                 "sparse trees"
             };
-            let volcano = if region.volcanism >= 100 { " · VOLCANO" } else { "" };
+            let volcano = if region.volcanism >= 100 { " | VOLCANO" } else { "" };
             let neighbours = world
                 .0
                 .nearest_friendly_civ(rx, ry)
                 .map(|c| format!("neighbors: {} of the {}", c.name, c.race.name()))
-                .unwrap_or_else(|| "neighbors: none — you are alone".to_string());
+                .unwrap_or_else(|| "neighbors: none | you are alone".to_string());
             for mut text in &mut q {
                 text.0 = format!(
-                    "Dwarf Kingdom :: Choose your embark in {}   (seed {} — n: forge a new world)\n\
-                     {} years of history · {} civilizations · {} sites · {} named figures\n\
-                     {} · {} gods · {} great beasts · {} artifacts\n\
-                     {} ({}) — {}{}{}\n\
-                     surroundings: {} · temperature {}C · elevation {} · rainfall {} · drainage {}\n\
-                     {} · {}{}\n\
+                    "Dwarf Kingdom :: Choose your embark in {}   (seed {} | n: forge a new world)\n\
+                     {} years of history | {} civilizations | {} sites | {} named figures\n\
+                     {} | {} gods | {} great beasts | {} artifacts\n\
+                     {} ({}) | {}{}{}\n\
+                     surroundings: {} | temperature {}C | elevation {} | rainfall {} | drainage {}\n\
+                     {} | {}{}\n\
                      {}\n\
                      {}\n\
                      {}\n\
@@ -5191,7 +5430,7 @@ fn update_hud(
             if !scroll.is_changed() && !screen.is_changed() {
                 return;
             }
-            let lines = legends_all(sim.0.as_ref(), &world.0);
+            let (title, lines) = legends_view(sim.0.as_ref(), &world.0, &scroll);
             let top = scroll.scroll.min(lines.len().saturating_sub(1));
             let body: String = lines
                 .iter()
@@ -5200,12 +5439,7 @@ fn update_hud(
                 .map(|l| format!("\n{l}"))
                 .collect();
             for mut text in &mut q {
-                text.0 = format!(
-                    "Legends of {} — {} entries (up/down to scroll, y/Esc to close)\n{}",
-                    if world.0.name.is_empty() { "the world" } else { &world.0.name },
-                    lines.len(),
-                    body
-                );
+                text.0 = format!("{}\n{}", title, body);
             }
             return;
         }
@@ -5224,12 +5458,12 @@ fn update_hud(
             let d = &sim.dwarves[hero];
             let quest = match &sim.quest {
                 Some((name, false)) => format!("Quest: slay {name}"),
-                Some((name, true)) => format!("Quest complete — {name} is slain!"),
+                Some((name, true)) => format!("Quest complete - {name} is slain!"),
                 None => "Wander freely.".to_string(),
             };
             let status = if d.alive {
                 format!(
-                    "{} — torso {} · blood {:.0} · hunger {:.0} thirst {:.0}",
+                    "{} - torso {} | blood {:.0} | hunger {:.0} thirst {:.0}",
                     d.name, d.body[1].hp, d.blood, d.hunger, d.thirst
                 )
             } else {
@@ -5322,7 +5556,7 @@ fn update_hud(
             for mut text in &mut q {
                 text.0 = format!(
                     "Dwarf Kingdom :: Trading with {}\n\
-                     offering {offered} · they ask {need} (their price {asked} + the road)\n\
+                     offering {offered} | they ask {need} (their price {asked} + the road)\n\
                      tab/arrows: switch column & move   space: select   Enter: strike the deal   Esc: walk away\n\
                      {}\n\n{left}\n{right}",
                     caravan.civ_name, trade.message
@@ -5355,7 +5589,7 @@ fn update_hud(
     if let Some(farm) = sim.0.farms.get(&here) {
         let plant = reg.0.plants.get(farm.crop);
         under = format!(
-            "{under} · {} farm ({})",
+            "{under} | {} farm ({})",
             plant.name,
             match farm.state {
                 FarmState::Fallow => "fallow".to_string(),
@@ -5368,7 +5602,7 @@ fn update_hud(
         );
     }
     if let Some(b) = sim.0.building_at(here) {
-        under = format!("{under} · {}", b.kind.name());
+        under = format!("{under} | {}", b.kind.name());
     }
     // Say what a pile is for — "stockpile (food)" — so the player can tell
     // their larder from their stoneyard without guessing at the tint.
@@ -5384,23 +5618,23 @@ fn update_hud(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        under = format!("{under} · stockpile ({what})");
+        under = format!("{under} | stockpile ({what})");
     }
     if let Some(scene) = sim.0.engravings.get(&here) {
-        under = format!("{under} · {scene}");
+        under = format!("{under} | {scene}");
     }
     let water = sim.0.map.water_at(here);
     if water > 0 {
-        under = format!("{under} · water {water}/7");
+        under = format!("{under} | water {water}/7");
     }
     let magma = sim.0.map.magma_at(here);
     if magma > 0 {
-        under = format!("{under} · MAGMA {magma}/7");
+        under = format!("{under} | MAGMA {magma}/7");
     }
     if let Some(a) = sim.0.animal_at(here) {
         let stage = if a.is_adult() { "" } else { " (calf)" };
         let mark = if a.marked { " [marked to cull]" } else { "" };
-        under = format!("{under} · {}{}{}", a.kind.name(), stage, mark);
+        under = format!("{under} | {}{}{}", a.kind.name(), stage, mark);
     }
     // A container and its contents share a tile, so describe the container —
     // never one of the things packed inside it. Contents are summarized below.
@@ -5471,7 +5705,7 @@ fn update_hud(
         } else {
             what
         };
-        under = format!("{under} · {what}");
+        under = format!("{under} | {what}");
     }
 
     // Dwarf inspection panel.
@@ -5481,10 +5715,10 @@ fn update_hud(
         .iter()
         .find(|d| d.alive && d.pos == here)
         .map(|d| {
-            let wounds = if d.is_wounded() { " · WOUNDED" } else { "" };
-            let role = if d.soldier { " · SOLDIER" } else { "" };
+            let wounds = if d.is_wounded() { " | WOUNDED" } else { "" };
+            let role = if d.soldier { " | SOLDIER" } else { "" };
             let mut s = format!(
-                "\n{} — {} · happiness {:.0} stress {:.0} · hunger {:.0} thirst {:.0} · blood {:.0}{}",
+                "\n{} - {} | happiness {:.0} stress {:.0} | hunger {:.0} thirst {:.0} | blood {:.0}{}",
                 d.name,
                 d.task_name(),
                 d.happiness,
@@ -5503,7 +5737,7 @@ fn update_hud(
                 .unwrap_or(0);
             s.push_str(&format!("\n  {}", sim.0.biography(idx, &reg.0)));
             for (_, t) in d.thoughts.iter().rev().take(3) {
-                s.push_str(&format!("\n  · {} ({:+.0})", t.text(), t.delta()));
+                s.push_str(&format!("\n  | {} ({:+.0})", t.text(), t.delta()));
             }
             s
         })
@@ -5539,7 +5773,7 @@ fn update_hud(
     }
     let mode_txt = mode
         .0
-        .map(|(k, _)| format!("   [{} — move cursor, press key again to apply]", k.label()))
+        .map(|(k, _)| format!("   [{} - move cursor, press key again to apply]", k.label()))
         .unwrap_or_default();
     let alarm_txt = if sim.0.alarm { " [SOUNDED]" } else { "" };
     // The muster roll: one line per squad — its name, strength, standing order,

@@ -2250,7 +2250,7 @@ impl World {
     pub fn ages_lines(&self) -> Vec<String> {
         self.ages()
             .iter()
-            .map(|a| format!("{} — year {} to {}", a.name, a.start, a.end))
+            .map(|a| format!("{} - year {} to {}", a.name, a.start, a.end))
             .collect()
     }
 
@@ -2260,11 +2260,11 @@ impl World {
             .iter()
             .map(|b| match (&b.slayer, b.died_year) {
                 (Some(slayer), Some(dy)) => format!(
-                    "{}, the {} — {} slain, {} sites razed; slain by {} in year {}",
+                    "{}, the {} - {} slain, {} sites razed; slain by {} in year {}",
                     b.name, b.kind.noun(), b.kills, b.razed, slayer, dy
                 ),
                 _ => format!(
-                    "{}, the {} — still stalks {} ({} slain, {} sites razed)",
+                    "{}, the {} - still stalks {} ({} slain, {} sites razed)",
                     b.name,
                     b.kind.noun(),
                     self.region_name_at(b.lair),
@@ -2287,7 +2287,7 @@ impl World {
             .iter()
             .map(|(d, n)| {
                 let spheres = d.spheres.iter().map(|s| s.noun()).collect::<Vec<_>>().join(", ");
-                format!("{}, {} of {} — {} known worshippers", d.name, deity_word(&d.spheres), spheres, n)
+                format!("{}, {} of {} - {} known worshippers", d.name, deity_word(&d.spheres), spheres, n)
             })
             .collect()
     }
@@ -2317,12 +2317,12 @@ impl World {
                 let civ = &self.civs[s.civ].name;
                 if s.ruined {
                     format!(
-                        "{}, a {} of {} — now in ruins (founded year {})",
+                        "{}, a {} of {} - now in ruins (founded year {})",
                         s.name, s.kind.noun(), civ, s.founded_year
                     )
                 } else {
                     format!(
-                        "{}, a {} of {} — pop. {} (founded year {})",
+                        "{}, a {} of {} - pop. {} (founded year {})",
                         s.name, s.kind.noun(), civ, s.population, s.founded_year
                     )
                 }
