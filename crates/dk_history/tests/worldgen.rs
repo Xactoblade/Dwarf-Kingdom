@@ -416,6 +416,33 @@ fn the_world_has_beasts_ages_and_artifacts() {
 }
 
 #[test]
+fn the_world_has_gods_and_lines_of_rulers() {
+    let w = World::generate(31337, 48, 48, 200);
+    // A pantheon exists and most named figures worship one of its gods.
+    assert!(w.deities.len() >= 8, "the world has a pantheon");
+    let devout = w.figures.iter().filter(|f| f.worships.is_some()).count();
+    assert!(devout * 2 > w.figures.len(), "most of the named hold a god dear");
+    // Every worshipped god is a real one.
+    for f in &w.figures {
+        if let Some(g) = f.worships {
+            assert!(g < w.deities.len(), "{} prays to a real god", f.name);
+        }
+    }
+    // Rulers are succeeded: over 200 years a civ names more than one leader.
+    use dk_history::Role;
+    let leaders_of_first = w
+        .figures
+        .iter()
+        .filter(|f| f.civ == 0 && f.role == Role::Leader)
+        .count();
+    assert!(leaders_of_first >= 2, "a people outlives its first ruler ({leaders_of_first})");
+    // Deterministic.
+    let b = World::generate(31337, 48, 48, 200);
+    assert_eq!(w.pantheon_lines(), b.pantheon_lines());
+    assert_eq!(w.living_rulers(), b.living_rulers());
+}
+
+#[test]
 fn every_people_builds_after_its_own_fashion() {
     use dk_history::{Race, SiteKind};
     let w = World::generate(31337, 48, 48, 200);

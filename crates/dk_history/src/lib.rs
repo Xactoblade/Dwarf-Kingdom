@@ -1164,6 +1164,77 @@ impl Role {
     }
 }
 
+/// A domain a god holds sway over — Dwarf Fortress gods are defined by their
+/// spheres, and a figure tends to worship one that fits their calling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sphere {
+    War,
+    Death,
+    Fire,
+    Water,
+    Earth,
+    Wealth,
+    Craft,
+    Wisdom,
+    Fate,
+    Nature,
+    Love,
+    Trickery,
+    Storm,
+    Fortune,
+    Order,
+    Mountains,
+}
+
+impl Sphere {
+    pub fn noun(self) -> &'static str {
+        match self {
+            Sphere::War => "war",
+            Sphere::Death => "death",
+            Sphere::Fire => "fire",
+            Sphere::Water => "water",
+            Sphere::Earth => "earth",
+            Sphere::Wealth => "wealth",
+            Sphere::Craft => "craft",
+            Sphere::Wisdom => "wisdom",
+            Sphere::Fate => "fate",
+            Sphere::Nature => "nature",
+            Sphere::Love => "love",
+            Sphere::Trickery => "trickery",
+            Sphere::Storm => "storms",
+            Sphere::Fortune => "fortune",
+            Sphere::Order => "order",
+            Sphere::Mountains => "mountains",
+        }
+    }
+
+    pub const ALL: [Sphere; 16] = [
+        Sphere::War, Sphere::Death, Sphere::Fire, Sphere::Water, Sphere::Earth,
+        Sphere::Wealth, Sphere::Craft, Sphere::Wisdom, Sphere::Fate, Sphere::Nature,
+        Sphere::Love, Sphere::Trickery, Sphere::Storm, Sphere::Fortune, Sphere::Order,
+        Sphere::Mountains,
+    ];
+
+    /// The spheres a role is drawn to worship.
+    fn for_role(role: Role) -> &'static [Sphere] {
+        match role {
+            Role::Warrior | Role::Warlord => {
+                &[Sphere::War, Sphere::Death, Sphere::Fire, Sphere::Storm]
+            }
+            Role::Scholar => &[Sphere::Wisdom, Sphere::Fate, Sphere::Craft, Sphere::Nature],
+            Role::Leader => &[Sphere::Order, Sphere::Wealth, Sphere::Fortune, Sphere::Mountains],
+        }
+    }
+}
+
+/// A god of the world's pantheon, known by the spheres it holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deity {
+    pub id: usize,
+    pub name: String,
+    pub spheres: Vec<Sphere>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Figure {
     pub id: usize,
@@ -1174,6 +1245,9 @@ pub struct Figure {
     pub born_year: i64,
     pub died_year: Option<u32>,
     pub kills: u32,
+    /// The god this figure holds most dear, if any.
+    #[serde(default)]
+    pub worships: Option<usize>,
     /// (year, text) — personal reasons for hatred, referenced by sieges.
     pub grudges: Vec<(u32, String)>,
 }
@@ -1267,16 +1341,31 @@ pub struct HistoricalEvent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct World {
     pub seed: u64,
+    /// The name this world goes by — "Ustolgrath, the World of Echoes".
+    #[serde(default)]
+    pub name: String,
     pub overworld: Overworld,
     pub civs: Vec<Civilization>,
     pub sites: Vec<Site>,
     pub figures: Vec<Figure>,
+    #[serde(default)]
+    pub deities: Vec<Deity>,
     #[serde(default)]
     pub beasts: Vec<Megabeast>,
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
     pub events: Vec<HistoricalEvent>,
     pub years_simulated: u32,
+}
+
+/// Whether a god of these spheres reads as a single-domain "god" or a
+/// many-sphered "deity".
+fn deity_word(spheres: &[Sphere]) -> &'static str {
+    if spheres.len() > 1 {
+        "deity"
+    } else {
+        "god"
+    }
 }
 
 /// Uppercase the first letter — civ names begin with "the", and events
@@ -1297,10 +1386,12 @@ impl World {
         let overworld = Overworld::generate_verified(&mut rng, width, height);
         let mut world = World {
             seed,
+            name: String::new(),
             overworld,
             civs: Vec::new(),
             sites: Vec::new(),
             figures: Vec::new(),
+            deities: Vec::new(),
             beasts: Vec::new(),
             artifacts: Vec::new(),
             events: Vec::new(),
@@ -1308,6 +1399,8 @@ impl World {
         };
         world.place_civs(&mut rng);
         world.simulate(&mut rng, years);
+        // Name the world last, so a name draw can't disturb its history.
+        world.name = names::world_name(&mut rng);
         world
     }
 
@@ -1425,9 +1518,50 @@ impl World {
             born_year: year as i64 - rng.gen_range(18..40),
             died_year: None,
             kills: 0,
+            worships: None,
             grudges: Vec::new(),
         });
+        // A figure holds dear a god whose spheres fit their calling.
+        if !self.deities.is_empty() {
+            let pref = Sphere::for_role(role);
+            let cands: Vec<usize> = self
+                .deities
+                .iter()
+                .filter(|d| d.spheres.iter().any(|s| pref.contains(s)))
+                .map(|d| d.id)
+                .collect();
+            let god = if cands.is_empty() {
+                rng.gen_range(0..self.deities.len())
+            } else {
+                cands[rng.gen_range(0..cands.len())]
+            };
+            self.figures[id].worships = Some(god);
+        }
         id
+    }
+
+    /// Raise the pantheon the peoples will pray to — a handful of gods, each
+    /// holding one to three spheres.
+    fn generate_pantheon(&mut self, rng: &mut ChaCha8Rng) {
+        let count = 8 + rng.gen_range(0..7); // 8..=14 gods
+        for _ in 0..count {
+            let n = 1 + rng.gen_range(0..3usize); // 1..=3 spheres
+            let mut mine: Vec<Sphere> = Vec::new();
+            for _ in 0..n {
+                let s = Sphere::ALL[rng.gen_range(0..Sphere::ALL.len())];
+                if !mine.contains(&s) {
+                    mine.push(s);
+                }
+            }
+            let id = self.deities.len();
+            let name = names::deity_name(rng);
+            let spheres = mine.iter().map(|s| s.noun()).collect::<Vec<_>>().join(", ");
+            self.event(
+                0,
+                format!("{}, {} of {}, was worshipped from the first age.", name, deity_word(&mine), spheres),
+            );
+            self.deities.push(Deity { id, name, spheres: mine });
+        }
     }
 
     /// The name of the country a region belongs to — for beast lairs and deeds.
@@ -1626,6 +1760,9 @@ impl World {
             self.years_simulated = years;
             return;
         }
+        // Raise the pantheon first, so every figure is born into a faith.
+        self.generate_pantheon(rng);
+
         // Seed each civ with a leader and a few notables.
         for c in 0..self.civs.len() {
             self.spawn_figure(rng, c, Role::Leader, 0);
@@ -1742,8 +1879,20 @@ impl World {
                 && rng.gen_ratio(1, 12)
             {
                 self.figures[f].died_year = Some(year);
-                let (name, civ) = (self.figures[f].name.clone(), self.civs[self.figures[f].civ].name.clone());
+                let civ_idx = self.figures[f].civ;
+                let (name, role) = (self.figures[f].name.clone(), self.figures[f].role);
+                let civ = self.civs[civ_idx].name.clone();
                 self.event(year, format!("{} of {} died of old age.", name, civ));
+                // A dead ruler is succeeded, so each people keeps its line of
+                // leaders down the years — a small dynasty in the chronicle.
+                if role == Role::Leader {
+                    let heir = self.spawn_figure(rng, civ_idx, Role::Leader, year);
+                    let hname = self.figures[heir].name.clone();
+                    self.event(
+                        year,
+                        format!("{} succeeded the late {} as leader of {}.", hname, name, civ),
+                    );
+                }
             }
         }
     }
@@ -1995,6 +2144,37 @@ impl World {
                     b.kills,
                     b.razed
                 ),
+            })
+            .collect()
+    }
+
+    /// One line per god, most-worshipped first, for the Legends browser.
+    pub fn pantheon_lines(&self) -> Vec<String> {
+        let mut order: Vec<(&Deity, usize)> = self
+            .deities
+            .iter()
+            .map(|d| (d, self.figures.iter().filter(|f| f.worships == Some(d.id)).count()))
+            .collect();
+        order.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        order
+            .iter()
+            .map(|(d, n)| {
+                let spheres = d.spheres.iter().map(|s| s.noun()).collect::<Vec<_>>().join(", ");
+                format!("{}, {} of {} — {} known worshippers", d.name, deity_word(&d.spheres), spheres, n)
+            })
+            .collect()
+    }
+
+    /// The living leader of each civ that still has one, for the embark header.
+    pub fn living_rulers(&self) -> Vec<(String, String)> {
+        self.civs
+            .iter()
+            .filter_map(|c| {
+                self.figures
+                    .iter()
+                    .rev()
+                    .find(|f| f.civ == c.id && f.role == Role::Leader && f.died_year.is_none())
+                    .map(|f| (c.name.clone(), f.name.clone()))
             })
             .collect()
     }

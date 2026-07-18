@@ -744,7 +744,8 @@ fn world_path() -> PathBuf {
 /// instead of 80, and the World struct gained `beasts`/`artifacts` fields.
 /// v3: sites gained a `kind` (city/fortress/hamlet/retreat/dark fortress) and
 /// a per-site `population`, which shifts the history RNG stream.
-const WORLDGEN_VERSION: u32 = 3;
+/// v4: a pantheon of gods, figures worship them, and dead rulers are succeeded.
+const WORLDGEN_VERSION: u32 = 4;
 
 /// The world this game is played in.
 ///
@@ -943,6 +944,12 @@ fn legends_all(sim: Option<&Sim>, world: &World) -> Vec<String> {
     if !ages.is_empty() {
         lines.push("=== The Ages of the World ===".to_string());
         lines.extend(ages);
+        lines.push(String::new());
+    }
+    let gods = world.pantheon_lines();
+    if !gods.is_empty() {
+        lines.push("=== The Pantheon ===".to_string());
+        lines.extend(gods);
         lines.push(String::new());
     }
     let beasts = world.beast_lines();
@@ -5106,9 +5113,9 @@ fn update_hud(
                 .unwrap_or_else(|| "neighbors: none — you are alone".to_string());
             for mut text in &mut q {
                 text.0 = format!(
-                    "Dwarf Kingdom :: Choose your embark   (world seed {} — n: forge a new world)\n\
+                    "Dwarf Kingdom :: Choose your embark in {}   (seed {} — n: forge a new world)\n\
                      {} years of history · {} civilizations · {} sites · {} named figures\n\
-                     {} · {} great beasts · {} artifacts\n\
+                     {} · {} gods · {} great beasts · {} artifacts\n\
                      {} ({}) — {}{}{}\n\
                      surroundings: {} · temperature {}C · elevation {} · rainfall {} · drainage {}\n\
                      {} · {}{}\n\
@@ -5116,12 +5123,14 @@ fn update_hud(
                      {}\n\
                      {}\n\
                      arrows/click: move   m: {} view   y: Legends{}",
+                    world.0.name,
                     world.0.seed,
                     world.0.years_simulated,
                     world.0.civs.len(),
                     world.0.sites.len(),
                     world.0.figures.len(),
                     cap_first(&world.0.current_age()),
+                    world.0.deities.len(),
                     world.0.beasts.len(),
                     world.0.artifacts.len(),
                     world.0.overworld.named[region.subregion].name,
@@ -5162,7 +5171,8 @@ fn update_hud(
                 .collect();
             for mut text in &mut q {
                 text.0 = format!(
-                    "Dwarf Kingdom :: Legends & Anthology — {} entries (up/down to scroll, y/Esc to close)\n{}",
+                    "Legends of {} — {} entries (up/down to scroll, y/Esc to close)\n{}",
+                    if world.0.name.is_empty() { "the world" } else { &world.0.name },
                     lines.len(),
                     body
                 );

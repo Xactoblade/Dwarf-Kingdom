@@ -180,6 +180,41 @@ pub fn artifact_name(rng: &mut ChaCha8Rng) -> String {
     s
 }
 
+// ------------------------------------------------------------------- world
+
+const WORLD_EPITHET: [&str; 16] = [
+    "Echoes", "Legends", "Wonder", "Mist", "the Long Dusk", "Iron", "Whispers",
+    "the Deep", "Ash", "Dawn", "Sorrows", "the Endless Song", "Bronze", "Storms",
+    "Quiet Stars", "the Old Roads",
+];
+
+/// The name a whole world goes by — "Ustolgrath, the World of Echoes".
+pub fn world_name(rng: &mut ChaCha8Rng) -> String {
+    let mut proper = String::from(pick(rng, &ART_ON));
+    proper.push_str(pick(rng, &ART_MID));
+    proper.push_str(pick(rng, &ART_END));
+    format!("{}, the World of {}", proper, pick(rng, &WORLD_EPITHET))
+}
+
+// ------------------------------------------------------------------ deities
+
+const DEITY_ON: [&str; 14] = [
+    "A", "Ka", "Lo", "Ma", "O", "Sa", "The", "U", "Ve", "Za", "Il", "Nu", "Ra", "Xe",
+];
+const DEITY_MID: [&str; 10] = ["la", "ru", "na", "mo", "ri", "sha", "tho", "le", "va", "zu"];
+const DEITY_END: [&str; 10] = ["th", "en", "sis", "ar", "il", "ux", "am", "dun", "ok", "eph"];
+
+/// A god's name — lofty and made of open, resonant syllables.
+pub fn deity_name(rng: &mut ChaCha8Rng) -> String {
+    let mut s = String::from(pick(rng, &DEITY_ON));
+    s.push_str(pick(rng, &DEITY_MID));
+    if rng.gen_ratio(1, 2) {
+        s.push_str(pick(rng, &DEITY_MID));
+    }
+    s.push_str(pick(rng, &DEITY_END));
+    s
+}
+
 const ART_MATERIAL: [&str; 8] =
     ["steel", "silver", "gold", "copper", "bronze", "obsidian", "platinum", "adamantine"];
 const ART_ITEM: [&str; 12] = [
