@@ -6494,7 +6494,7 @@ impl Sim {
         }
         // Weaponsmithing: forge a metal bar into a weapon to arm the soldiers.
         if w.weapons {
-            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+            if let Some((shop, input)) = self.craft_forge_pair(raws, dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeWeapon }, &mut best);
             }
@@ -6502,13 +6502,13 @@ impl Sim {
         // Armoring: forge a metal bar into plate to protect the soldiers. Shares
         // the forge and its bar stock with weaponsmithing.
         if w.armor {
-            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+            if let Some((shop, input)) = self.craft_forge_pair(raws, dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeArmor }, &mut best);
             }
         }
         if w.shields {
-            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+            if let Some((shop, input)) = self.craft_forge_pair(raws, dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeShield }, &mut best);
             }
@@ -6516,13 +6516,13 @@ impl Sim {
         // Crossbows for the marksdwarves, and the bolts they loose. Both draw a
         // bar at the forge like the other arms.
         if w.crossbows {
-            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+            if let Some((shop, input)) = self.craft_forge_pair(raws, dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeCrossbow }, &mut best);
             }
         }
         if w.bolts {
-            if let Some((shop, input)) = self.craft_forge_pair(dwarf_pos, my_region) {
+            if let Some((shop, input)) = self.craft_forge_pair(raws, dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::ForgeBolts }, &mut best);
             }
@@ -7015,8 +7015,11 @@ impl Sim {
 
     /// Nearest (forge, boulder) pair for forging a weapon.
     /// Nearest (forge, metal bar) pair for forging a weapon. Bars are the
-    /// forge's stock now — raw stone must be smelted at a smelter first.
-    fn craft_forge_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+    /// forge's stock now — raw stone must be smelted at a smelter first. Of the
+    /// bars on hand the smith reaches for the HARDEST metal first (steel over
+    /// iron over bronze), nearest as the tiebreak, so hard-won steel is spent on
+    /// arms rather than left in the corner.
+    fn craft_forge_pair(&self, raws: &Raws, near: Pos, region: u32) -> Option<(Pos, usize)> {
         let shop = self
             .buildings
             .iter()
@@ -7031,9 +7034,28 @@ impl Sim {
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
             })
-            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .min_by_key(|(_, it)| {
+                let h = raws.materials.get(it.stuff).combat.hardness;
+                (std::cmp::Reverse((h * 100.0) as i64), it.pos.manhattan(near))
+            })
             .map(|(i, _)| i)?;
         Some((shop.pos, input))
+    }
+
+    /// Nearest takeable flux boulder in the region — the second ingredient of
+    /// steel, consumed with iron ore at the smelter.
+    fn nearest_flux_boulder(&self, raws: &Raws, near: Pos, region: u32) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+                    && raws.materials.get(it.stuff).is_flux
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)
     }
 
     /// Nearest (smelter, boulder) pair for smelting ore down into a metal bar.
@@ -8373,9 +8395,32 @@ impl Sim {
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::Smelt => {
-                                // The boulder's material carries into the bar.
+                                // The boulder's material carries into the bar —
+                                // unless it's iron ore and a flux stone is on
+                                // hand, in which case the two are cooked down
+                                // together into steel, the finest war-metal short
+                                // of adamantine.
                                 self.stats.bars_smelted += 1;
-                                self.spawn_quality_item(ItemKind::Bar, stuff, shop, q);
+                                let mat = raws.materials.get(stuff);
+                                let is_iron = mat.category == MaterialCategory::Ore
+                                    && mat.combat.hardness >= 90.0;
+                                let mut out = stuff;
+                                if is_iron {
+                                    let region = self.regions.id(shop);
+                                    if let (Some(steel), Some(flux)) = (
+                                        raws.materials.index_of("steel"),
+                                        self.nearest_flux_boulder(raws, shop, region),
+                                    ) {
+                                        self.items[flux].consumed = true;
+                                        self.items[flux].reserved_by = None;
+                                        out = steel as u16;
+                                        let name = self.dwarves[i].name.clone();
+                                        self.log_event(format!(
+                                            "{name} smelts iron and flux into steel."
+                                        ));
+                                    }
+                                }
+                                self.spawn_quality_item(ItemKind::Bar, out, shop, q);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::ForgeArmor => {
@@ -10185,7 +10230,9 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v70: broadened the stone list (new sedimentary/igneous/metamorphic rocks +
 // obsidian), which shifts material indices, so a pre-v70 fort save would read
 // the wrong stone — reject it rather than misinterpret.
-const SAVE_VERSION: u32 = 70;
+// v71: added the "steel" alloy material (and the is_flux flag), shifting indices
+// again — same reason to reject older saves.
+const SAVE_VERSION: u32 = 71;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

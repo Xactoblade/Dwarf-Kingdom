@@ -8,12 +8,13 @@
 
     // --- Sedimentary stone ---
     MaterialDef(id: "sandstone",     name: "Sandstone",     category: Sedimentary, color: (176, 145, 97),  value: 1),
-    MaterialDef(id: "limestone",     name: "Limestone",     category: Sedimentary, color: (184, 178, 160), value: 1),
+    // Limestone is a flux stone — smelt it with iron to make steel.
+    MaterialDef(id: "limestone",     name: "Limestone",     category: Sedimentary, color: (184, 178, 160), value: 1, is_flux: true),
     MaterialDef(id: "shale",         name: "Shale",         category: Sedimentary, color: (106, 110, 118), value: 1),
     MaterialDef(id: "mudstone",      name: "Mudstone",      category: Sedimentary, color: (128, 112, 96),  value: 1),
     MaterialDef(id: "siltstone",     name: "Siltstone",     category: Sedimentary, color: (150, 138, 120), value: 1),
-    MaterialDef(id: "chalk",         name: "Chalk",         category: Sedimentary, color: (232, 230, 222), value: 1),
-    MaterialDef(id: "dolomite",      name: "Dolomite",      category: Sedimentary, color: (198, 190, 175), value: 1),
+    MaterialDef(id: "chalk",         name: "Chalk",         category: Sedimentary, color: (232, 230, 222), value: 1, is_flux: true),
+    MaterialDef(id: "dolomite",      name: "Dolomite",      category: Sedimentary, color: (198, 190, 175), value: 1, is_flux: true),
     MaterialDef(id: "chert",         name: "Chert",         category: Sedimentary, color: (120, 116, 108), value: 1),
     MaterialDef(id: "conglomerate",  name: "Conglomerate",  category: Sedimentary, color: (160, 130, 110), value: 1),
 
@@ -29,7 +30,8 @@
         combat: CombatStats(sharpness: 2.6, density: 2.4, hardness: 55.0)),
 
     // --- Metamorphic stone ---
-    MaterialDef(id: "marble",    name: "Marble",    category: Metamorphic, color: (214, 210, 200), value: 2),
+    // Marble is a flux stone as well as a fine building stone.
+    MaterialDef(id: "marble",    name: "Marble",    category: Metamorphic, color: (214, 210, 200), value: 2, is_flux: true),
     MaterialDef(id: "gneiss",    name: "Gneiss",    category: Metamorphic, color: (120, 108, 100), value: 1),
     MaterialDef(id: "slate",     name: "Slate",     category: Metamorphic, color: (78, 82, 92),    value: 1),
     MaterialDef(id: "quartzite", name: "Quartzite", category: Metamorphic, color: (206, 198, 190), value: 2),
@@ -47,4 +49,10 @@
         combat: CombatStats(sharpness: 0.8, density: 7.3, hardness: 30.0)),  // tin: soft
     MaterialDef(id: "native_gold", name: "Native Gold", category: Ore,     color: (222, 178, 62),  value: 30,
         combat: CombatStats(sharpness: 0.7, density: 19.3, hardness: 20.0)),  // gold: for show, not war
+
+    // --- Alloys (made at the smelter, never mined) ---
+    // Steel: iron smelted with flux. Harder and keener than iron — the finest
+    // war-metal short of adamantine.
+    MaterialDef(id: "steel", name: "Steel", category: Alloy, color: (176, 182, 194), value: 40,
+        combat: CombatStats(sharpness: 1.3, density: 7.85, hardness: 150.0)),
 ]

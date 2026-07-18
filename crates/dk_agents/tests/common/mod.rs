@@ -10,6 +10,7 @@ pub fn test_raws() -> Raws {
         color: [100, 100, 100],
         value: 1,
         combat,
+        is_flux: false,
     };
     let stone = CombatStats::default();
     // Hematite forges into the fort's iron: a real weapon metal, so combat

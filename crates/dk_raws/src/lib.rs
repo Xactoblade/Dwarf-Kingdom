@@ -20,6 +20,9 @@ pub enum MaterialCategory {
     /// Adamantine — the deep, precious metal. Never placed by ordinary mapgen;
     /// seeded only in deep spires that, dug too greedily, breach the underworld.
     Adamantine,
+    /// A refined alloy — steel and its like. Never in the ground; made at the
+    /// smelter from ore and flux, so mapgen never queries this category.
+    Alloy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +39,10 @@ pub struct MaterialDef {
     /// dull, middling stone, fine for a wall and useless for a blade.
     #[serde(default)]
     pub combat: CombatStats,
+    /// A flux stone (limestone, marble, dolomite, chalk): consumed with iron at
+    /// the smelter to make steel. Defaulted false for ordinary rock.
+    #[serde(default)]
+    pub is_flux: bool,
 }
 
 /// A material's mechanical properties, as they matter in a fight. A pared-down
@@ -229,6 +236,7 @@ impl MaterialRegistry {
                 color: [120, 120, 120],
                 value: 0,
                 combat: CombatStats::default(),
+                is_flux: false,
             },
         })
     }

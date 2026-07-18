@@ -851,6 +851,7 @@ mod tests {
                     color: [1, 2, 3],
                     value: 1,
                     combat: Default::default(),
+                    is_flux: false,
                 })
                 .collect(),
         )
@@ -889,9 +890,9 @@ mod tests {
     fn generated_surface_is_walkable() {
         // registry() marks everything Soil; mapgen needs the stone categories.
         let reg = MaterialRegistry::from_defs(vec![
-            MaterialDef { id: "dirt".into(), name: "dirt".into(), category: MaterialCategory::Soil, color: [0; 3], value: 1, combat: Default::default() },
-            MaterialDef { id: "sed".into(), name: "sed".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1, combat: Default::default() },
-            MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1, combat: Default::default() },
+            MaterialDef { id: "dirt".into(), name: "dirt".into(), category: MaterialCategory::Soil, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "sed".into(), name: "sed".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
         ])
         .unwrap();
         use rand::SeedableRng;
@@ -924,11 +925,11 @@ mod tests {
 
     fn strata_reg() -> MaterialRegistry {
         MaterialRegistry::from_defs(vec![
-            MaterialDef { id: "loam".into(), name: "loam".into(), category: MaterialCategory::Soil, color: [1; 3], value: 1, combat: Default::default() },
-            MaterialDef { id: "clay".into(), name: "clay".into(), category: MaterialCategory::Soil, color: [2; 3], value: 1, combat: Default::default() },
-            MaterialDef { id: "sand".into(), name: "sand".into(), category: MaterialCategory::Soil, color: [3; 3], value: 1, combat: Default::default() },
-            MaterialDef { id: "sed".into(), name: "sed".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1, combat: Default::default() },
-            MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1, combat: Default::default() },
+            MaterialDef { id: "loam".into(), name: "loam".into(), category: MaterialCategory::Soil, color: [1; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "clay".into(), name: "clay".into(), category: MaterialCategory::Soil, color: [2; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "sand".into(), name: "sand".into(), category: MaterialCategory::Soil, color: [3; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "sed".into(), name: "sed".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
         ])
         .unwrap()
     }
