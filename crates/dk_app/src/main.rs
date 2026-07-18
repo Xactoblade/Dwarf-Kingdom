@@ -4776,7 +4776,14 @@ fn tile_visual(
 /// transparent gaps around objects (a tree no longer sits on a black square).
 /// Only visible where the foreground tile is transparent, i.e. on object tiles;
 /// plain terrain is opaque and covers it, so it need not reproduce every detail.
-fn tile_ground(sim: &Sim, raws: &Raws, x: i32, y: i32, view_z: i32) -> (Color, &'static str) {
+fn tile_ground(
+    sim: &Sim,
+    raws: &Raws,
+    x: i32,
+    y: i32,
+    view_z: i32,
+    traffic: &std::collections::HashMap<(i32, i32), f32>,
+) -> (Color, &'static str) {
     let clear = Color::srgba(0.0, 0.0, 0.0, 0.0);
     let here = Pos::new(x, y, view_z);
     if sim.map.water_at(here) > 0 {
@@ -4808,7 +4815,17 @@ fn tile_ground(sim: &Sim, raws: &Raws, x: i32, y: i32, view_z: i32) -> (Color, &
             Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.85),
         };
         rgb = mix(rgb, green, cover);
-        glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
+        // Worn dirt path where the fort treads most — matched to tile_visual so
+        // the ground beneath a tree on a trodden route reads brown like the path
+        // around it, not a green halo.
+        let wear = traffic.get(&(x, y)).copied().unwrap_or(0.0);
+        if t.shape == TileShape::Floor && wear > 0.7 {
+            let k = ((wear - 0.7) / 2.4).clamp(0.0, 0.82);
+            rgb = mix(rgb, [0.34, 0.26, 0.16], k);
+            glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
+        } else {
+            glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
+        }
     } else if m.category == MaterialCategory::Soil {
         glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
     } else {
@@ -4987,7 +5004,8 @@ fn redraw_tiles(
     // instead of a black square.
     if let Some(handles) = &tileset.0 {
         for (t, mut sprite) in &mut grounds {
-            let (color, glyph) = tile_ground(sim, &reg.0, t.x as i32, t.y as i32, view_z.0);
+            let (color, glyph) =
+                tile_ground(sim, &reg.0, t.x as i32, t.y as i32, view_z.0, &traffic.0);
             if let Some(atlas) = sprite.texture_atlas.as_mut() {
                 atlas.index = handles.index(glyph);
             }
