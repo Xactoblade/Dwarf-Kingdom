@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
+  <defs>
+    <!-- Cavern depth: warm at the heart of the hall, black at the edges -->
+    <radialGradient id="cave" cx="50%" cy="42%" r="75%">
+      <stop offset="0%"  stop-color="#3a2c1e"/>
+      <stop offset="38%" stop-color="#241a12"/>
+      <stop offset="72%" stop-color="#120c08"/>
+      <stop offset="100%" stop-color="#070504"/>
+    </radialGradient>
+    <!-- The glow spilling out through the great gate -->
+    <radialGradient id="gateGlow" cx="50%" cy="60%" r="60%">
+      <stop offset="0%"  stop-color="#ffcf7a"/>
+      <stop offset="30%" stop-color="#e8912f"/>
+      <stop offset="65%" stop-color="#7a3d14"/>
+      <stop offset="100%" stop-color="#2a1608" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#6b6560"/>
+      <stop offset="50%" stop-color="#4a453f"/>
+      <stop offset="100%" stop-color="#2c2823"/>
+    </linearGradient>
+    <linearGradient id="stoneDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#4c4640"/>
+      <stop offset="100%" stop-color="#221e1a"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#2a2019"/>
+      <stop offset="100%" stop-color="#0a0705"/>
+    </linearGradient>
+    <radialGradient id="torch" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#fff2c0"/>
+      <stop offset="35%" stop-color="#ffb347"/>
+      <stop offset="70%" stop-color="#c65b17" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#c65b17" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3a4d68"/>
+      <stop offset="55%" stop-color="#233247"/>
+      <stop offset="78%" stop-color="#5a3a1f"/>
+      <stop offset="100%" stop-color="#e79a34"/>
+    </linearGradient>
+    <radialGradient id="vignette" cx="50%" cy="45%" r="70%">
+      <stop offset="55%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.85"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Cavern backdrop -->
+  <rect width="1100" height="860" fill="url(#cave)"/>
+
+  <!-- ================= THE GREAT GATE ================= -->
+  <g>
+    <clipPath id="arch"><path d="M 405 470 L 405 250 Q 550 120 695 250 L 695 470 Z"/></clipPath>
+    <!-- The land seen through the arch: dusk sky to a warm horizon over peaks -->
+    <g clip-path="url(#arch)">
+      <rect x="405" y="120" width="290" height="360" fill="url(#sky)"/>
+      <!-- far range -->
+      <polygon points="405,360 470,250 530,315 590,235 660,320 695,285 695,470 405,470" fill="#1d2839"/>
+      <!-- near range, catching the horizon glow -->
+      <polygon points="405,470 405,395 500,300 560,360 630,300 695,370 695,470" fill="#33251a"/>
+      <!-- warm horizon band right at the mountains' feet -->
+      <rect x="405" y="392" width="290" height="30" fill="#ffb347" opacity="0.5"/>
+    </g>
+
+    <!-- Arch stonework (the ring of the gate) -->
+    <path d="M 375 490 L 375 245 Q 550 95 725 245 L 725 490 L 695 490 L 695 250 Q 550 130 405 250 L 405 490 Z"
+          fill="url(#stone)" stroke="#181410" stroke-width="3"/>
+    <!-- keystone -->
+    <path d="M 528 108 L 572 108 L 566 150 L 534 150 Z" fill="#7d766d" stroke="#181410" stroke-width="2"/>
+    <!-- carved runes on the keystone -->
+    <g stroke="#c9a24a" stroke-width="2" opacity="0.85" fill="none">
+      <path d="M 540 120 L 540 140 M 540 130 L 548 130 M 555 120 L 560 140 M 560 120 L 555 140"/>
+    </g>
+  </g>
+
+  <!-- ================= FLANKING PILLARS ================= -->
+  <g stroke="#141110" stroke-width="3">
+    <rect x="150" y="150" width="120" height="470" fill="url(#stoneDark)"/>
+    <rect x="830" y="150" width="120" height="470" fill="url(#stoneDark)"/>
+    <!-- pillar capitals -->
+    <rect x="132" y="150" width="156" height="34" fill="#5a534b"/>
+    <rect x="812" y="150" width="156" height="34" fill="#5a534b"/>
+    <!-- block seams -->
+    <g stroke="#0e0b09" stroke-width="1.5" opacity="0.7">
+      <path d="M 150 250 H 270 M 150 350 H 270 M 150 450 H 270 M 150 550 H 270 M 210 150 V 620"/>
+      <path d="M 830 250 H 950 M 830 350 H 950 M 830 450 H 950 M 830 550 H 950 M 890 150 V 620"/>
+    </g>
+  </g>
+
+  <!-- Gem / adamantine vein in the left wall -->
+  <g opacity="0.95">
+    <polygon points="70,430 92,415 108,450 84,470" fill="#38e0e8"/>
+    <polygon points="84,470 108,450 120,486 96,504" fill="#1fb9c4"/>
+    <polygon points="40,500 60,492 70,520 48,528" fill="#d84f5a"/>
+    <polygon points="1010,420 1032,405 1046,440 1022,458" fill="#f4c542"/>
+    <polygon points="1022,458 1046,440 1058,478 1034,494" fill="#c99a2c"/>
+  </g>
+
+  <!-- ================= TORCHES ================= -->
+  <g>
+    <!-- left torch glow + flame + bracket -->
+    <circle cx="310" cy="330" r="120" fill="url(#torch)"/>
+    <rect x="300" y="330" width="20" height="70" fill="#2a1a10"/>
+    <path d="M 310 300 Q 296 330 310 348 Q 324 330 310 300 Z" fill="#ffd257"/>
+    <path d="M 310 312 Q 302 332 310 344 Q 318 332 310 312 Z" fill="#fff6d0"/>
+    <!-- right torch -->
+    <circle cx="790" cy="330" r="120" fill="url(#torch)"/>
+    <rect x="780" y="330" width="20" height="70" fill="#2a1a10"/>
+    <path d="M 790 300 Q 776 330 790 348 Q 804 330 790 300 Z" fill="#ffd257"/>
+    <path d="M 790 312 Q 782 332 790 344 Q 798 332 790 312 Z" fill="#fff6d0"/>
+  </g>
+
+  <!-- ================= FLOOR ================= -->
+  <polygon points="0,620 1100,620 1100,860 0,860" fill="url(#floor)"/>
+  <!-- receding flagstone lines toward the gate -->
+  <g stroke="#000000" stroke-width="2" opacity="0.55">
+    <path d="M 550 620 L 250 860 M 550 620 L 850 860 M 550 620 L 60 860 M 550 620 L 1040 860"/>
+    <path d="M 0 690 H 1100 M 0 770 H 1100" opacity="0.4"/>
+  </g>
+  <!-- warm light pooling on the floor before the gate -->
+  <ellipse cx="550" cy="660" rx="230" ry="60" fill="#b9721f" opacity="0.35"/>
+
+  <!-- an anvil silhouette, off to one side, marking the craft -->
+  <g fill="#0c0a08" opacity="0.9">
+    <path d="M 360 690 h 70 l -8 14 h 26 l -14 20 h -60 l 8 -20 h 8 z"/>
+    <rect x="376" y="724" width="34" height="16"/>
+  </g>
+
+  <!-- Vignette to frame the title and menu text -->
+  <rect width="1100" height="860" fill="url(#vignette)"/>
+  <!-- extra darkening along the very bottom for the menu -->
+  <rect x="0" y="700" width="1100" height="160" fill="#050302" opacity="0.55"/>
+</svg>

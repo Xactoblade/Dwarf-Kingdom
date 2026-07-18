@@ -107,6 +107,9 @@ struct Registry(Raws);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
+    /// The start screen: title art and the New Game / Continue / Adventure /
+    /// Quit menu. Where the game opens (unless a fort auto-loads).
+    Title,
     Embark,
     Playing,
     Adventure,
@@ -343,6 +346,11 @@ struct EmbarkButton(EmbarkAction);
 /// The embark button bar (shown only on the embark screen).
 #[derive(Component)]
 struct EmbarkBar;
+
+/// Any UI belonging to the start screen (title art, title text, menu) — shown
+/// only while on `Screen::Title`.
+#[derive(Component)]
+struct TitleScreen;
 
 /// Which toolbar category is expanded (its tools shown), if any. The bar is a
 /// category launcher: click Dig/Zones/Workshops/Orders to reveal that group's
@@ -1208,7 +1216,9 @@ fn main() {
         }
         (Screen::Playing, Some(sim))
     } else {
-        (Screen::Embark, None)
+        // Open on the start screen (title art + menu), not straight into the
+        // world map.
+        (Screen::Title, None)
     };
     let start_z = sim
         .as_ref()
@@ -1292,6 +1302,8 @@ fn main() {
                     cycle_squad,
                     accuse_selected,
                     update_dwarf_panel,
+                    title_input,
+                    title_visibility,
                     apply_embark_action,
                     handle_input,
                     handle_trade_input,
@@ -1677,6 +1689,82 @@ fn setup(
                     TextColor(Color::srgb(0.95, 0.95, 0.92)),
                 ));
             }
+        });
+
+    // ================= START SCREEN =================
+    // A full-window title image with the title and menu as children (so the
+    // text renders on top of the art); the whole group shows only on
+    // Screen::Title.
+    let title_img: Handle<Image> = asset_server.load("title.png");
+    let has_save = save_path().exists();
+    let menu = if has_save {
+        "[Enter]   New game  --  choose where to settle\n\n\
+         [C]   Continue your saved fort\n\n\
+         [P]   Quick start  --  auto-pick a good spot\n\n\
+         [A]   Adventure  --  wander the world as a lone hero\n\n\
+         [Q]   Quit"
+    } else {
+        "[Enter]   New game  --  choose where to settle\n\n\
+         [P]   Quick start  --  auto-pick a good spot\n\n\
+         [A]   Adventure  --  wander the world as a lone hero\n\n\
+         [Q]   Quit"
+    };
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            ImageNode::new(title_img),
+            Visibility::Hidden,
+            TitleScreen,
+        ))
+        .with_children(|root| {
+            // Game title, high on the art.
+            root.spawn((
+                Text::new("DWARF KINGDOM"),
+                TextFont { font_size: 64.0, ..default() },
+                TextColor(Color::srgb(0.99, 0.87, 0.5)),
+                TextLayout::new_with_justify(JustifyText::Center),
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(30.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+            root.spawn((
+                Text::new("carve a hold in the mountain's heart"),
+                TextFont { font_size: 21.0, ..default() },
+                TextColor(Color::srgb(0.85, 0.74, 0.56)),
+                TextLayout::new_with_justify(JustifyText::Center),
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(112.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+            // The menu, low over the darkened floor.
+            root.spawn((
+                Text::new(menu),
+                TextFont { font_size: 22.0, ..default() },
+                TextColor(Color::srgb(0.96, 0.94, 0.87)),
+                TextLayout::new_with_justify(JustifyText::Center),
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(56.0),
+                    left: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
         });
 
     // "Stocks" toggle button (top-right) and the inventory panel it opens.
@@ -2552,6 +2640,81 @@ fn apply_embark_action(
         }
         // Chose an unembarkable tile (ocean/mountains) — no-op, like the key.
         _ => {}
+    }
+}
+
+/// Show the start-screen art and menu only while on Screen::Title.
+fn title_visibility(
+    screen: Res<ScreenRes>,
+    mut q: Query<&mut Visibility, With<TitleScreen>>,
+) {
+    if !screen.is_changed() {
+        return;
+    }
+    let vis = if screen.0 == Screen::Title {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        *v = vis;
+    }
+}
+
+/// The start-screen menu: begin a new fort, continue a saved one, quick-start,
+/// adventure, or quit.
+#[allow(clippy::too_many_arguments)]
+fn title_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    reg: Res<Registry>,
+    world: Res<WorldRes>,
+    has_save: Res<HasSave>,
+    mut screen: ResMut<ScreenRes>,
+    mut sim: ResMut<SimRes>,
+    mut cursor: ResMut<Cursor>,
+    mut view_z: ResMut<ViewZ>,
+    mut dirty: ResMut<MapDirty>,
+    mut camera: Query<&mut Transform, With<Camera2d>>,
+    mut exit: EventWriter<AppExit>,
+) {
+    if screen.0 != Screen::Title {
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+        // New game: to the world map, cursor on a welcoming spot to start from.
+        let region = pick_embark_region(&world.0);
+        cursor.x = (region.0 as i32 * 2).min(MAP_W as i32 - 1);
+        cursor.y = (region.1 as i32 * 2).min(MAP_H as i32 - 1);
+        screen.0 = Screen::Embark;
+        dirty.0 = true;
+    } else if has_save.0 && keys.just_pressed(KeyCode::KeyC) {
+        // Continue: reload the quicksave (F5's saves/world.bin).
+        match load_sim(&save_path(), &reg.0) {
+            Ok(loaded)
+                if (loaded.map.width, loaded.map.height, loaded.map.depth)
+                    == (MAP_W, MAP_H, MAP_D) =>
+            {
+                enter_fort_at(loaded, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+            }
+            Ok(_) => error!("continue failed: the save was made by a different map build"),
+            Err(e) => error!("continue failed: {e:#}"),
+        }
+    } else if keys.just_pressed(KeyCode::KeyP) {
+        // Quick start: auto-pick a good spot and found a fort at once.
+        let region = pick_embark_region(&world.0);
+        let new_sim = found_fort(&world.0, &reg.0, region);
+        enter_fort_at(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+    } else if keys.just_pressed(KeyCode::KeyA) {
+        // Adventure: found the spot, then take the field as a lone hero.
+        let region = pick_embark_region(&world.0);
+        let mut new_sim = embark(&world.0, &reg.0, region);
+        if new_sim.begin_adventure(&reg.0).is_some() {
+            new_sim.adv_region = Some(region);
+            enter_fort_at(new_sim, &mut sim, &mut screen, &mut cursor, &mut view_z, &mut dirty, &mut camera);
+            screen.0 = Screen::Adventure;
+        }
+    } else if keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::Escape) {
+        exit.write(AppExit::Success);
     }
 }
 
@@ -4702,6 +4865,16 @@ fn update_hud(
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     match screen.0 {
+        Screen::Title => {
+            // The start screen draws its own title art and menu; keep the HUD
+            // text empty behind it.
+            if let Ok(mut t) = q.single_mut() {
+                if !t.0.is_empty() {
+                    t.0.clear();
+                }
+            }
+            return;
+        }
         Screen::Embark => {
             let (rx, ry) = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
             let region = world.0.overworld.get(rx, ry);
