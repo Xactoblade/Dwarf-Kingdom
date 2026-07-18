@@ -630,38 +630,43 @@ pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usi
 
     // --- Embark clearing: a fort should begin in the open, not in a random dip
     // ringed by higher ground (which reads as being walled in by rock) nor on a
-    // sheer peak. Level a flat, buildable area at the map centre and let it
-    // taper one level per ring back to the natural terrain, so the whole surface
-    // stays a single walkable region that ramps can bridge. Only on full-size
-    // fortress maps — small maps (unit tests) would be swallowed whole.
+    // sheer peak. Rather than stamp a flat box on the map, ease the land around
+    // the centre toward the local median height with a round, smooth falloff —
+    // so the fort sits in a gentle open basin that follows the lie of the land
+    // and blends seamlessly into the natural hills, no hard edges or terraces.
+    // Only on full-size fortress maps — small maps (unit tests) stay untouched.
     if width >= 64 && height >= 64 {
-        let (cx, cy) = (width / 2, height / 2);
-        let r = 12usize; // radius of the flat clearing
-        // Target: the median surface height over the central window, so the
-        // clearing sits at the natural lie of the land, neither cut nor filled
-        // more than it must be.
+        let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
+        let r_flat = 8.0f32; // an open, level core to build on
+        let r_edge = 30.0f32; // fades smoothly into the natural land by here
+        // Target level: the median surface over the central area, so the
+        // clearing rests at the natural lie of the land, neither pit nor mesa.
+        let win = 22i64;
         let mut window: Vec<usize> = Vec::new();
-        for y in cy.saturating_sub(r)..=(cy + r).min(height - 1) {
-            for x in cx.saturating_sub(r)..=(cx + r).min(width - 1) {
-                window.push(heights[y * width + x]);
+        let (icx, icy) = (cx as i64, cy as i64);
+        for y in (icy - win).max(0)..=(icy + win).min(height as i64 - 1) {
+            for x in (icx - win).max(0)..=(icx + win).min(width as i64 - 1) {
+                window.push(heights[y as usize * width + x as usize]);
             }
         }
         window.sort_unstable();
-        let target = window[window.len() / 2];
+        let target = window[window.len() / 2] as f32;
         for y in 0..height {
             for x in 0..width {
-                let d = (x as i64 - cx as i64).abs().max((y as i64 - cy as i64).abs()) as usize;
-                if d <= r {
-                    heights[y * width + x] = target;
-                } else {
-                    // Fade the clearing's influence out one level per ring.
-                    let ring = d - r;
-                    let nat = heights[y * width + x];
-                    heights[y * width + x] = nat.clamp(target.saturating_sub(ring), target + ring);
-                }
+                let dx = x as f32 + 0.5 - cx;
+                let dy = y as f32 + 0.5 - cy;
+                let dist = (dx * dx + dy * dy).sqrt();
+                // Round Euclidean falloff, smoothstepped: full weight inside the
+                // core, easing to zero by the edge — no square rings, no X.
+                let t = ((r_edge - dist) / (r_edge - r_flat)).clamp(0.0, 1.0);
+                let w = t * t * (3.0 - 2.0 * t);
+                let nat = heights[y * width + x] as f32;
+                let blended = nat * (1.0 - w) + target * w;
+                heights[y * width + x] =
+                    blended.round().clamp(4.0, depth as f32 - 2.0) as usize;
             }
         }
-        // Re-relax so the taper never leaves a step taller than a ramp can climb.
+        // Re-relax so the blend never leaves a step taller than a ramp can climb.
         loop {
             let mut changed = false;
             for y in 0..height {
