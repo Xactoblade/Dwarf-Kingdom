@@ -2691,7 +2691,7 @@ fn title_visibility(
 /// adventure, or quit.
 #[allow(clippy::too_many_arguments)]
 fn title_input(
-    keys: Res<ButtonInput<KeyCode>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
     reg: Res<Registry>,
     mut world: ResMut<WorldRes>,
     has_save: Res<HasSave>,
@@ -2716,6 +2716,11 @@ fn title_input(
         cursor.y = (region.1 as i32 * 2).min(MAP_H as i32 - 1);
         screen.0 = Screen::Embark;
         dirty.0 = true;
+        // Consume the Enter so the embark screen's own Enter handler (which
+        // runs later THIS frame) doesn't immediately embark and skip the
+        // location-choosing map.
+        keys.clear_just_pressed(KeyCode::Enter);
+        keys.clear_just_pressed(KeyCode::NumpadEnter);
     } else if has_save.0 && keys.just_pressed(KeyCode::KeyC) {
         // Continue: reload the quicksave (F5's saves/world.bin).
         match load_sim(&save_path(), &reg.0) {
