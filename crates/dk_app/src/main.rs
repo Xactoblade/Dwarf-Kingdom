@@ -668,6 +668,17 @@ struct TileSprite {
     y: usize,
 }
 
+/// A ground-layer sprite drawn BEHIND each tile sprite. Object glyphs (trees,
+/// bushes, workshops) are transparent, so without something behind them their
+/// gaps show the empty clear colour as a black square. This layer paints the
+/// bare terrain there, so the grass shows through around a tree. Plain terrain
+/// tiles are opaque and cover it, so it only shows on object tiles.
+#[derive(Component)]
+struct TileGround {
+    x: usize,
+    y: usize,
+}
+
 #[derive(Component)]
 struct CursorSprite;
 
@@ -1717,6 +1728,24 @@ fn setup(
                 sprite,
                 Transform::from_xyz(x as f32 * TILE, y as f32 * TILE, 0.0),
                 TileSprite { x, y },
+            ));
+            // The ground layer sits just behind the tile sprite; starts clear.
+            let ground = match &tileset {
+                Some(ts) => {
+                    let mut sp = ts.sprite("block");
+                    sp.color = Color::srgba(0.0, 0.0, 0.0, 0.0);
+                    sp
+                }
+                None => Sprite {
+                    color: Color::srgba(0.0, 0.0, 0.0, 0.0),
+                    custom_size: Some(Vec2::splat(TILE)),
+                    ..default()
+                },
+            };
+            commands.spawn((
+                ground,
+                Transform::from_xyz(x as f32 * TILE, y as f32 * TILE, -0.5),
+                TileGround { x, y },
             ));
         }
     }
@@ -4728,6 +4757,52 @@ fn tile_visual(
     (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
 }
 
+/// The bare ground under a tile — terrain only, no trees, buildings or clutter
+/// — drawn on a layer BEHIND the tile sprites so the grass shows through the
+/// transparent gaps around objects (a tree no longer sits on a black square).
+/// Only visible where the foreground tile is transparent, i.e. on object tiles;
+/// plain terrain is opaque and covers it, so it need not reproduce every detail.
+fn tile_ground(sim: &Sim, raws: &Raws, x: i32, y: i32, view_z: i32) -> (Color, &'static str) {
+    let clear = Color::srgba(0.0, 0.0, 0.0, 0.0);
+    let here = Pos::new(x, y, view_z);
+    if sim.map.water_at(here) > 0 {
+        return (Color::srgb(0.12, 0.34, 0.60), "water");
+    }
+    let Some(t) = sim.map.tile_at(here) else { return (clear, "block") };
+    if t.is_solid() {
+        let [r, g, b] = raws.materials.get(t.material).color;
+        return (Color::srgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0), "wall");
+    }
+    if !sim.map.walkable(here) {
+        return (clear, "block");
+    }
+    let m = raws.materials.get(t.material);
+    let [r, g, b] = m.color;
+    let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+    let glyph;
+    if m.category == MaterialCategory::Soil && m.id != "sand" {
+        // Match tile_visual's grass so the ground round a tree reads the same as
+        // the meadow beside it.
+        let kind = ((x / 5) * 6151 + (y / 5) * 3079).rem_euclid(4) as usize;
+        let mottle = ((x / 3) * 7919 + (y / 3) * 1049).rem_euclid(8) as f32 / 7.0;
+        let base = GRASS_TYPES[kind];
+        let green = [base[0] + 0.03 * mottle, base[1] + 0.05 * mottle, base[2] + 0.03 * mottle];
+        let (green, cover) = match sim.clock.season() {
+            Season::Spring => (mix(green, [0.40, 0.72, 0.32], 0.28), 0.72),
+            Season::Summer => (green, 0.72),
+            Season::Autumn => (mix(green, [0.68, 0.50, 0.18], 0.55), 0.72),
+            Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.85),
+        };
+        rgb = mix(rgb, green, cover);
+        glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
+    } else if m.category == MaterialCategory::Soil {
+        glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
+    } else {
+        glyph = ROCK_SPRITES[(x * 15_731 + y * 789).rem_euclid(2) as usize];
+    }
+    (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
+}
+
 fn redraw_tiles(
     mut dirty: ResMut<MapDirty>,
     sim: Res<SimRes>,
@@ -4741,13 +4816,18 @@ fn redraw_tiles(
     mode: Res<UiMode>,
     active: Res<ActiveTool>,
     traffic: Res<Traffic>,
-    mut tiles: Query<(&TileSprite, &mut Sprite)>,
+    mut tiles: Query<(&TileSprite, &mut Sprite), Without<TileGround>>,
+    mut grounds: Query<(&TileGround, &mut Sprite), Without<TileSprite>>,
 ) {
     if !dirty.0 {
         return;
     }
     dirty.0 = false;
     if screen.0 == Screen::Embark {
+        // The world map is fully opaque; keep the ground layer out of the way.
+        for (_, mut sprite) in &mut grounds {
+            sprite.color = Color::srgba(0.0, 0.0, 0.0, 0.0);
+        }
         // The 48x48 overworld fills the 96x96 grid at 2x scale.
         for (t, mut sprite) in &mut tiles {
             let (rx, ry) = (t.x / 2, t.y / 2);
@@ -4886,6 +4966,17 @@ fn redraw_tiles(
             // renders as painted.
             sprite.color = if handles.is_tinted(glyph) { color } else { Color::WHITE };
         } else {
+            sprite.color = color;
+        }
+    }
+    // Paint the ground layer behind, so transparent object sprites show terrain
+    // instead of a black square.
+    if let Some(handles) = &tileset.0 {
+        for (t, mut sprite) in &mut grounds {
+            let (color, glyph) = tile_ground(sim, &reg.0, t.x as i32, t.y as i32, view_z.0);
+            if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                atlas.index = handles.index(glyph);
+            }
             sprite.color = color;
         }
     }
