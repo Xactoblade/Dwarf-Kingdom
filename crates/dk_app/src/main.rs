@@ -4436,7 +4436,29 @@ fn redraw_tiles(
                     rgb = mix(rgb, [0.22, 0.46, 0.82], 0.62);
                 }
             }
+            // Give each region a textured terrain tile instead of one flat
+            // block, and vary the texture across the region's 2x2 tiles, so the
+            // map reads as land — grass, rock, sand, water — rather than a grid
+            // of big pixelated squares. Data views (biome/temperature/etc.) keep
+            // the flat block, where texture would only muddy the reading.
             let mut glyph = "block";
+            if overlay.is_none() {
+                use dk_history::Biome::*;
+                let v2 = ((t.x ^ (t.y << 1)) & 1) as usize; // 0/1 across the block
+                let v3 = ((t.x + t.y * 2) % 3) as usize; // 0/1/2 across the block
+                glyph = if region.lake || region.river {
+                    "water"
+                } else {
+                    match region.biome {
+                        Ocean | Lake => "water",
+                        Mountains | Glacier => ["rock_a", "rock_b"][v2],
+                        Tundra | SandDesert | RockyWasteland | Badlands => {
+                            ["dirt_a", "dirt_b"][v2]
+                        }
+                        _ => ["grass_a", "grass_b", "grass_c"][v3],
+                    }
+                };
+            }
             // A volcano burns on the map in every view — it is the one feature
             // a dwarf will cross a continent for.
             if world.0.overworld.volcanoes.contains(&(rx, ry)) {
