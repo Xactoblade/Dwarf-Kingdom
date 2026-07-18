@@ -446,6 +446,37 @@ fn necromancers_rise_and_raise_towers() {
 }
 
 #[test]
+fn the_named_marry_and_bear_children() {
+    let w = World::generate(31337, 48, 48, 200);
+    // Somewhere in 200 years, marriages were made and children born.
+    let wed = w.figures.iter().filter(|f| f.spouse.is_some()).count();
+    let kids = w.figures.iter().filter(|f| f.parent.is_some()).count();
+    assert!(wed >= 2, "the named take spouses ({wed})");
+    assert!(kids >= 1, "and bear children ({kids})");
+    // Marriage is mutual and consistent; no one weds themselves.
+    for f in &w.figures {
+        if let Some(s) = f.spouse {
+            assert_ne!(s, f.id, "{} did not wed themselves", f.name);
+            assert_eq!(w.figures[s].spouse, Some(f.id), "marriage is mutual");
+        }
+        // Every child of a parent lists that parent, and every parent's child
+        // is a real figure.
+        for &c in &f.children {
+            assert!(c < w.figures.len(), "a child is a real figure");
+        }
+        if let Some(p) = f.parent {
+            assert!(w.figures[p].children.contains(&f.id), "a parent knows its child");
+        }
+    }
+    // Deterministic.
+    let b = World::generate(31337, 48, 48, 200);
+    let fam = |w: &World| {
+        w.figures.iter().map(|f| (f.spouse, f.parent, f.children.clone())).collect::<Vec<_>>()
+    };
+    assert_eq!(fam(&w), fam(&b));
+}
+
+#[test]
 fn the_world_has_gods_and_lines_of_rulers() {
     let w = World::generate(31337, 48, 48, 200);
     // A pantheon exists and most named figures worship one of its gods.

@@ -1256,6 +1256,15 @@ pub struct Figure {
     /// longer counted among the living peoples.
     #[serde(default)]
     pub necromancer: bool,
+    /// The figure this one is wed to, if any.
+    #[serde(default)]
+    pub spouse: Option<usize>,
+    /// The notable parent this figure was born to, if born into history.
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// This figure's children among the named.
+    #[serde(default)]
+    pub children: Vec<usize>,
     /// (year, text) — personal reasons for hatred, referenced by sieges.
     pub grudges: Vec<(u32, String)>,
 }
@@ -1550,6 +1559,9 @@ impl World {
             kills: 0,
             worships: None,
             necromancer: false,
+            spouse: None,
+            parent: None,
+            children: Vec::new(),
             grudges: Vec::new(),
         });
         // A figure holds dear a god whose spheres fit their calling.
@@ -1833,6 +1845,64 @@ impl World {
         }
     }
 
+    /// Marriages and births among the named — the bloodlines that let rule pass
+    /// from parent to child and give the chronicle its families.
+    fn family_year(&mut self, rng: &mut ChaCha8Rng, year: u32) {
+        // A wedding: two grown, unwed figures of the same people.
+        if rng.gen_ratio(1, 3) {
+            let eligible: Vec<usize> = (0..self.figures.len())
+                .filter(|&i| {
+                    let f = &self.figures[i];
+                    f.died_year.is_none()
+                        && !f.necromancer
+                        && f.spouse.is_none()
+                        && year as i64 - f.born_year >= 16
+                })
+                .collect();
+            if eligible.len() >= 2 {
+                let a = eligible[rng.gen_range(0..eligible.len())];
+                let civ = self.figures[a].civ;
+                let partners: Vec<usize> =
+                    eligible.iter().copied().filter(|&b| b != a && self.figures[b].civ == civ).collect();
+                if !partners.is_empty() {
+                    let b = partners[rng.gen_range(0..partners.len())];
+                    self.figures[a].spouse = Some(b);
+                    self.figures[b].spouse = Some(a);
+                    let (na, nb) = (self.figures[a].name.clone(), self.figures[b].name.clone());
+                    self.event(year, format!("{} and {} were wed.", na, nb));
+                }
+            }
+        }
+        // A birth: a married, living couple bears a child, counted once from the
+        // lower-id spouse.
+        if rng.gen_ratio(1, 3) {
+            let couples: Vec<usize> = (0..self.figures.len())
+                .filter(|&i| {
+                    let f = &self.figures[i];
+                    f.died_year.is_none()
+                        && f.spouse
+                            .is_some_and(|s| s > i && self.figures[s].died_year.is_none())
+                })
+                .collect();
+            if !couples.is_empty() {
+                let p = couples[rng.gen_range(0..couples.len())];
+                let spouse = self.figures[p].spouse.expect("a couple has two");
+                let civ = self.figures[p].civ;
+                let child = self.spawn_figure(rng, civ, Role::Warrior, year);
+                self.figures[child].born_year = year as i64; // a newborn, not a grown arrival
+                self.figures[child].parent = Some(p);
+                self.figures[p].children.push(child);
+                self.figures[spouse].children.push(child);
+                let (np, ns, nc) = (
+                    self.figures[p].name.clone(),
+                    self.figures[spouse].name.clone(),
+                    self.figures[child].name.clone(),
+                );
+                self.event(year, format!("{} was born to {} and {}.", nc, np, ns));
+            }
+        }
+    }
+
     /// A living, named figure forges an artifact out of the ordinary run of days.
     fn forge_artifact(&mut self, rng: &mut ChaCha8Rng, year: u32) {
         let makers: Vec<usize> =
@@ -1998,6 +2068,9 @@ impl World {
         // dead of standing towers march on the living.
         self.necromancer_year(rng, year);
 
+        // Marriages made and children born — the bloodlines of the world.
+        self.family_year(rng, year);
+
         // Mortality among the named — but a necromancer does not die of age.
         for f in 0..self.figures.len() {
             if self.figures[f].died_year.is_none()
@@ -2012,13 +2085,31 @@ impl World {
                 self.event(year, format!("{} of {} died of old age.", name, civ));
                 // A dead ruler is succeeded, so each people keeps its line of
                 // leaders down the years — a small dynasty in the chronicle.
+                // A living, grown child inherits the seat if there is one, so
+                // rule passes by blood; otherwise a new figure rises.
                 if role == Role::Leader {
-                    let heir = self.spawn_figure(rng, civ_idx, Role::Leader, year);
-                    let hname = self.figures[heir].name.clone();
-                    self.event(
-                        year,
-                        format!("{} succeeded the late {} as leader of {}.", hname, name, civ),
-                    );
+                    let blood_heir = self.figures[f].children.iter().copied().find(|&c| {
+                        self.figures[c].died_year.is_none()
+                            && year as i64 - self.figures[c].born_year >= 16
+                    });
+                    if let Some(child) = blood_heir {
+                        self.figures[child].role = Role::Leader;
+                        let cname = self.figures[child].name.clone();
+                        self.event(
+                            year,
+                            format!(
+                                "{}, child of the late {}, inherited the leadership of {}.",
+                                cname, name, civ
+                            ),
+                        );
+                    } else {
+                        let heir = self.spawn_figure(rng, civ_idx, Role::Leader, year);
+                        let hname = self.figures[heir].name.clone();
+                        self.event(
+                            year,
+                            format!("{} succeeded the late {} as leader of {}.", hname, name, civ),
+                        );
+                    }
                 }
             }
         }

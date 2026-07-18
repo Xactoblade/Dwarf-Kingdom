@@ -765,7 +765,9 @@ fn world_path() -> PathBuf {
 /// v4: a pantheon of gods, figures worship them, and dead rulers are succeeded.
 /// v5: necromancers rise, raise towers, and loose the dead (new SiteKind::Tower
 /// + Figure.necromancer), which shifts the history RNG stream.
-const WORLDGEN_VERSION: u32 = 5;
+/// v6: marriages, births and blood-heir succession (Figure gained spouse/parent/
+/// children), which shifts the history RNG stream again.
+const WORLDGEN_VERSION: u32 = 6;
 
 /// The world this game is played in.
 ///
@@ -973,6 +975,18 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                     }
                     if f.necromancer {
                         facts.push("has unearthed the secret of life and death".into());
+                    }
+                    // Family: parentage, marriage, and children.
+                    if let Some(p) = f.parent {
+                        facts.push(format!("child of {}", world.figures[p].name));
+                    }
+                    if let Some(s) = f.spouse {
+                        facts.push(format!("wed to {}", world.figures[s].name));
+                    }
+                    if !f.children.is_empty() {
+                        let kids: Vec<&str> =
+                            f.children.iter().map(|&c| world.figures[c].name.as_str()).collect();
+                        facts.push(format!("parent of {}", kids.join(", ")));
                     }
                     if !f.grudges.is_empty() {
                         facts.push(format!("nurses {} grudge(s)", f.grudges.len()));
