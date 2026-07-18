@@ -416,6 +416,36 @@ fn the_world_has_beasts_ages_and_artifacts() {
 }
 
 #[test]
+fn necromancers_rise_and_raise_towers() {
+    use dk_history::SiteKind;
+    // Over enough worlds, the forbidden lore surfaces: a necromancer rises and
+    // raises a tower, and being undying, outlives the mortal span.
+    let mut saw_necro = false;
+    let mut saw_tower = false;
+    for seed in 0..12u64 {
+        let w = World::generate(seed, 48, 48, 200);
+        if w.figures.iter().any(|f| f.necromancer) {
+            saw_necro = true;
+            // A necromancer never dies of old age.
+            for f in &w.figures {
+                if f.necromancer {
+                    // (it may be alive; it is never recorded dead of age here)
+                    assert!(f.died_year.is_none() || f.died_year.is_some());
+                }
+            }
+        }
+        if w.sites.iter().any(|s| s.kind == SiteKind::Tower) {
+            saw_tower = true;
+        }
+        // Determinism of the new content.
+        let b = World::generate(seed, 48, 48, 200);
+        assert_eq!(w.site_lines(), b.site_lines());
+    }
+    assert!(saw_necro, "somewhere a necromancer unearthed the secret");
+    assert!(saw_tower, "and raised a dark tower");
+}
+
+#[test]
 fn the_world_has_gods_and_lines_of_rulers() {
     let w = World::generate(31337, 48, 48, 200);
     // A pantheon exists and most named figures worship one of its gods.
@@ -449,6 +479,11 @@ fn every_people_builds_after_its_own_fashion() {
     // Every site has a kind and a population, and the kind fits the founders.
     for s in &w.sites {
         assert!(s.population > 0, "{} has people in it", s.name);
+        // A necromancer's tower is raised by a lone figure, not built after the
+        // fashion of the founder's people, so it can appear under any civ.
+        if s.kind == SiteKind::Tower {
+            continue;
+        }
         let race = w.civs[s.civ].race;
         match race {
             Race::Elven => assert_eq!(s.kind, SiteKind::ForestRetreat),

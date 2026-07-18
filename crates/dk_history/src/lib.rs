@@ -1107,6 +1107,9 @@ pub enum SiteKind {
     Hamlet,
     ForestRetreat,
     DarkFortress,
+    /// A necromancer's tower — not built by a people, but raised by one who
+    /// unearthed the secret of life and death.
+    Tower,
 }
 
 impl SiteKind {
@@ -1117,6 +1120,7 @@ impl SiteKind {
             SiteKind::Hamlet => "hamlet",
             SiteKind::ForestRetreat => "forest retreat",
             SiteKind::DarkFortress => "dark fortress",
+            SiteKind::Tower => "tower",
         }
     }
 
@@ -1248,6 +1252,10 @@ pub struct Figure {
     /// The god this figure holds most dear, if any.
     #[serde(default)]
     pub worships: Option<usize>,
+    /// One who has unearthed the secret of life and death: undying, and no
+    /// longer counted among the living peoples.
+    #[serde(default)]
+    pub necromancer: bool,
     /// (year, text) — personal reasons for hatred, referenced by sieges.
     pub grudges: Vec<(u32, String)>,
 }
@@ -1465,11 +1473,29 @@ impl World {
                 break;
             }
         }
-        let id = self.sites.len();
         let race = self.civs[civ].race;
         // The first site a people raises is its capital, and grander for it.
         let capital = self.civs[civ].sites.is_empty();
         let kind = SiteKind::for_race(race, capital);
+        let name = self.found_site_kind(rng, civ, spot, year, kind, true);
+        let _ = name;
+    }
+
+    /// Found a site of a specific kind at `spot`, returning its name. When
+    /// `announce`, records the ordinary "founded X, a Y" line; a caller with a
+    /// grander story to tell (a necromancer raising a tower) sets it false and
+    /// writes its own.
+    fn found_site_kind(
+        &mut self,
+        rng: &mut ChaCha8Rng,
+        civ: usize,
+        spot: (usize, usize),
+        year: u32,
+        kind: SiteKind,
+        announce: bool,
+    ) -> String {
+        let id = self.sites.len();
+        let race = self.civs[civ].race;
         let name = names::site_name(rng, race);
         let population = match kind {
             SiteKind::City => rng.gen_range(800..1600),
@@ -1477,20 +1503,23 @@ impl World {
             SiteKind::Fortress => rng.gen_range(400..1000),
             SiteKind::ForestRetreat => rng.gen_range(150..500),
             SiteKind::Hamlet => rng.gen_range(40..250),
+            SiteKind::Tower => rng.gen_range(20..120),
         };
-        self.event(
-            year,
-            format!(
-                "{} of the {} founded {}, a {}.",
-                cap(&self.civs[civ].name),
-                race.name(),
-                name,
-                kind.noun()
-            ),
-        );
+        if announce {
+            self.event(
+                year,
+                format!(
+                    "{} of the {} founded {}, a {}.",
+                    cap(&self.civs[civ].name),
+                    race.name(),
+                    name,
+                    kind.noun()
+                ),
+            );
+        }
         self.sites.push(Site {
             id,
-            name,
+            name: name.clone(),
             civ,
             kind,
             region: spot,
@@ -1499,6 +1528,7 @@ impl World {
             ruined: false,
         });
         self.civs[civ].sites.push(id);
+        name
     }
 
     fn spawn_figure(&mut self, rng: &mut ChaCha8Rng, civ: usize, role: Role, year: u32) -> usize {
@@ -1519,6 +1549,7 @@ impl World {
             died_year: None,
             kills: 0,
             worships: None,
+            necromancer: false,
             grudges: Vec::new(),
         });
         // A figure holds dear a god whose spheres fit their calling.
@@ -1711,6 +1742,97 @@ impl World {
         }
     }
 
+    /// The rise of necromancers and the marches of the dead. A living mortal
+    /// may unearth the secret of life and death, becoming undying and raising a
+    /// tower; and a standing tower looses the dead upon the nearest settlement.
+    fn necromancer_year(&mut self, rng: &mut ChaCha8Rng, year: u32) {
+        if rng.gen_ratio(1, 60) {
+            let mortals: Vec<usize> = self
+                .figures
+                .iter()
+                .filter(|f| f.died_year.is_none() && !f.necromancer)
+                .map(|f| f.id)
+                .collect();
+            if !mortals.is_empty() {
+                let f = mortals[rng.gen_range(0..mortals.len())];
+                self.figures[f].necromancer = true;
+                if let Some(death) = self
+                    .deities
+                    .iter()
+                    .find(|d| d.spheres.contains(&Sphere::Death))
+                    .map(|d| d.id)
+                {
+                    self.figures[f].worships = Some(death);
+                }
+                let civ = self.figures[f].civ;
+                let home = self.civs[civ].home;
+                let mut spot = home;
+                for _ in 0..20 {
+                    let dx = rng.gen_range(-5i64..=5);
+                    let dy = rng.gen_range(-5i64..=5);
+                    let x = (home.0 as i64 + dx).clamp(0, self.overworld.width as i64 - 1) as usize;
+                    let y = (home.1 as i64 + dy).clamp(0, self.overworld.height as i64 - 1) as usize;
+                    if self.overworld.get(x, y).biome.embarkable() {
+                        spot = (x, y);
+                        break;
+                    }
+                }
+                let tower = self.found_site_kind(rng, civ, spot, year, SiteKind::Tower, false);
+                let fname = self.figures[f].name.clone();
+                let cname = self.civs[civ].name.clone();
+                self.event(
+                    year,
+                    format!(
+                        "{} of {} unearthed the secret of life and death and raised the dark tower {}.",
+                        fname, cname, tower
+                    ),
+                );
+            }
+        }
+
+        // The dead march from standing towers.
+        let towers: Vec<usize> = self
+            .sites
+            .iter()
+            .filter(|s| s.kind == SiteKind::Tower && !s.ruined)
+            .map(|s| s.id)
+            .collect();
+        for tid in towers {
+            if !rng.gen_ratio(1, 5) {
+                continue;
+            }
+            let origin = self.sites[tid].region;
+            if let Some(site_id) = self
+                .sites
+                .iter()
+                .filter(|s| !s.ruined && s.kind != SiteKind::Tower)
+                .min_by_key(|s| s.region.0.abs_diff(origin.0) + s.region.1.abs_diff(origin.1))
+                .map(|s| s.id)
+            {
+                let dead = rng.gen_range(2..30);
+                let civ = self.sites[site_id].civ;
+                self.civs[civ].population = self.civs[civ].population.saturating_sub(dead).max(50);
+                let tname = self.sites[tid].name.clone();
+                let sname = self.sites[site_id].name.clone();
+                if dead > 20 && rng.gen_ratio(1, 3) {
+                    self.sites[site_id].ruined = true;
+                    self.event(
+                        year,
+                        format!("The dead of {} overran {} and left it a tomb, {} slain.", tname, sname, dead),
+                    );
+                } else {
+                    self.event(
+                        year,
+                        format!(
+                            "The dead of {} fell upon {}; {} were slain before the assault broke.",
+                            tname, sname, dead
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     /// A living, named figure forges an artifact out of the ordinary run of days.
     fn forge_artifact(&mut self, rng: &mut ChaCha8Rng, year: u32) {
         let makers: Vec<usize> =
@@ -1872,9 +1994,14 @@ impl World {
             self.forge_artifact(rng, year);
         }
 
-        // Mortality among the named.
+        // The forbidden lore: a necromancer may rise and raise a tower, and the
+        // dead of standing towers march on the living.
+        self.necromancer_year(rng, year);
+
+        // Mortality among the named — but a necromancer does not die of age.
         for f in 0..self.figures.len() {
             if self.figures[f].died_year.is_none()
+                && !self.figures[f].necromancer
                 && year as i64 - self.figures[f].born_year > 50
                 && rng.gen_ratio(1, 12)
             {

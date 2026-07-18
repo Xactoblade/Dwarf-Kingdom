@@ -14,7 +14,7 @@ TilesetDef(
     image: "tileset.png",
     tile_px: 32,
     columns: 6,
-    rows: 12,
+    rows: 13,
     glyphs: {
         "wall": 0, "floor": 1, "stairs": 2, "ramp": 3, "gate": 4, "farm": 5,
         "block": 6, "boulder": 7, "seed": 8, "crop": 9, "dwarf": 10,
@@ -36,7 +36,7 @@ TilesetDef(
         // World-map site markers (grayscale on a dark chip, tinted by kind),
         // one distinct silhouette per settlement type.
         "m_city": 66, "m_fortress": 67, "m_hamlet": 68, "m_retreat": 69,
-        "m_darkfort": 70, "m_ruins": 71,
+        "m_darkfort": 70, "m_ruins": 71, "m_tower": 72,
     },
     tinted: ["wall", "floor", "stairs", "ramp", "gate", "farm", "block",
              "boulder", "seed", "crop", "tree", "tree_conifer",
@@ -47,5 +47,5 @@ TilesetDef(
              "i_leather", "i_wool", "i_glass", "i_craft",
              "peak", "hills", "dune", "forest",
              "m_city", "m_fortress", "m_hamlet", "m_retreat", "m_darkfort",
-             "m_ruins"],
+             "m_ruins", "m_tower"],
 )

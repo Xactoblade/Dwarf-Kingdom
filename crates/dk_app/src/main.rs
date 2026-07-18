@@ -745,7 +745,9 @@ fn world_path() -> PathBuf {
 /// v3: sites gained a `kind` (city/fortress/hamlet/retreat/dark fortress) and
 /// a per-site `population`, which shifts the history RNG stream.
 /// v4: a pantheon of gods, figures worship them, and dead rulers are succeeded.
-const WORLDGEN_VERSION: u32 = 4;
+/// v5: necromancers rise, raise towers, and loose the dead (new SiteKind::Tower
+/// + Figure.necromancer), which shifts the history RNG stream.
+const WORLDGEN_VERSION: u32 = 5;
 
 /// The world this game is played in.
 ///
@@ -2091,20 +2093,47 @@ fn clamp_camera_to_map(tf: &mut Transform, win_w: f32, win_h: f32) {
 /// behind both the keyboard shortcuts and the toolbar's mouse clicks.
 fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
     match kind {
+        // Digging tools only bite on the right kind of tile, and a rectangle
+        // that matches nothing looks like "it just didn't accept". When that
+        // happens, say why — the commonest new-player snag is trying to mine
+        // the open surface, which has no rock in it.
         UiKind::Mine => {
-            sim.designate_rect(DesignationKind::Mine, a, b);
+            if sim.designate_rect(DesignationKind::Mine, a, b) == 0 {
+                sim.log_event(
+                    "Nothing solid to mine there. Mining only cuts rock walls — on the \
+                     open surface, dig Stairs (x) downward first to reach stone, or mine \
+                     into a hillside."
+                        .to_string(),
+                );
+            }
         }
         UiKind::Stairs => {
-            sim.designate_rect(DesignationKind::Stairs, a, b);
+            if sim.designate_rect(DesignationKind::Stairs, a, b) == 0 {
+                sim.log_event(
+                    "Can't carve stairs there. Pick solid rock or a floor tile to dig a \
+                     stairway up or down."
+                        .to_string(),
+                );
+            }
         }
         UiKind::Channel => {
-            sim.designate_rect(DesignationKind::Channel, a, b);
+            if sim.designate_rect(DesignationKind::Channel, a, b) == 0 {
+                sim.log_event(
+                    "Can't channel there. Channel a walkable floor that has solid rock \
+                     directly below it."
+                        .to_string(),
+                );
+            }
         }
         UiKind::Chop => {
-            sim.designate_rect(DesignationKind::Chop, a, b);
+            if sim.designate_rect(DesignationKind::Chop, a, b) == 0 {
+                sim.log_event("No trees to fell in that area.".to_string());
+            }
         }
         UiKind::Gather => {
-            sim.designate_rect(DesignationKind::Gather, a, b);
+            if sim.designate_rect(DesignationKind::Gather, a, b) == 0 {
+                sim.log_event("No wild shrubs to gather there.".to_string());
+            }
         }
         UiKind::Stockpile => sim.add_stockpile(a, b),
         UiKind::Pile(cat) => sim.add_filtered_stockpile(a, b, dk_agents::StockFilter::only(&[cat])),
@@ -4578,6 +4607,7 @@ fn redraw_tiles(
                         Hamlet => ("m_hamlet", [0.90, 0.76, 0.48]),
                         ForestRetreat => ("m_retreat", [0.55, 0.82, 0.42]),
                         DarkFortress => ("m_darkfort", [0.85, 0.28, 0.22]),
+                        Tower => ("m_tower", [0.62, 0.45, 0.85]),
                     }
                 };
                 glyph = g;
