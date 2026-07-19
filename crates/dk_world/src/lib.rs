@@ -563,6 +563,39 @@ pub fn place_adamantine(map: &mut Map, seed: u64, adamantine: u16) -> Vec<Pos> {
     breaches
 }
 
+/// Identify a shallow water-bearing layer: the solid soil and sedimentary tiles
+/// a couple of levels below the surface. Mining one floods the dig — the caller
+/// (the sim) flags these tiles and turns each into a spring when it is opened.
+/// This does NOT change the terrain (the stone keeps its material); it only
+/// reports which tiles are wet. Deterministic; the caller decides whether a
+/// given embark has an aquifer at all.
+pub fn place_aquifer(map: &Map, reg: &MaterialRegistry) -> Vec<Pos> {
+    let mut tiles = Vec::new();
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let Some(top) = map.surface_z(x, y) else { continue };
+            // The two solid layers just beneath the surface — deep enough that a
+            // fort digging down soon meets the water.
+            for dz in 2..=3usize {
+                if top < dz {
+                    continue;
+                }
+                let z = top - dz;
+                let t = map.get(x, y, z);
+                if t.is_solid()
+                    && matches!(
+                        reg.get(t.material).category,
+                        MaterialCategory::Soil | MaterialCategory::Sedimentary
+                    )
+                {
+                    tiles.push(Pos::new(x as i32, y as i32, z as i32));
+                }
+            }
+        }
+    }
+    tiles
+}
+
 pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle, relief: Relief) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(

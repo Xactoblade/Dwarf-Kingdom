@@ -1341,6 +1341,13 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
         .unwrap_or_default();
     let mut sim = Sim::new(map, raws, rng, DWARF_COUNT);
     sim.adamantine_breaches = breaches.into_iter().collect();
+    // Poorly-drained, moist ground holds an aquifer: a shallow water-bearing
+    // layer that floods a dig unless it's walled off. App-embark-only, so a fort
+    // on dry ground (and every headless test) stays byte-identical.
+    if r.drainage <= 40 && r.rainfall >= 45 {
+        let aq = dk_world::place_aquifer(&sim.map, &raws.materials);
+        sim.aquifers = aq.into_iter().collect();
+    }
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
@@ -4457,6 +4464,11 @@ fn tile_visual(
         }
         let lit = 0.60 + 0.15 * open as f32; // 0.60 buried .. 1.20 isolated
         rgb = [rgb[0] * lit, rgb[1] * lit, rgb[2] * lit];
+        // A damp blue sheen marks water-bearing aquifer rock — a warning that
+        // mining here looses a flood.
+        if sim.aquifers.contains(&here) {
+            rgb = mix(rgb, [0.34, 0.52, 0.82], 0.34);
+        }
     }
     // Grassy groundcover over open, grass-bearing soil (loam and clay of the
     // plains and forests — never the bare desert sand): a meadow of a few grass
@@ -5490,6 +5502,13 @@ fn update_hud(
                 (false, true) => "lake",
                 (false, false) => "no surface water",
             };
+            // Warn of the aquifer the fort will meet digging down here — same
+            // condition the embark uses to seed one.
+            let aquifer = if region.drainage <= 40 && region.rainfall >= 45 {
+                " | AQUIFER"
+            } else {
+                ""
+            };
             let trees = if region.biome.is_forest() {
                 "heavily wooded"
             } else if region.biome.is_grassy() || region.biome.is_wetland() {
@@ -5510,7 +5529,7 @@ fn update_hud(
                      {} | {} gods | {} great beasts | {} artifacts\n\
                      {} ({}) | {}{}{}\n\
                      surroundings: {} | temperature {}C | elevation {} | rainfall {} | drainage {}\n\
-                     {} | {}{}\n\
+                     {} | {}{}{}\n\
                      {}\n\
                      {}\n\
                      {}\n\
@@ -5538,6 +5557,7 @@ fn update_hud(
                     water,
                     trees,
                     volcano,
+                    aquifer,
                     neighbours,
                     enemy,
                     ok,

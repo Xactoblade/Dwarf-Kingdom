@@ -1910,6 +1910,12 @@ pub struct Sim {
     /// and demons pour out. Empty unless a map was seeded with adamantine (app
     /// embark only), so a fort that never digs one stays byte-identical.
     pub adamantine_breaches: BTreeSet<Pos>,
+    /// Solid tiles that lie in a water-bearing aquifer layer: mine one and the
+    /// opened tile becomes a spring that seeps until it is walled off. Empty
+    /// unless a map was seeded with an aquifer (app embark only), so a fort with
+    /// no aquifer stays byte-identical.
+    #[serde(default)]
+    pub aquifers: BTreeSet<Pos>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -2045,6 +2051,7 @@ impl Sim {
             shrubs: BTreeSet::new(),
             shrub_cap: 0,
             adamantine_breaches: BTreeSet::new(),
+            aquifers: BTreeSet::new(),
             engravings: BTreeMap::new(),
             constructions: BTreeMap::new(),
             stats: SimStats::default(),
@@ -9965,6 +9972,15 @@ impl Sim {
         self.engravings.remove(&target);
         self.regions.dirty = true;
         self.map_changed = true;
+        // Breach an aquifer and the opened tile weeps water without end — the
+        // fort must wall it off or pump it out. The tile becomes a spring the
+        // water automaton keeps brimming; a wall raised over it shuts it (a
+        // solid tile holds no water, so the spring falls dormant).
+        if self.aquifers.remove(&target) {
+            self.water.springs.insert(target);
+            let name = self.dwarves[i].name.clone();
+            self.log_event(format!("{name} breaches an aquifer — water floods in!"));
+        }
         self.water.wake(target);
         self.magma.wake(target);
 
@@ -10241,7 +10257,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // the wrong stone — reject it rather than misinterpret.
 // v71: added the "steel" alloy material (and the is_flux flag), shifting indices
 // again — same reason to reject older saves.
-const SAVE_VERSION: u32 = 71;
+// v72: forts gained an `aquifers` set (water-bearing rock tiles).
+const SAVE_VERSION: u32 = 72;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
