@@ -4622,6 +4622,12 @@ fn tile_visual(
             rgb = mix(rgb, [0.40, 0.62, 0.52], 0.4);
         }
     }
+    // Blood on the ground — a dark red pool where something bled or died,
+    // drying to a faint rust as it fades. Painted under objects and creatures.
+    if let Some(&intensity) = sim.blood.get(&here) {
+        let k = (intensity as f32 / dk_agents::BLOOD_MAX as f32 * 0.75).clamp(0.0, 0.75);
+        rgb = mix(rgb, [0.42, 0.03, 0.03], k);
+    }
     if let Some(farm) = sim.farms.get(&here) {
         let (tint, k) = match farm.state {
             FarmState::Fallow => ([0.3, 0.4, 0.18], 0.4),

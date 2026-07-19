@@ -127,6 +127,12 @@ pub const VAMPIRE_FEED_INTERVAL: u64 = 3 * TICKS_PER_DAY / 2;
 /// Blood a vampire drains in one feeding (of 100). Rarely lethal in a single
 /// bite, but repeated feeding on the same sleeper eventually bleeds them white.
 pub const VAMPIRE_DRAIN: f32 = 34.0;
+/// Blood spatter: intensity per tile (a fresh pool), and how it dries away.
+pub const BLOOD_MAX: u16 = 200;
+/// Ticks between drying passes, and how much intensity each pass removes — a
+/// fresh pool fades over roughly a day, a light drip within hours.
+pub const BLOOD_DRY_INTERVAL: u64 = TICKS_PER_DAY / 20;
+pub const BLOOD_DRY: u16 = 8;
 /// Days in the lunar cycle; a werebeast transforms during the first few nights.
 pub const WERE_MOON_CYCLE: u64 = 28;
 /// Nights of each cycle the moon is full (a cursed dwarf is a beast).
@@ -1947,6 +1953,11 @@ pub struct Sim {
     /// only, and only on full-size maps).
     #[serde(default)]
     pub cavern_floors: BTreeSet<Pos>,
+    /// Blood spilled on the ground, by tile -> intensity (0..BLOOD_MAX). Wounds
+    /// drip it, deaths pool it; it dries and fades over a day or so. Purely
+    /// cosmetic — placed deterministically (no rng), so combat stays identical.
+    #[serde(default)]
+    pub blood: BTreeMap<Pos, u16>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -2084,6 +2095,7 @@ impl Sim {
             adamantine_breaches: BTreeSet::new(),
             aquifers: BTreeSet::new(),
             cavern_floors: BTreeSet::new(),
+            blood: BTreeMap::new(),
             engravings: BTreeMap::new(),
             constructions: BTreeMap::new(),
             stats: SimStats::default(),
@@ -4727,6 +4739,23 @@ impl Sim {
             }
         }
         self.form_obsidian(raws);
+        // Bleeding creatures drip blood as they stagger about; it dries and
+        // fades over the following day. Positions collected first so the spatter
+        // (which takes &mut self) doesn't clash with the iteration.
+        if self.clock.tick % 20 == 0 {
+            let drips: Vec<Pos> = self
+                .dwarves
+                .iter()
+                .filter(|d| d.alive && d.body.iter().any(|p| p.bleeding > 0))
+                .map(|d| d.pos)
+                .collect();
+            for p in drips {
+                self.spatter_blood(p, 22);
+            }
+        }
+        if self.clock.tick % BLOOD_DRY_INTERVAL == 0 && self.clock.tick > 0 {
+            self.dry_blood();
+        }
         // Region rebuilds are throttled; A* remains the authority in between.
         if self.regions.dirty && self.clock.tick % REGION_REBUILD_INTERVAL == 0 {
             self.regions.rebuild(&self.map);
@@ -9453,6 +9482,30 @@ impl Sim {
         true
     }
 
+    /// Stain a tile, and lightly the walkable ground around it, with blood.
+    /// Deterministic (no rng) so it never perturbs combat. `amount` is the fresh
+    /// intensity — a heavy pool for a death, a light drip for a bleeding wound.
+    pub fn spatter_blood(&mut self, at: Pos, amount: u16) {
+        let e = self.blood.entry(at).or_insert(0);
+        *e = (*e).saturating_add(amount).min(BLOOD_MAX);
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = Pos::new(at.x + dx, at.y + dy, at.z);
+            if self.map.tile_at(n).is_some_and(|t| t.shape.is_walkable()) {
+                let e = self.blood.entry(n).or_insert(0);
+                *e = (*e).saturating_add(amount / 3).min(BLOOD_MAX);
+            }
+        }
+    }
+
+    /// Blood dries and fades a little each pass; a tile with none left is
+    /// forgotten.
+    pub fn dry_blood(&mut self) {
+        self.blood.retain(|_, v| {
+            *v = v.saturating_sub(BLOOD_DRY);
+            *v > 0
+        });
+    }
+
     /// Blood, breath, bleeding, and rest-healing — applies to every faction.
     fn tick_vitals(&mut self, i: usize) {
         let tick = self.clock.tick;
@@ -9617,6 +9670,9 @@ impl Sim {
     }
 
     fn kill_dwarf(&mut self, i: usize) {
+        // Death pools blood where the body falls.
+        let death_pos = self.dwarves[i].pos;
+        self.spatter_blood(death_pos, BLOOD_MAX);
         // A raider's gear leaves with the raider — it is not fort property, and
         // making it lootable would tie the fort's weapon count to its body
         // count and break raider-wealth determinism. Consume it BEFORE
@@ -10350,7 +10406,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // again — same reason to reject older saves.
 // v72: forts gained an `aquifers` set (water-bearing rock tiles).
 // v73: forts gained a `cavern_floors` set (the deep cavern layer).
-const SAVE_VERSION: u32 = 73;
+// v74: forts gained a `blood` map (spatter on the ground).
+const SAVE_VERSION: u32 = 74;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
