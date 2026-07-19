@@ -133,6 +133,11 @@ pub const BLOOD_MAX: u16 = 200;
 /// fresh pool fades over roughly a day, a light drip within hours.
 pub const BLOOD_DRY_INTERVAL: u64 = TICKS_PER_DAY / 20;
 pub const BLOOD_DRY: u16 = 8;
+/// Gore decay: a severed part rots through stages, its `stuff` field holding
+/// the stage (0 fresh, 1 rotting, 2 skeletal). Flesh sours within a day and is
+/// picked clean to bone over a few — after which the bones lie there for good.
+pub const GORE_ROT: u64 = TICKS_PER_DAY;
+pub const GORE_SKELETONIZE: u64 = 3 * TICKS_PER_DAY;
 /// Days in the lunar cycle; a werebeast transforms during the first few nights.
 pub const WERE_MOON_CYCLE: u64 = 28;
 /// Nights of each cycle the moon is full (a cursed dwarf is a beast).
@@ -4766,6 +4771,10 @@ impl Sim {
         }
         if self.clock.tick % BLOOD_DRY_INTERVAL == 0 && self.clock.tick > 0 {
             self.dry_blood();
+        }
+        // Gore rots on the same lazy cadence — the process spans days.
+        if self.clock.tick % (TICKS_PER_DAY / 4) == 0 && self.clock.tick > 0 {
+            self.decay_gore();
         }
         self.tick_footprints();
         // Region rebuilds are throttled; A* remains the authority in between.
@@ -9532,13 +9541,10 @@ impl Sim {
         let pos = self.dwarves[defender].pos;
         let who = self.dwarves[defender].name.clone();
         self.log_event(format!("{who}'s {} is struck clean off!", part_kind.name()));
-        // The severed part lands where the creature stands.
-        self.spawn_named_item(
-            ItemKind::BodyPart,
-            0,
-            pos,
-            Some(format!("severed {}", part_kind.name())),
-        );
+        // The severed part lands where the creature stands. `stuff` carries the
+        // rot stage (0 = fresh); the name holds the bare part, and the display
+        // layer prefixes it ("severed" / "rotting" / "... bones") by stage.
+        self.spawn_named_item(ItemKind::BodyPart, 0, pos, Some(part_kind.name().to_string()));
         // The stump gushes: the open wound bleeds hard until it clots or kills.
         if let Some(part) = self.dwarves[defender]
             .body
@@ -9576,6 +9582,30 @@ impl Sim {
                 }
             }
             self.dwarves[i].last_pos = cur;
+        }
+    }
+
+    /// Severed parts rot where they lie: fresh gore sours to carrion within a
+    /// day, and is picked clean to bone over a few. The stage rides in the
+    /// item's `stuff` field (0 fresh, 1 rotting, 2 skeletal) and only ever
+    /// advances. Deterministic (age from the clock, no rng).
+    pub fn decay_gore(&mut self) {
+        let now = self.clock.tick;
+        for it in &mut self.items {
+            if it.kind != ItemKind::BodyPart || it.consumed {
+                continue;
+            }
+            let age = now.saturating_sub(it.made_at);
+            let stage: u16 = if age >= GORE_SKELETONIZE {
+                2
+            } else if age >= GORE_ROT {
+                1
+            } else {
+                0
+            };
+            if it.stuff < stage {
+                it.stuff = stage;
+            }
         }
     }
 

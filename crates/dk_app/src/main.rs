@@ -5098,7 +5098,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Drink => "mug of drink".to_string(),
         ItemKind::Artifact => it.name.clone().unwrap_or_else(|| "artifact".to_string()),
         ItemKind::Corpse => it.name.clone().unwrap_or_else(|| "remains".to_string()),
-        ItemKind::BodyPart => it.name.clone().unwrap_or_else(|| "severed part".to_string()),
+        ItemKind::BodyPart => gore_name(it.stuff, it.name.as_deref().unwrap_or("body part")),
         ItemKind::Craft => format!("{} craft", raws.materials.get(it.stuff).name),
         ItemKind::Wool => "raw wool".to_string(),
         ItemKind::Cloth => "bolt of cloth".to_string(),
@@ -5127,6 +5127,16 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
     }
 }
 
+/// A severed part's name by its rot stage (carried in the item's `stuff`):
+/// fresh gore, then carrion, then bone.
+fn gore_name(stage: u16, part: &str) -> String {
+    match stage {
+        0 => format!("severed {part}"),
+        1 => format!("rotting {part}"),
+        _ => format!("{part} bones"),
+    }
+}
+
 fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
     let lighten = |c: [u8; 3]| {
         let l = |v: u8| (v as f32 / 255.0 * 1.3).min(1.0);
@@ -5140,8 +5150,12 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
         ItemKind::Artifact => Color::srgb(1.0, 0.85, 0.25),
         ItemKind::Corpse => Color::srgb(0.75, 0.8, 0.9),
-        // Gore: a dark, bloody red.
-        ItemKind::BodyPart => Color::srgb(0.55, 0.12, 0.12),
+        // Gore, by rot stage: fresh bloody red, putrid brown, then bone white.
+        ItemKind::BodyPart => match stuff {
+            0 => Color::srgb(0.55, 0.12, 0.12),
+            1 => Color::srgb(0.38, 0.32, 0.15),
+            _ => Color::srgb(0.86, 0.84, 0.74),
+        },
         ItemKind::Craft => item_material_color(raws, stuff),
         ItemKind::Wool => Color::srgb(0.92, 0.9, 0.82),
         ItemKind::Cloth => Color::srgb(0.6, 0.55, 0.85),
@@ -5860,10 +5874,7 @@ fn update_hud(
                 .name
                 .clone()
                 .unwrap_or_else(|| "remains".to_string()),
-            ItemKind::BodyPart => it
-                .name
-                .clone()
-                .unwrap_or_else(|| "severed part".to_string()),
+            ItemKind::BodyPart => gore_name(it.stuff, it.name.as_deref().unwrap_or("body part")),
             ItemKind::Craft => format!("{} craft (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Wool => "raw wool".to_string(),
             ItemKind::Cloth => "bolt of cloth (trade good)".to_string(),
