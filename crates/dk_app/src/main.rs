@@ -3129,6 +3129,7 @@ fn item_kind_name(k: ItemKind) -> &'static str {
         ItemKind::Hide => "raw hides",
         ItemKind::Leather => "leather",
         ItemKind::Craft => "stone crafts",
+        ItemKind::BoneCraft => "bone trinkets",
         ItemKind::Glass => "blown glass",
         ItemKind::CutGem => "cut gems",
         ItemKind::RoughGem => "rough gems",
@@ -5100,6 +5101,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Corpse => it.name.clone().unwrap_or_else(|| "remains".to_string()),
         ItemKind::BodyPart => gore_name(it.stuff, it.name.as_deref().unwrap_or("body part")),
         ItemKind::Craft => format!("{} craft", raws.materials.get(it.stuff).name),
+        ItemKind::BoneCraft => "bone trinket".to_string(),
         ItemKind::Wool => "raw wool".to_string(),
         ItemKind::Cloth => "bolt of cloth".to_string(),
         ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
@@ -5157,6 +5159,8 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
             _ => Color::srgb(0.86, 0.84, 0.74),
         },
         ItemKind::Craft => item_material_color(raws, stuff),
+        // Bone trinket: pale bone white.
+        ItemKind::BoneCraft => Color::srgb(0.86, 0.84, 0.74),
         ItemKind::Wool => Color::srgb(0.92, 0.9, 0.82),
         ItemKind::Cloth => Color::srgb(0.6, 0.55, 0.85),
         ItemKind::RoughGem | ItemKind::CutGem => {
@@ -5389,6 +5393,7 @@ fn sync_agent_sprites(
                             // A lump of gore on the ground, tinted bloody red.
                             ItemKind::BodyPart => "boulder",
                             ItemKind::Craft => "i_craft",
+                            ItemKind::BoneCraft => "i_craft",
                             ItemKind::Wool => "i_wool",
                             ItemKind::Cloth => "i_cloth",
                             ItemKind::RoughGem | ItemKind::CutGem => "i_gem",
@@ -5876,6 +5881,7 @@ fn update_hud(
                 .unwrap_or_else(|| "remains".to_string()),
             ItemKind::BodyPart => gore_name(it.stuff, it.name.as_deref().unwrap_or("body part")),
             ItemKind::Craft => format!("{} craft (trade good)", reg.0.materials.get(it.stuff).name),
+            ItemKind::BoneCraft => "bone trinket (trade good)".to_string(),
             ItemKind::Wool => "raw wool".to_string(),
             ItemKind::Cloth => "bolt of cloth (trade good)".to_string(),
             ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),

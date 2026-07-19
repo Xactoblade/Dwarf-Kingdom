@@ -206,6 +206,10 @@ pub enum ItemKind {
     BodyPart,
     /// A decorative stone craft — a trade good. `stuff` = material index.
     Craft,
+    /// A trinket carved from a skeletonized body part — the fort's use for the
+    /// bones a battle leaves behind. `stuff` unused; a modest, renewable trade
+    /// good, worth rather less than a stone craft.
+    BoneCraft,
     /// Raw wool sheared from sheep. `stuff` unused.
     Wool,
     /// Woven cloth — a trade good. `stuff` unused.
@@ -270,7 +274,7 @@ impl ItemKind {
     /// Every kind there is. The compiler cannot hand us this, so adding a kind
     /// means adding it here too — `every_kind_is_listed_and_filed` fails loudly
     /// if you forget.
-    pub const ALL: [ItemKind; 27] = [
+    pub const ALL: [ItemKind; 29] = [
         ItemKind::Boulder,
         ItemKind::Seed,
         ItemKind::Crop,
@@ -278,7 +282,9 @@ impl ItemKind {
         ItemKind::Drink,
         ItemKind::Artifact,
         ItemKind::Corpse,
+        ItemKind::BodyPart,
         ItemKind::Craft,
+        ItemKind::BoneCraft,
         ItemKind::Wool,
         ItemKind::Cloth,
         ItemKind::RoughGem,
@@ -675,6 +681,7 @@ pub fn stock_category(kind: ItemKind) -> StockCategory {
         ItemKind::Log => StockCategory::Wood,
         ItemKind::Bar => StockCategory::Bars,
         ItemKind::Craft
+        | ItemKind::BoneCraft
         | ItemKind::Cloth
         | ItemKind::Wool
         | ItemKind::Hide
@@ -1362,6 +1369,8 @@ pub enum CraftKind {
     Cook,
     /// Turn a stone boulder into a decorative trade good.
     Stonecraft,
+    /// Carve a skeletonized body part into a bone trinket at the craftsdwarf's.
+    BoneCraft,
     /// Weave raw wool into cloth.
     Weave,
     /// Cut a rough gem into a brilliant one.
@@ -1554,6 +1563,7 @@ impl Dwarf {
             Task::Craft { kind: CraftKind::Brew, .. } => "brewing",
             Task::Craft { kind: CraftKind::Cook, .. } => "cooking",
             Task::Craft { kind: CraftKind::Stonecraft, .. } => "crafting",
+            Task::Craft { kind: CraftKind::BoneCraft, .. } => "carving bone",
             Task::Craft { kind: CraftKind::Weave, .. } => "weaving",
             Task::Craft { kind: CraftKind::CutGem, .. } => "cutting gems",
             Task::Craft { kind: CraftKind::ForgeWeapon, .. } => "forging a weapon",
@@ -1674,6 +1684,7 @@ struct Wants {
     drinks: bool,
     meals: bool,
     crafts: bool,
+    bone_crafts: bool,
     weapons: bool,
     crossbows: bool,
     bolts: bool,
@@ -1772,6 +1783,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Corpse | ItemKind::BodyPart => 0,
         // A worked craft is worth several times its raw stone.
         ItemKind::Craft => raws.materials.get(item.stuff).value * 12 + 4,
+        // A bone trinket: a fine renewable trade good, but plainer than stone.
+        ItemKind::BoneCraft => 10,
         ItemKind::Wool => 4,
         // Cloth is a fine, renewable trade good.
         ItemKind::Cloth => 18,
@@ -4625,6 +4638,12 @@ impl Sim {
         self.spawn_item(ItemKind::Corpse, 0, pos);
     }
 
+    /// Drop a skeletonized bone on the ground (scenarios/tests) — the
+    /// craftsdwarf's stock for bone trinkets. `stuff` = 2 is the skeletal stage.
+    pub fn debug_spawn_bone(&mut self, pos: Pos) {
+        self.spawn_named_item(ItemKind::BodyPart, 2, pos, Some("left arm".to_string()));
+    }
+
     /// Drop an arbitrary item on the ground (scenarios/tests).
     pub fn debug_spawn_item(&mut self, kind: ItemKind, stuff: u16, pos: Pos) {
         self.spawn_item(kind, stuff, pos);
@@ -6194,6 +6213,7 @@ impl Sim {
                     Task::Craft { kind: CraftKind::Brew, .. } => pending_brews += 1,
                     Task::Craft { kind: CraftKind::Cook, .. } => pending_cooks += 1,
                     Task::Craft { kind: CraftKind::Stonecraft, .. } => pending_crafts += 1,
+                    Task::Craft { kind: CraftKind::BoneCraft, .. } => pending_crafts += 1,
                     Task::Craft { kind: CraftKind::ForgeWeapon, .. } => pending_weapons += 1,
                     Task::Craft { kind: CraftKind::ForgeCrossbow, .. } => pending_crossbows += 1,
                     Task::Craft { kind: CraftKind::ForgeBolts, .. } => pending_bolts += 1,
@@ -6275,6 +6295,13 @@ impl Sim {
                 let want_crafts = has_craftsdwarf
                     && boulders > 4 + pending_crafts
                     && crafts + pending_crafts < 20;
+                // Bone trinkets need no stone — any skeletonized part on hand is
+                // free trade stock. Carve them whenever the craft shelf has room.
+                let want_bone_crafts = has_craftsdwarf
+                    && crafts + pending_crafts < 20
+                    && self.items.iter().any(|it| {
+                        it.kind == ItemKind::BodyPart && it.stuff >= 2 && self.item_takeable(it)
+                    });
                 // Arm and armor the soldiers: the forge works smelted bars into
                 // weapons and plate until every enlistee has both. Bars feed both
                 // lines, so each checks there's a bar free of the other's claims.
@@ -6380,6 +6407,7 @@ impl Sim {
                     drinks: want_drinks,
                     meals: want_meals,
                     crafts: want_crafts,
+                    bone_crafts: want_bone_crafts,
                     weapons: want_weapons,
                     crossbows: want_crossbows,
                     bolts: want_bolts,
@@ -6401,6 +6429,7 @@ impl Sim {
                     Some(CraftKind::Brew) => pending_brews += 1,
                     Some(CraftKind::Cook) => pending_cooks += 1,
                     Some(CraftKind::Stonecraft) => pending_crafts += 1,
+                    Some(CraftKind::BoneCraft) => pending_crafts += 1,
                     Some(CraftKind::ForgeWeapon) => pending_weapons += 1,
                     Some(CraftKind::MakeGlass) => pending_glass += 1,
                     Some(CraftKind::Smelt) => pending_bars += 1,
@@ -6640,6 +6669,14 @@ impl Sim {
             if let Some((shop, input)) = self.craft_stone_pair(dwarf_pos, my_region) {
                 let d = self.items[input].pos.manhattan(dwarf_pos);
                 consider(d, Cand::Craft { shop, input, kind: CraftKind::Stonecraft }, &mut best);
+            }
+        }
+        // Bone trinkets: the battlefield's leavings, once skeletonized, become a
+        // renewable trade good rather than clutter.
+        if w.bone_crafts {
+            if let Some((shop, input)) = self.craft_bone_pair(dwarf_pos, my_region) {
+                let d = self.items[input].pos.manhattan(dwarf_pos);
+                consider(d, Cand::Craft { shop, input, kind: CraftKind::BoneCraft }, &mut best);
             }
         }
         // Weaving: any wool on hand becomes cloth at the loom.
@@ -7067,6 +7104,30 @@ impl Sim {
             .enumerate()
             .filter(|(_, it)| {
                 it.kind == ItemKind::Boulder
+                    && self.item_takeable(it)
+                    && self.regions.id(it.pos) == region
+            })
+            .min_by_key(|(_, it)| it.pos.manhattan(near))
+            .map(|(i, _)| i)?;
+        Some((shop.pos, input))
+    }
+
+    /// Nearest (craftsdwarf workshop, skeletonized bone) pair for carving bone
+    /// trinkets. Only a fully skeletal part (rot stage 2) is dry, clean bone —
+    /// fresh or rotting gore is left to finish decaying.
+    fn craft_bone_pair(&self, near: Pos, region: u32) -> Option<(Pos, usize)> {
+        let shop = self
+            .buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Craftsdwarf && self.regions.id(b.pos) == region)
+            .min_by_key(|b| b.pos.manhattan(near))?;
+        let input = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.kind == ItemKind::BodyPart
+                    && it.stuff >= 2
                     && self.item_takeable(it)
                     && self.regions.id(it.pos) == region
             })
@@ -8444,6 +8505,7 @@ impl Sim {
                             CraftKind::Brew => Skill::Brewing,
                             CraftKind::Cook => Skill::Cooking,
                             CraftKind::Stonecraft
+                            | CraftKind::BoneCraft
                             | CraftKind::Weave
                             | CraftKind::CutGem
                             | CraftKind::ForgeWeapon
@@ -8516,6 +8578,14 @@ impl Sim {
                                     self.spawn_quality_item(ItemKind::Craft, stuff, shop, q);
                                 }
                                 self.push_thought(i, ThoughtKind::CookedMeal); // a job well done
+                            }
+                            CraftKind::BoneCraft => {
+                                // A bone is smaller stock than a boulder: one
+                                // trinket, not two. `stuff` was the rot stage,
+                                // meaningless on the trinket, so it carries none.
+                                self.stats.crafts_made += 1;
+                                self.spawn_quality_item(ItemKind::BoneCraft, 0, shop, q);
+                                self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::Weave => {
                                 self.stats.cloth_woven += 1;
@@ -10523,7 +10593,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v74: forts gained a `blood` map (spatter on the ground).
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
-const SAVE_VERSION: u32 = 76;
+// v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
+const SAVE_VERSION: u32 = 77;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

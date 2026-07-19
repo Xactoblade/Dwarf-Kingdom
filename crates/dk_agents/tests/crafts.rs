@@ -64,6 +64,55 @@ fn surplus_stone_is_worked_into_trade_goods() {
 }
 
 #[test]
+fn skeletonized_bones_are_carved_into_trinkets() {
+    // The battlefield's leavings, once picked clean to bone, are a craftsdwarf's
+    // free trade stock: no stone spent, just gore turned to goods.
+    let raws = common::test_raws();
+    let mut rng = dk_core::rng_from_seed(1203);
+    let map = dk_world::generate(&raws.materials, &mut rng, 32, 32, 16, 1203);
+    let mut sim = Sim::new(map, &raws, rng, 4);
+    sim.invasions = false;
+    let cx = sim.map.width as i32 / 2;
+    let cy = sim.map.height as i32 / 2;
+    sim.place_flat_stockpiles(cx, cy, 27);
+    let (wa, _) = sim.find_flat_patch(cx, cy).expect("workshop site");
+    assert!(sim.add_building(BuildingKind::Craftsdwarf, wa));
+    // A scatter of clean bones on the ground — and not a single boulder.
+    let mut bones = 0;
+    for d in 0..8 {
+        if let Some(z) = sim.map.walk_surface_z((cx + d % 4) as usize, (cy + 3 + d / 4) as usize) {
+            sim.debug_spawn_bone(Pos::new(cx + d % 4, cy + 3 + d / 4, z as i32));
+            bones += 1;
+        }
+    }
+    assert!(bones >= 4, "placed a handful of bones");
+    assert_eq!(sim.count_kind(ItemKind::Boulder), 0, "no stone in this fort");
+
+    let mut made = false;
+    for _ in 0..40_000 {
+        sim.step(&raws);
+        if sim.count_kind(ItemKind::BoneCraft) > 0 {
+            made = true;
+            break;
+        }
+    }
+    assert!(made, "a craftsdwarf should carve loose bones into trinkets");
+    assert!(sim.stats.crafts_made > 0);
+    // Carving consumed at least one bone.
+    assert!(
+        sim.count_kind(ItemKind::BodyPart) < bones,
+        "carving consumes bones"
+    );
+    // A bone trinket carries real, if modest, trade value.
+    let trinket = sim
+        .items
+        .iter()
+        .find(|i| i.active() && i.kind == ItemKind::BoneCraft)
+        .unwrap();
+    assert!(item_value(trinket, &raws) > 0, "a bone trinket sells for something");
+}
+
+#[test]
 fn a_reserve_of_stone_is_kept_for_building() {
     // With only a few boulders the fort should NOT craft them all away —
     // it keeps a reserve. Give exactly the threshold-ish amount.
