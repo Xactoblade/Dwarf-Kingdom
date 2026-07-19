@@ -1394,6 +1394,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Wild cave mushrooms carpet the cavern floor — the fort's food in the deep,
     // waiting for a fort bold enough to dig down and gather them.
     sim.plant_cave_mushrooms(90);
+    // And creatures lurk in the dark: a fort that breaks into the cavern must
+    // reckon with what already lives there.
+    sim.populate_caverns(4, &raws);
     // What creeps out of this particular country to eat the larder.
     sim.vermin_kind = vermin_for(r);
     // Rarely (about one fort in ten), one of the founding seven keeps a dark

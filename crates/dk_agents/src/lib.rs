@@ -1064,6 +1064,32 @@ fn beast_body() -> Vec<BodyPart> {
     ]
 }
 
+/// A lesser cavern dweller — hardier than a dwarf, but far short of a forgotten
+/// beast. The wildlife that makes the caverns a place to fear.
+fn cave_beast_body() -> Vec<BodyPart> {
+    let part = |kind: PartKind, hp: i16| BodyPart { kind, hp, max_hp: hp, bleeding: 0 };
+    vec![
+        part(PartKind::Head, 45),
+        part(PartKind::Torso, 95),
+        part(PartKind::LeftArm, 55),
+        part(PartKind::RightArm, 55),
+        part(PartKind::LeftLeg, 55),
+        part(PartKind::RightLeg, 55),
+    ]
+}
+
+/// The kinds of creature that lurk in the caverns.
+const CAVE_CREATURES: [&str; 8] = [
+    "giant cave spider",
+    "cave crawler",
+    "blind cave ogre",
+    "troglodyte",
+    "giant bat",
+    "cave fisher",
+    "rutherer",
+    "crundle",
+];
+
 // ------------------------------------------------------------- personality
 
 /// A dwarf's disposition, rolled at creation. All facets are 0-100.
@@ -4917,6 +4943,37 @@ impl Sim {
             "A forgotten beast has risen from the depths! {name}, {form}, stalks the caverns."
         ));
         idx
+    }
+
+    /// A lesser cave creature at `pos` — a hostile beast of the caverns,
+    /// hardier than a raider but no forgotten beast. Returns its dwarf index.
+    pub fn spawn_cave_creature(&mut self, pos: Pos, raws: &Raws) -> usize {
+        let kind = CAVE_CREATURES[self.rng.gen_range(0..CAVE_CREATURES.len())];
+        let mut c = new_dwarf(&mut self.rng, pos, Faction::Hostile, raws);
+        c.name = format!("a {kind}");
+        c.beast = true; // a monster: it cannot dodge, but strikes hard and is tough
+        c.body = cave_beast_body();
+        self.dwarves.push(c);
+        self.dwarves.len() - 1
+    }
+
+    /// Populate the cavern with lurking creatures — a fort that breaks into the
+    /// deep meets them. App-embark-only (needs cavern floors), so a fort with no
+    /// cavern, and every headless test, is unchanged.
+    pub fn populate_caverns(&mut self, count: usize, raws: &Raws) {
+        let spots: Vec<Pos> = self
+            .cavern_floors
+            .iter()
+            .copied()
+            .filter(|&p| self.map.walkable(p))
+            .collect();
+        if spots.is_empty() {
+            return;
+        }
+        for _ in 0..count {
+            let p = spots[self.rng.gen_range(0..spots.len())];
+            self.spawn_cave_creature(p, raws);
+        }
     }
 
     /// A demon of the underworld: a hostile of monstrous form, nastier even
