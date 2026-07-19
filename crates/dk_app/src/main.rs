@@ -1388,6 +1388,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
         }
     };
     sim.plant_shrubs(shrubs);
+    // Wild cave mushrooms carpet the cavern floor — the fort's food in the deep,
+    // waiting for a fort bold enough to dig down and gather them.
+    sim.plant_cave_mushrooms(90);
     // What creeps out of this particular country to eat the larder.
     sim.vermin_kind = vermin_for(r);
     // Rarely (about one fort in ten), one of the founding seven keeps a dark
@@ -4661,13 +4664,19 @@ fn tile_visual(
         }
     }
     if sim.shrub_at(here) {
-        // A wild berry shrub — low and berry-red, or amber once a forager has
-        // marked it to be gathered.
+        // A wild berry shrub — low and berry-red — or a pale cave mushroom on
+        // the cavern floor, or amber once a forager has marked it to be gathered.
         let marked = matches!(
             sim.designations.get(&here).map(|d| d.kind),
             Some(DesignationKind::Gather)
         );
-        let tint = if marked { [0.85, 0.5, 0.12] } else { [0.5, 0.18, 0.32] };
+        let tint = if marked {
+            [0.85, 0.5, 0.12]
+        } else if sim.cavern_floors.contains(&here) {
+            [0.82, 0.74, 0.58] // pale cave mushroom
+        } else {
+            [0.5, 0.18, 0.32] // surface berry
+        };
         rgb = mix(rgb, tint, 0.7);
         glyph = "crop";
     }

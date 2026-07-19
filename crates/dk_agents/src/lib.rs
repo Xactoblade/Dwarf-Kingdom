@@ -3056,6 +3056,34 @@ impl Sim {
         self.shrub_cap = self.shrubs.len() + self.shrubs.len() / 2;
     }
 
+    /// Sow wild cave mushrooms across the dry cavern floor — the fort's food in
+    /// the deep, gathered like the surface berry shrubs (the very same system),
+    /// but only reachable once a fort digs into the cavern. App-embark-only, so
+    /// a fort with no cavern is unchanged.
+    pub fn plant_cave_mushrooms(&mut self, count: usize) {
+        let floors: Vec<Pos> = self
+            .cavern_floors
+            .iter()
+            .copied()
+            .filter(|&p| self.map.water_at(p) == 0 && self.map.walkable(p))
+            .collect();
+        if floors.is_empty() {
+            return;
+        }
+        let mut placed = 0;
+        for _ in 0..(count * 20) {
+            if placed >= count {
+                break;
+            }
+            let p = floors[self.rng.gen_range(0..floors.len())];
+            if self.shrubs.insert(p) {
+                placed += 1;
+            }
+        }
+        // Cave mushrooms spread through the dark as surface patches do.
+        self.shrub_cap = self.shrubs.len() + self.shrubs.len() / 2;
+    }
+
     /// A random in-bounds walkable-surface cardinal neighbour of `parent`, or
     /// `None` if the step runs off the map. DRAWS RNG (the direction) — only
     /// call it past a feature's regrowth gate, never on a bare fort.
