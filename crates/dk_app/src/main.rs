@@ -4534,8 +4534,11 @@ fn tile_visual(
                         glyph = "bush";
                         rgb = mix(rgb, [0.14, 0.33, 0.13], 0.5);
                     } else if c == 1 {
-                        glyph = "stone";
-                        rgb = mix(rgb, [0.50, 0.48, 0.44], 0.6);
+                        // A loose stone — the transparent boulder sprite, not a
+                        // full opaque tile, so the grass shows around it and it
+                        // reads as a rock in the meadow rather than a grey box.
+                        glyph = "boulder";
+                        rgb = mix(rgb, [0.55, 0.53, 0.49], 0.6);
                     } else if matches!(season, Season::Spring | Season::Summer) {
                         let f = x * 1_299_709 + y * 1301;
                         if f.rem_euclid(13) == 0 {
@@ -4556,45 +4559,49 @@ fn tile_visual(
                     ROCK_SPRITES[(x * 15_731 + y * 789).rem_euclid(2) as usize]
                 };
                 if (x * 769 + y * 1109).rem_euclid(19) == 0 {
-                    glyph = "stone";
-                    rgb = mix(rgb, [0.52, 0.50, 0.46], 0.45);
+                    // A loose stone as a small transparent boulder, not a solid
+                    // grey tile, so the earth shows around it.
+                    glyph = "boulder";
+                    rgb = mix(rgb, [0.55, 0.53, 0.49], 0.4);
                 }
             }
-            // De-box: bleed neighbouring terrain across the seam so the hard
-            // tile boundaries between grass, earth, rock and water soften into
-            // ragged, organic edges. Only plain floors, and only some tiles (a
-            // per-tile roll), so the bleed is uneven and natural — a damp sandy
-            // bank where water laps the shore, a wash of the other stone or
-            // soil where two grounds meet.
-            if t.shape == TileShape::Floor && (x * 271 + y * 331).rem_euclid(7) < 4 {
-                let here_cat = m.category;
+            // De-box: dissolve the hard tile seams so the ground reads as one
+            // organic surface, not a grid of squares. EVERY floor tile bleeds
+            // toward its unlike neighbours — a lone sand or rock tile in a meadow
+            // greens over from all four sides and all but vanishes, while a large
+            // patch keeps its interior. Grassy neighbours bleed their green
+            // groundcover (how they actually read), others their own earth, and
+            // water leaves a damp sandy bank. A per-tile jitter keeps the
+            // softening uneven so the edges stay ragged, not uniformly blurred.
+            if t.shape == TileShape::Floor {
+                let here_grassy = m.category == MaterialCategory::Soil && m.id != "sand";
+                let jitter = 0.20 + 0.16 * ((x * 271 + y * 331).rem_euclid(5) as f32 / 4.0);
                 let mut bank = false;
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                     let Some((nmat, nwater)) = surface_at(sim, x + dx, y + dy, view_z) else {
                         continue;
                     };
                     if nwater > 0 {
-                        rgb = mix(rgb, [0.60, 0.55, 0.42], 0.30);
+                        rgb = mix(rgb, [0.60, 0.55, 0.42], 0.22);
                         bank = true;
-                    } else {
-                        let nm = raws.materials.get(nmat);
-                        if nm.category != here_cat {
-                            let c = nm.color;
-                            let nc = [
-                                c[0] as f32 / 255.0 * 0.55,
-                                c[1] as f32 / 255.0 * 0.55,
-                                c[2] as f32 / 255.0 * 0.55,
-                            ];
-                            rgb = mix(rgb, nc, 0.22);
-                        }
+                        continue;
                     }
+                    let nm = raws.materials.get(nmat);
+                    let n_grassy = nm.category == MaterialCategory::Soil && nm.id != "sand";
+                    if n_grassy == here_grassy && nm.category == m.category {
+                        continue; // the same kind of ground — no seam to soften
+                    }
+                    let target = if n_grassy {
+                        [0.24, 0.42, 0.20] // meadow green, as the grass reads
+                    } else {
+                        let c = nm.color;
+                        [c[0] as f32 / 255.0 * 0.7, c[1] as f32 / 255.0 * 0.7, c[2] as f32 / 255.0 * 0.7]
+                    };
+                    rgb = mix(rgb, target, jitter);
                 }
                 // Reeds fringe a grassy bank (not the desert sand or bare rock),
                 // and die back to none under winter's ice.
-                let grassy_bank = bank
-                    && here_cat == MaterialCategory::Soil
-                    && m.id != "sand"
-                    && !matches!(season, Season::Winter);
+                let grassy_bank = bank && here_grassy && !matches!(season, Season::Winter);
                 if grassy_bank && (x * 457 + y * 613).rem_euclid(3) == 0 {
                     glyph = "reed";
                     rgb = mix(rgb, [0.19, 0.42, 0.18], 0.5);
