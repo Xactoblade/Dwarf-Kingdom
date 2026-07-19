@@ -70,3 +70,35 @@ fn a_death_leaves_a_pool_of_blood() {
     assert!(!sim.dwarves[idx].alive, "the raider bled out");
     assert!(!sim.blood.is_empty(), "and its death left blood on the ground");
 }
+
+#[test]
+fn a_creature_tracks_bloody_footprints_that_fade() {
+    let (mut sim, _raws) = fort(91);
+    let z = sim.dwarves[0].pos.z;
+    let row: Vec<Pos> = (2..12).map(|x| Pos::new(x, 5, z)).collect();
+    // A fresh pool at the first tile.
+    let pool = row[0];
+    sim.spatter_blood(pool, BLOOD_MAX);
+    // Move dwarf 0 onto the pool, forcing "moved" from its spawn tile.
+    let d = 0;
+    sim.dwarves[d].pos = pool;
+    sim.tick_footprints();
+    assert!(sim.dwarves[d].blood_tracked > 0, "treading a pool loads the feet with blood");
+
+    // Now walk it down the clean row; each step should print a footprint that is
+    // fainter than the last, and the feet should eventually run clean.
+    let mut prints = Vec::new();
+    for &p in &row[1..] {
+        sim.dwarves[d].pos = p;
+        sim.tick_footprints();
+        prints.push(sim.blood.get(&p).copied().unwrap_or(0));
+    }
+    let printed = prints.iter().filter(|&&v| v > 0).count();
+    assert!(printed >= 3, "it leaves a trail of several footprints ({prints:?})");
+    // The trail fades: the first print is heavier than the last non-zero one.
+    let first = prints[0];
+    let last_nonzero = *prints.iter().rev().find(|&&v| v > 0).unwrap();
+    assert!(first > last_nonzero, "footprints fade as the feet run clean ({first} vs {last_nonzero})");
+    // And the feet eventually run clean.
+    assert!(sim.dwarves[d].blood_tracked < 6, "the feet run clean after a few steps");
+}

@@ -1464,6 +1464,13 @@ pub struct Dwarf {
     pub happiness: f32,
     /// 0-100; bleeding drains it, running out is fatal.
     pub blood: f32,
+    /// Blood on this creature's feet, tracked from a pool and left as fading
+    /// footprints as it walks. 0 when clean.
+    #[serde(default)]
+    pub blood_tracked: u16,
+    /// Where it stood last step, to tell whether it moved (for footprints).
+    #[serde(default)]
+    pub last_pos: Pos,
     /// 0-100; drains while submerged in deep water.
     pub breath: f32,
     pub body: Vec<BodyPart>,
@@ -4756,6 +4763,7 @@ impl Sim {
         if self.clock.tick % BLOOD_DRY_INTERVAL == 0 && self.clock.tick > 0 {
             self.dry_blood();
         }
+        self.tick_footprints();
         // Region rebuilds are throttled; A* remains the authority in between.
         if self.regions.dirty && self.clock.tick % REGION_REBUILD_INTERVAL == 0 {
             self.regions.rebuild(&self.map);
@@ -9497,6 +9505,34 @@ impl Sim {
         }
     }
 
+    /// Bloody footprints: a creature that treads through a pool carries blood on
+    /// its feet and prints it, fainter each step, as it walks away — until its
+    /// feet run clean. Called each tick; deterministic (no rng), so combat stays
+    /// identical.
+    pub fn tick_footprints(&mut self) {
+        for i in 0..self.dwarves.len() {
+            if !self.dwarves[i].alive {
+                continue;
+            }
+            let cur = self.dwarves[i].pos;
+            if cur != self.dwarves[i].last_pos {
+                let tracked = self.dwarves[i].blood_tracked;
+                if tracked >= 6 {
+                    let dep = (tracked / 3).max(6);
+                    let e = self.blood.entry(cur).or_insert(0);
+                    *e = (*e).saturating_add(dep).min(BLOOD_MAX);
+                    self.dwarves[i].blood_tracked = tracked - dep;
+                }
+                // Only a real pool (not a footprint) reloads the feet.
+                if self.blood.get(&cur).copied().unwrap_or(0) > 20 {
+                    let t = self.dwarves[i].blood_tracked;
+                    self.dwarves[i].blood_tracked = (t + 24).min(60);
+                }
+            }
+            self.dwarves[i].last_pos = cur;
+        }
+    }
+
     /// Blood dries and fades a little each pass; a tile with none left is
     /// forgotten.
     pub fn dry_blood(&mut self) {
@@ -10285,6 +10321,8 @@ fn new_dwarf(rng: &mut ChaCha8Rng, pos: Pos, faction: Faction, raws: &Raws) -> D
         fatigue: rng.gen_range(0.0..30.0),
         happiness: 50.0,
         blood: 100.0,
+        blood_tracked: 0,
+        last_pos: pos,
         breath: 100.0,
         body: default_body(),
         personality: Personality::roll(rng),
@@ -10407,7 +10445,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v72: forts gained an `aquifers` set (water-bearing rock tiles).
 // v73: forts gained a `cavern_floors` set (the deep cavern layer).
 // v74: forts gained a `blood` map (spatter on the ground).
-const SAVE_VERSION: u32 = 74;
+// v75: creatures gained blood_tracked/last_pos for bloody footprints.
+const SAVE_VERSION: u32 = 75;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
