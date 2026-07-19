@@ -1812,19 +1812,23 @@ fn setup(
 
     commands.spawn((
         Text::new(""),
-        TextFont { font_size: 15.0, ..default() },
+        TextFont {
+            font_size: 15.0,
+            line_height: bevy::text::LineHeight::RelativeToFont(1.35),
+            ..default()
+        },
         TextColor(UI_TEXT),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(8.0),
             top: Val::Px(8.0),
             max_width: Val::Percent(74.0),
-            padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
+            padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
             border: UiRect::all(Val::Px(2.0)),
             ..default()
         },
         BackgroundColor(UI_PANEL),
-        BorderColor(UI_FRAME),
+        BorderColor(UI_FRAME_HI),
         BorderRadius::all(Val::Px(3.0)),
         HudText,
     ));
@@ -1897,12 +1901,14 @@ fn setup(
                 Node {
                     flex_direction: FlexDirection::Row,
                     flex_wrap: FlexWrap::Wrap,
-                    column_gap: Val::Px(4.0),
-                    row_gap: Val::Px(4.0),
-                    padding: UiRect::all(Val::Px(5.0)),
+                    column_gap: Val::Px(6.0),
+                    row_gap: Val::Px(6.0),
+                    padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                    border: UiRect { top: Val::Px(2.0), ..default() },
                     ..default()
                 },
                 BackgroundColor(UI_PANEL_DARK),
+                BorderColor(UI_FRAME_HI),
             ))
             .with_children(|panel| {
                 for t in TOOLS {
@@ -1939,13 +1945,11 @@ fn setup(
                 Node {
                     width: Val::Percent(100.0),
                     flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(4.0),
-                    padding: UiRect::all(Val::Px(5.0)),
-                    border: UiRect { top: Val::Px(2.0), ..default() },
+                    column_gap: Val::Px(6.0),
+                    padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
                     ..default()
                 },
                 BackgroundColor(UI_PANEL_DARK),
-                BorderColor(UI_FRAME),
             ))
             .with_children(|bar| {
                 for (i, name) in CATEGORIES.iter().enumerate() {
@@ -1993,7 +1997,7 @@ fn setup(
                 border: UiRect::all(Val::Px(3.0)),
                 ..default()
             },
-            BorderColor(UI_FRAME),
+            BorderColor(UI_FRAME_HI),
             BorderRadius::all(Val::Px(3.0)),
             ImageNode::new(minimap),
             MinimapContainer,
@@ -2167,7 +2171,7 @@ fn setup(
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(tool_bg(3, false, false)),
+            BackgroundColor(tool_bg(2, false, false)),
             BorderColor(UI_FRAME),
             BorderRadius::all(Val::Px(2.0)),
             HelpButton,
@@ -2446,8 +2450,9 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
 
 /// Background colour for a tool button, brightened when hovered or active.
 // ---- Modern-DF UI palette: warm carved stone, wood frames, bone lettering.
-/// Main panel fill — dark warm stone, mostly opaque so text reads over terrain.
-const UI_PANEL: Color = Color::srgba(0.15, 0.12, 0.09, 0.96);
+/// Main panel fill — dark warm stone, near-opaque so text never fights the
+/// terrain beneath it.
+const UI_PANEL: Color = Color::srgba(0.12, 0.098, 0.072, 0.98);
 /// A darker inset fill — the launcher bars the panels sit on.
 const UI_PANEL_DARK: Color = Color::srgba(0.10, 0.082, 0.062, 0.97);
 /// Panel frame — the carved wood/iron edge around a panel or tablet.
@@ -2476,7 +2481,7 @@ fn tool_bg(cat: u8, active: bool, hover: bool) -> Color {
     let [r, g, b] = match cat {
         0 => [0.40, 0.29, 0.19], // build — oak brown
         1 => [0.27, 0.36, 0.25], // dig / terrain — moss
-        2 => [0.29, 0.33, 0.43], // info — slate
+        2 => [0.33, 0.31, 0.29], // info — warm slate (no cold blue)
         _ => [0.45, 0.27, 0.23], // alert — rust
     };
     // Hover lifts the tablet toward a lit stone; otherwise it rests dark.
@@ -3291,7 +3296,7 @@ fn handle_help_button(
             if hovered {
                 active.over_ui = true;
             }
-            *bg = BackgroundColor(tool_bg(3, false, hovered));
+            *bg = BackgroundColor(tool_bg(2, false, hovered));
         }
     }
 }
