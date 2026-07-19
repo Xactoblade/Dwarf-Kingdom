@@ -2465,6 +2465,8 @@ const UI_TEXT: Color = Color::srgb(0.91, 0.85, 0.71);
 const UI_TEXT_DIM: Color = Color::srgb(0.70, 0.61, 0.45);
 /// The gold accent DF uses for selection and keys.
 const UI_ACCENT: Color = Color::srgb(0.97, 0.80, 0.34);
+/// Near-black ink — lettering carved into a lit amber plaque (the active tab).
+const UI_INK: Color = Color::srgb(0.14, 0.10, 0.05);
 
 /// A stone-tablet button fill. Each category keeps a faint hue so the eye can
 /// group tools, but they read as warm stone, not saturated blocks. An active
@@ -2578,12 +2580,19 @@ fn handle_embark_buttons(
 fn handle_category(
     screen: Res<ScreenRes>,
     mut open: ResMut<OpenCategory>,
-    mut buttons: Query<(&Interaction, &CategoryButton, &mut WasPressed, &mut BackgroundColor)>,
+    mut buttons: Query<(
+        &Interaction,
+        &CategoryButton,
+        &mut WasPressed,
+        &mut BackgroundColor,
+        &Children,
+    )>,
+    mut labels: Query<&mut TextColor>,
 ) {
     if screen.0 != Screen::Playing {
         return;
     }
-    for (interaction, cb, mut was, mut bg) in &mut buttons {
+    for (interaction, cb, mut was, mut bg, children) in &mut buttons {
         let pressed = matches!(interaction, Interaction::Pressed);
         if pressed && !was.0 {
             open.0 = if open.0 == Some(cb.0) { None } else { Some(cb.0) };
@@ -2592,6 +2601,13 @@ fn handle_category(
         let is_open = open.0 == Some(cb.0);
         let hovered = !matches!(interaction, Interaction::None);
         *bg = BackgroundColor(tool_bg(cb.0, is_open, hovered));
+        // The open tab reads as dark lettering carved into its gold plaque;
+        // the rest keep their bone lettering.
+        if let Some(&label) = children.first() {
+            if let Ok(mut color) = labels.get_mut(label) {
+                *color = TextColor(if is_open { UI_INK } else { UI_TEXT });
+            }
+        }
     }
 }
 
