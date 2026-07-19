@@ -596,6 +596,73 @@ pub fn place_aquifer(map: &Map, reg: &MaterialRegistry) -> Vec<Pos> {
     tiles
 }
 
+/// Hollow out a great cavern layer in the middle depths — an open cave system
+/// with natural rock pillars, a walkable floor, and a few still pools. Dig down
+/// far enough and a fort breaks into it, exactly as in Dwarf Fortress. Carves
+/// the terrain and returns the cavern-floor tiles (the caller flags them so they
+/// can be lit with a fungal glow and, later, grow cave life). Deterministic in
+/// `seed`; app-embark-only (never carved into small test maps).
+pub fn carve_caverns(map: &mut Map, seed: u64) -> Vec<Pos> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0xCA7E_0CA7_0CA7_0CA7);
+    let (w, h, d) = (map.width, map.height, map.depth);
+    let mut floors = Vec::new();
+    if w < 48 || h < 48 || d < 20 {
+        return floors;
+    }
+    // One cavern layer in the middle depths, a few levels tall, safely above the
+    // adamantine spires at the very bottom.
+    let floor_z = (d / 4).max(4); // e.g. 8 of 32
+    let ceil_z = (d * 3 / 8).max(floor_z + 3); // e.g. 12 of 32
+    // A coarse, interpolated open/solid field: high => open cave, low => a
+    // natural pillar of rock left standing floor-to-ceiling.
+    let coarse = 6usize;
+    let (gw, gh) = (w / coarse + 2, h / coarse + 2);
+    let grid: Vec<f32> = (0..gw * gh).map(|_| rng.gen_range(0.0f32..1.0)).collect();
+    let noise = |x: usize, y: usize| -> f32 {
+        let (fx, fy) = (x as f32 / coarse as f32, y as f32 / coarse as f32);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (tx, ty) = (fx.fract(), fy.fract());
+        let g = |gx: usize, gy: usize| grid[gy * gw + gx];
+        let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
+        let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
+        top * (1.0 - ty) + bot * ty
+    };
+    for y in 0..h {
+        for x in 0..w {
+            // Keep a solid rim around the edges so the cavern is enclosed.
+            let edge = x < 2 || y < 2 || x + 2 >= w || y + 2 >= h;
+            if edge || noise(x, y) <= 0.34 {
+                continue; // a pillar / wall of rock stands here
+            }
+            let fmat = map.get(x, y, floor_z).material;
+            if !map.get(x, y, floor_z).is_solid() {
+                continue;
+            }
+            // Hollow the band above the floor to open air.
+            for z in (floor_z + 1)..=ceil_z.min(d - 1) {
+                map.set(x, y, z, Tile::AIR);
+            }
+            map.set(x, y, floor_z, Tile::floor(fmat));
+            floors.push(Pos::new(x as i32, y as i32, floor_z as i32));
+        }
+    }
+    // A handful of still pools on the cavern floor — clustered, not a flood.
+    if !floors.is_empty() {
+        let pool_seeds = 3 + rng.gen_range(0..3);
+        for _ in 0..pool_seeds {
+            let c = floors[rng.gen_range(0..floors.len())];
+            let r = 2 + rng.gen_range(0..3) as i32;
+            for &p in &floors {
+                if (p.x - c.x).abs() <= r && (p.y - c.y).abs() <= r {
+                    map.set_water(p, MAX_WATER);
+                }
+            }
+        }
+    }
+    floors
+}
+
 pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle, relief: Relief) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(

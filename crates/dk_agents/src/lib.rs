@@ -1916,6 +1916,11 @@ pub struct Sim {
     /// no aquifer stays byte-identical.
     #[serde(default)]
     pub aquifers: BTreeSet<Pos>,
+    /// Floor tiles of the great cavern layer dug deep in the rock — lit with a
+    /// fungal glow. Empty unless the map was carved with a cavern (app embark
+    /// only, and only on full-size maps).
+    #[serde(default)]
+    pub cavern_floors: BTreeSet<Pos>,
     pub stats: SimStats,
     pub clock: Calendar,
     pub weather: Weather,
@@ -2052,6 +2057,7 @@ impl Sim {
             shrub_cap: 0,
             adamantine_breaches: BTreeSet::new(),
             aquifers: BTreeSet::new(),
+            cavern_floors: BTreeSet::new(),
             engravings: BTreeMap::new(),
             constructions: BTreeMap::new(),
             stats: SimStats::default(),
@@ -10258,7 +10264,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v71: added the "steel" alloy material (and the is_flux flag), shifting indices
 // again — same reason to reject older saves.
 // v72: forts gained an `aquifers` set (water-bearing rock tiles).
-const SAVE_VERSION: u32 = 72;
+// v73: forts gained a `cavern_floors` set (the deep cavern layer).
+const SAVE_VERSION: u32 = 73;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

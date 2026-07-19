@@ -1333,6 +1333,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // Rivers, lakes and ponds — carved after gen; they don't disturb the embark
     // rng, so the dwarves rolled below are unchanged.
     add_water_features(&mut map, r, seed);
+    // A great cavern layer deep in the rock — dig down far enough and the fort
+    // breaks into it. Carved before the sim so its water and floors are in place.
+    let cavern_floors = dk_world::carve_caverns(&mut map, seed);
     // Seed the deep wonder-metal — and the doom of digging it too greedily.
     let breaches = raws
         .materials
@@ -1348,6 +1351,7 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
         let aq = dk_world::place_aquifer(&sim.map, &raws.materials);
         sim.aquifers = aq.into_iter().collect();
     }
+    sim.cavern_floors = cavern_floors.into_iter().collect();
     sim.home_region = Some(region);
     sim.add_embark_supplies(raws);
     sim.add_starting_dogs();
@@ -4587,6 +4591,19 @@ fn tile_visual(
                     rgb = mix(rgb, [0.19, 0.42, 0.18], 0.5);
                 }
             }
+        }
+    }
+    // The cavern floor glows with a pale fungal light, and mushrooms and moss
+    // dot the deep dark. (Pool tiles render as water above and never reach here.)
+    if sim.cavern_floors.contains(&here) {
+        rgb = mix(rgb, [0.28, 0.50, 0.46], 0.55);
+        let c = (x * 941 + y * 617).rem_euclid(9);
+        if c == 0 {
+            glyph = "crop"; // a clump of cave mushrooms
+            rgb = mix(rgb, [0.80, 0.74, 0.52], 0.45);
+        } else if c == 1 {
+            glyph = "bush"; // low cave moss
+            rgb = mix(rgb, [0.40, 0.62, 0.52], 0.4);
         }
     }
     if let Some(farm) = sim.farms.get(&here) {
