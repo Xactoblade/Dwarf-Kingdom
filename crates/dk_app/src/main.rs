@@ -1813,13 +1813,19 @@ fn setup(
     commands.spawn((
         Text::new(""),
         TextFont { font_size: 15.0, ..default() },
-        TextColor(Color::srgb(0.9, 0.9, 0.85)),
+        TextColor(UI_TEXT),
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(10.0),
+            left: Val::Px(8.0),
             top: Val::Px(8.0),
+            max_width: Val::Percent(74.0),
+            padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
+            border: UiRect::all(Val::Px(2.0)),
             ..default()
         },
+        BackgroundColor(UI_PANEL),
+        BorderColor(UI_FRAME),
+        BorderRadius::all(Val::Px(3.0)),
         HudText,
     ));
 
@@ -1827,15 +1833,18 @@ fn setup(
     commands.spawn((
         Text::new(""),
         TextFont { font_size: 15.0, ..default() },
-        TextColor(Color::srgb(1.0, 0.95, 0.7)),
+        TextColor(UI_ACCENT),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(10.0),
             bottom: Val::Px(46.0),
-            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+            padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)),
+            border: UiRect::all(Val::Px(2.0)),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.8)),
+        BackgroundColor(UI_PANEL),
+        BorderColor(UI_FRAME),
+        BorderRadius::all(Val::Px(3.0)),
         TooltipUi,
     ));
 
@@ -1849,18 +1858,21 @@ fn setup(
                 top: Val::Px(0.0),
                 width: Val::Px(360.0),
                 max_height: Val::Percent(88.0),
-                padding: UiRect::all(Val::Px(10.0)),
+                padding: UiRect::all(Val::Px(12.0)),
+                border: UiRect::all(Val::Px(2.0)),
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.06, 0.06, 0.09, 0.92)),
+            BackgroundColor(UI_PANEL),
+            BorderColor(UI_FRAME),
+            BorderRadius::all(Val::Px(3.0)),
             Visibility::Hidden,
             DwarfPanel,
         ))
         .with_child((
             Text::new(""),
             TextFont { font_size: 14.0, ..default() },
-            TextColor(Color::srgb(0.92, 0.92, 0.85)),
+            TextColor(UI_TEXT),
             DwarfPanelText,
         ));
 
@@ -1885,12 +1897,12 @@ fn setup(
                 Node {
                     flex_direction: FlexDirection::Row,
                     flex_wrap: FlexWrap::Wrap,
-                    column_gap: Val::Px(3.0),
-                    row_gap: Val::Px(3.0),
-                    padding: UiRect::all(Val::Px(4.0)),
+                    column_gap: Val::Px(4.0),
+                    row_gap: Val::Px(4.0),
+                    padding: UiRect::all(Val::Px(5.0)),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.9)),
+                BackgroundColor(UI_PANEL_DARK),
             ))
             .with_children(|panel| {
                 for t in TOOLS {
@@ -1899,22 +1911,25 @@ fn setup(
                             Button,
                             Node {
                                 display: Display::None, // hidden until its category opens
-                                padding: UiRect::axes(Val::Px(7.0), Val::Px(4.0)),
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                                border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
                             BackgroundColor(tool_bg(t.cat, false, false)),
+                            BorderColor(UI_FRAME),
+                            BorderRadius::all(Val::Px(2.0)),
                             t.clone(),
                         ))
                         .with_children(|b| {
                             b.spawn((
                                 Text::new(t.label),
                                 TextFont { font_size: 13.0, ..default() },
-                                TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                                TextColor(UI_TEXT),
                             ))
                             .with_child((
                                 TextSpan::new(format!("  {}", t.key)),
                                 TextFont { font_size: 11.0, ..default() },
-                                TextColor(Color::srgb(0.75, 0.75, 0.55)),
+                                TextColor(UI_ACCENT),
                             ));
                         });
                 }
@@ -1924,28 +1939,33 @@ fn setup(
                 Node {
                     width: Val::Percent(100.0),
                     flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(3.0),
-                    padding: UiRect::all(Val::Px(4.0)),
+                    column_gap: Val::Px(4.0),
+                    padding: UiRect::all(Val::Px(5.0)),
+                    border: UiRect { top: Val::Px(2.0), ..default() },
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.04, 0.04, 0.06, 0.95)),
+                BackgroundColor(UI_PANEL_DARK),
+                BorderColor(UI_FRAME),
             ))
             .with_children(|bar| {
                 for (i, name) in CATEGORIES.iter().enumerate() {
                     bar.spawn((
                         Button,
                         Node {
-                            padding: UiRect::axes(Val::Px(12.0), Val::Px(5.0)),
+                            padding: UiRect::axes(Val::Px(14.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
                         BackgroundColor(tool_bg(i as u8, false, false)),
+                        BorderColor(UI_FRAME),
+                        BorderRadius::all(Val::Px(2.0)),
                         CategoryButton(i as u8),
                         WasPressed::default(),
                     ))
                     .with_child((
                         Text::new(*name),
                         TextFont { font_size: 15.0, ..default() },
-                        TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                        TextColor(UI_TEXT),
                     ));
                 }
             });
@@ -1970,10 +1990,11 @@ fn setup(
                 bottom: Val::Px(60.0),
                 width: Val::Px(MINIMAP_PX),
                 height: Val::Px(MINIMAP_PX),
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(3.0)),
                 ..default()
             },
-            BorderColor(Color::srgb(0.5, 0.5, 0.55)),
+            BorderColor(UI_FRAME),
+            BorderRadius::all(Val::Px(3.0)),
             ImageNode::new(minimap),
             MinimapContainer,
         ))
@@ -1983,7 +2004,7 @@ fn setup(
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(Color::srgb(1.0, 0.95, 0.3)),
+            BorderColor(UI_ACCENT),
             MinimapViewport,
         ));
 
@@ -1998,11 +2019,13 @@ fn setup(
                 width: Val::Percent(100.0),
                 flex_direction: FlexDirection::Row,
                 justify_content: JustifyContent::Center,
-                column_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(8.0)),
+                column_gap: Val::Px(10.0),
+                padding: UiRect::all(Val::Px(9.0)),
+                border: UiRect { top: Val::Px(2.0), ..default() },
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.92)),
+            BackgroundColor(UI_PANEL_DARK),
+            BorderColor(UI_FRAME),
             Visibility::Hidden,
             EmbarkBar,
         ))
@@ -2017,16 +2040,19 @@ fn setup(
                 bar.spawn((
                     Button,
                     Node {
-                        padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)),
+                        padding: UiRect::axes(Val::Px(15.0), Val::Px(8.0)),
+                        border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
                     BackgroundColor(tool_bg(cat, false, false)),
+                    BorderColor(UI_FRAME),
+                    BorderRadius::all(Val::Px(2.0)),
                     EmbarkButton(act),
                 ))
                 .with_child((
                     Text::new(label),
                     TextFont { font_size: 16.0, ..default() },
-                    TextColor(Color::srgb(0.95, 0.95, 0.92)),
+                    TextColor(UI_TEXT),
                 ));
             }
         });
@@ -2113,19 +2139,22 @@ fn setup(
             Button,
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(80.0),
+                right: Val::Px(84.0),
                 top: Val::Px(8.0),
-                padding: UiRect::axes(Val::Px(12.0), Val::Px(5.0)),
+                padding: UiRect::axes(Val::Px(13.0), Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
             BackgroundColor(tool_bg(2, false, false)),
+            BorderColor(UI_FRAME),
+            BorderRadius::all(Val::Px(2.0)),
             StocksButton,
             WasPressed::default(),
         ))
         .with_child((
             Text::new("Stocks"),
             TextFont { font_size: 15.0, ..default() },
-            TextColor(Color::srgb(0.95, 0.95, 0.92)),
+            TextColor(UI_TEXT),
         ));
     commands
         .spawn((
@@ -2134,17 +2163,20 @@ fn setup(
                 position_type: PositionType::Absolute,
                 right: Val::Px(8.0),
                 top: Val::Px(8.0),
-                padding: UiRect::axes(Val::Px(13.0), Val::Px(5.0)),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
             BackgroundColor(tool_bg(3, false, false)),
+            BorderColor(UI_FRAME),
+            BorderRadius::all(Val::Px(2.0)),
             HelpButton,
             WasPressed::default(),
         ))
         .with_child((
             Text::new("?"),
             TextFont { font_size: 16.0, ..default() },
-            TextColor(Color::srgb(0.95, 0.95, 0.92)),
+            TextColor(UI_TEXT),
         ));
     commands
         .spawn((
@@ -2154,18 +2186,21 @@ fn setup(
                 top: Val::Px(44.0),
                 width: Val::Px(300.0),
                 max_height: Val::Percent(80.0),
-                padding: UiRect::all(Val::Px(12.0)),
+                padding: UiRect::all(Val::Px(13.0)),
+                border: UiRect::all(Val::Px(2.0)),
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.06, 0.06, 0.09, 0.94)),
+            BackgroundColor(UI_PANEL),
+            BorderColor(UI_FRAME),
+            BorderRadius::all(Val::Px(3.0)),
             Visibility::Hidden,
             StocksPanel,
         ))
         .with_child((
             Text::new(""),
             TextFont { font_size: 14.0, ..default() },
-            TextColor(Color::srgb(0.92, 0.92, 0.85)),
+            TextColor(UI_TEXT),
             StocksPanelText,
         ));
 }
@@ -2410,14 +2445,42 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
 }
 
 /// Background colour for a tool button, brightened when hovered or active.
+// ---- Modern-DF UI palette: warm carved stone, wood frames, bone lettering.
+/// Main panel fill — dark warm stone, mostly opaque so text reads over terrain.
+const UI_PANEL: Color = Color::srgba(0.15, 0.12, 0.09, 0.96);
+/// A darker inset fill — the launcher bars the panels sit on.
+const UI_PANEL_DARK: Color = Color::srgba(0.10, 0.082, 0.062, 0.97);
+/// Panel frame — the carved wood/iron edge around a panel or tablet.
+const UI_FRAME: Color = Color::srgb(0.44, 0.33, 0.20);
+/// A brighter frame, for the focused or active element.
+const UI_FRAME_HI: Color = Color::srgb(0.74, 0.57, 0.30);
+/// Primary lettering — warm bone/parchment.
+const UI_TEXT: Color = Color::srgb(0.91, 0.85, 0.71);
+/// Secondary lettering — dimmer, for hints and hotkeys.
+const UI_TEXT_DIM: Color = Color::srgb(0.70, 0.61, 0.45);
+/// The gold accent DF uses for selection and keys.
+const UI_ACCENT: Color = Color::srgb(0.97, 0.80, 0.34);
+
+/// A stone-tablet button fill. Each category keeps a faint hue so the eye can
+/// group tools, but they read as warm stone, not saturated blocks. An active
+/// (selected) tablet glows amber; a hovered one lifts a touch.
 fn tool_bg(cat: u8, active: bool, hover: bool) -> Color {
+    if active {
+        // Selected: a warm amber glow, brighter still on hover.
+        return if hover {
+            Color::srgb(0.86, 0.66, 0.28)
+        } else {
+            Color::srgb(0.74, 0.55, 0.22)
+        };
+    }
     let [r, g, b] = match cat {
-        0 => [0.55, 0.4, 0.3],
-        1 => [0.3, 0.5, 0.4],
-        2 => [0.4, 0.42, 0.55],
-        _ => [0.5, 0.3, 0.3],
+        0 => [0.40, 0.29, 0.19], // build — oak brown
+        1 => [0.27, 0.36, 0.25], // dig / terrain — moss
+        2 => [0.29, 0.33, 0.43], // info — slate
+        _ => [0.45, 0.27, 0.23], // alert — rust
     };
-    let k = if active { 0.55 } else if hover { 0.3 } else { 0.0 };
+    // Hover lifts the tablet toward a lit stone; otherwise it rests dark.
+    let k = if hover { 0.26 } else { 0.0 };
     Color::srgb(r + (1.0 - r) * k, g + (1.0 - g) * k, b + (1.0 - b) * k)
 }
 
@@ -5510,7 +5573,17 @@ fn update_hud(
     diagnostics: Res<DiagnosticsStore>,
     squad_sel: Res<SelectedSquad>,
     mut q: Query<&mut Text, With<HudText>>,
+    mut hud_vis: Query<&mut Visibility, With<HudText>>,
 ) {
+    // The HUD sits on a framed stone panel; hide the whole panel on the title
+    // screen (where it would show as an empty box behind the title art).
+    if let Ok(mut v) = hud_vis.single_mut() {
+        *v = if matches!(screen.0, Screen::Title) {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    }
     match screen.0 {
         Screen::Title => {
             // The start screen draws its own title art and menu; keep the HUD
