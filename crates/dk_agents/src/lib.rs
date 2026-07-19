@@ -195,6 +195,10 @@ pub enum ItemKind {
     Artifact,
     /// A dead citizen, awaiting burial. `stuff` unused; `name` names them.
     Corpse,
+    /// A limb, head, or other part struck clean off a body in battle. `stuff`
+    /// unused; `name` says which part ("severed left arm"). Refuse, like a
+    /// corpse — gore for the ground, worth nothing.
+    BodyPart,
     /// A decorative stone craft — a trade good. `stuff` = material index.
     Craft,
     /// Raw wool sheared from sheep. `stuff` unused.
@@ -680,7 +684,7 @@ pub fn stock_category(kind: ItemKind) -> StockCategory {
         ItemKind::Bed | ItemKind::Statue | ItemKind::Barrel | ItemKind::Bin => {
             StockCategory::Furniture
         }
-        ItemKind::Corpse => StockCategory::Refuse,
+        ItemKind::Corpse | ItemKind::BodyPart => StockCategory::Refuse,
     }
 }
 
@@ -1759,8 +1763,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         ItemKind::Drink => 8,
         // Precious, but not a wagon-buying cheat: the material matters.
         ItemKind::Artifact => 50 + raws.materials.get(item.stuff).value * 5,
-        // The dead are not for sale.
-        ItemKind::Corpse => 0,
+        // The dead are not for sale, and neither is what's hacked off them.
+        ItemKind::Corpse | ItemKind::BodyPart => 0,
         // A worked craft is worth several times its raw stone.
         ItemKind::Craft => raws.materials.get(item.stuff).value * 12 + 4,
         ItemKind::Wool => 4,
@@ -5354,8 +5358,13 @@ impl Sim {
         part.hp -= dmg;
         part.bleeding = part.bleeding.saturating_add(bleed);
         let destroyed = part.hp <= 0;
+        let just_destroyed = destroyed && part.hp + dmg > 0;
         let vital = part.kind.vital();
         self.log_event(format!("A war {kind} savages {def_name}'s {}!", part_kind.name()));
+        // A limb hewn off maims; a head hewn off decapitates on top of death.
+        if just_destroyed && (!vital || part_kind == PartKind::Head) {
+            self.sever_part(defender, part_kind);
+        }
         if destroyed && vital {
             self.log_event(format!("{def_name} falls dead!"));
             let was_beast = self.dwarves[defender].beast;
@@ -5395,8 +5404,13 @@ impl Sim {
         part.hp -= dmg;
         part.bleeding = part.bleeding.saturating_add(bleed);
         let destroyed = part.hp <= 0;
+        let just_destroyed = destroyed && part.hp + dmg > 0;
         let vital = part.kind.vital();
         self.log_event(format!("A weapon trap tears into {name}!"));
+        // A limb hewn off maims; a head hewn off decapitates on top of death.
+        if just_destroyed && (!vital || part_kind == PartKind::Head) {
+            self.sever_part(i, part_kind);
+        }
         if destroyed && vital {
             self.log_event(format!("{name} falls dead!"));
             let was_beast = self.dwarves[i].beast;
@@ -9415,11 +9429,16 @@ impl Sim {
         part.hp -= dmg;
         part.bleeding = part.bleeding.saturating_add(bleed);
         let destroyed = part.hp <= 0;
+        let just_destroyed = destroyed && part.hp + dmg > 0;
         let vital = part.kind.vital();
         self.log_event(format!(
             "{att_name} {verb} {def_name} in the {}!",
             part_kind.name()
         ));
+        // A limb hewn off maims; a head hewn off decapitates on top of death.
+        if just_destroyed && (!vital || part_kind == PartKind::Head) {
+            self.sever_part(defender, part_kind);
+        }
         if destroyed && vital {
             self.log_event(format!("{def_name} falls dead!"));
             // Merchants killed by raiders are a tragedy, not your crime.
@@ -9503,6 +9522,33 @@ impl Sim {
                 *e = (*e).saturating_add(amount / 3).min(BLOOD_MAX);
             }
         }
+    }
+
+    /// A part hacked past destruction is struck clean off: it drops to the
+    /// ground as gore, the stump gushes blood, and the wound sprays the tile.
+    /// A lost limb maims but need not kill (the caller handles a fatal head or
+    /// torso). Deterministic (no rng), so combat stays byte-identical.
+    pub fn sever_part(&mut self, defender: usize, part_kind: PartKind) {
+        let pos = self.dwarves[defender].pos;
+        let who = self.dwarves[defender].name.clone();
+        self.log_event(format!("{who}'s {} is struck clean off!", part_kind.name()));
+        // The severed part lands where the creature stands.
+        self.spawn_named_item(
+            ItemKind::BodyPart,
+            0,
+            pos,
+            Some(format!("severed {}", part_kind.name())),
+        );
+        // The stump gushes: the open wound bleeds hard until it clots or kills.
+        if let Some(part) = self.dwarves[defender]
+            .body
+            .iter_mut()
+            .find(|pt| pt.kind == part_kind)
+        {
+            part.bleeding = part.bleeding.saturating_add(50);
+        }
+        // Blood sprays across the tile and its surrounds.
+        self.spatter_blood(pos, BLOOD_MAX);
     }
 
     /// Bloody footprints: a creature that treads through a pool carries blood on
@@ -10446,7 +10492,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v73: forts gained a `cavern_floors` set (the deep cavern layer).
 // v74: forts gained a `blood` map (spatter on the ground).
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
-const SAVE_VERSION: u32 = 75;
+// v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
+const SAVE_VERSION: u32 = 76;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {

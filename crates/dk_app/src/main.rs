@@ -3143,6 +3143,7 @@ fn item_kind_name(k: ItemKind) -> &'static str {
         ItemKind::Shield => "shields",
         ItemKind::Artifact => "artifacts",
         ItemKind::Corpse => "corpses (unburied)",
+        ItemKind::BodyPart => "severed body parts",
     }
 }
 
@@ -5079,6 +5080,7 @@ fn tradeable_items(sim: &Sim) -> Vec<usize> {
         .filter(|(_, it)| {
             it.active()
                 && it.kind != ItemKind::Corpse // the dead are not for sale
+                && it.kind != ItemKind::BodyPart // and neither is gore
                 && it.reserved_by.is_none()
                 && matches!(it.state, ItemState::Stored { .. } | ItemState::OnGround)
         })
@@ -5096,6 +5098,7 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::Drink => "mug of drink".to_string(),
         ItemKind::Artifact => it.name.clone().unwrap_or_else(|| "artifact".to_string()),
         ItemKind::Corpse => it.name.clone().unwrap_or_else(|| "remains".to_string()),
+        ItemKind::BodyPart => it.name.clone().unwrap_or_else(|| "severed part".to_string()),
         ItemKind::Craft => format!("{} craft", raws.materials.get(it.stuff).name),
         ItemKind::Wool => "raw wool".to_string(),
         ItemKind::Cloth => "bolt of cloth".to_string(),
@@ -5137,6 +5140,8 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Drink => Color::srgb(0.78, 0.55, 0.16),
         ItemKind::Artifact => Color::srgb(1.0, 0.85, 0.25),
         ItemKind::Corpse => Color::srgb(0.75, 0.8, 0.9),
+        // Gore: a dark, bloody red.
+        ItemKind::BodyPart => Color::srgb(0.55, 0.12, 0.12),
         ItemKind::Craft => item_material_color(raws, stuff),
         ItemKind::Wool => Color::srgb(0.92, 0.9, 0.82),
         ItemKind::Cloth => Color::srgb(0.6, 0.55, 0.85),
@@ -5367,6 +5372,8 @@ fn sync_agent_sprites(
                             ItemKind::Drink => "drink",
                             ItemKind::Artifact => "artifact",
                             ItemKind::Corpse => "dwarf",
+                            // A lump of gore on the ground, tinted bloody red.
+                            ItemKind::BodyPart => "boulder",
                             ItemKind::Craft => "i_craft",
                             ItemKind::Wool => "i_wool",
                             ItemKind::Cloth => "i_cloth",
@@ -5853,6 +5860,10 @@ fn update_hud(
                 .name
                 .clone()
                 .unwrap_or_else(|| "remains".to_string()),
+            ItemKind::BodyPart => it
+                .name
+                .clone()
+                .unwrap_or_else(|| "severed part".to_string()),
             ItemKind::Craft => format!("{} craft (trade good)", reg.0.materials.get(it.stuff).name),
             ItemKind::Wool => "raw wool".to_string(),
             ItemKind::Cloth => "bolt of cloth (trade good)".to_string(),
