@@ -1336,6 +1336,9 @@ fn embark(world: &World, raws: &Raws, region: (usize, usize)) -> Sim {
     // A great cavern layer deep in the rock — dig down far enough and the fort
     // breaks into it. Carved before the sim so its water and floors are in place.
     let cavern_floors = dk_world::carve_caverns(&mut map, seed);
+    // And deeper still, a magma sea just above the adamantine — a magma forge
+    // for the bold, a fiery death for the careless.
+    dk_world::carve_magma_sea(&mut map, seed);
     // Seed the deep wonder-metal — and the doom of digging it too greedily.
     let breaches = raws
         .materials

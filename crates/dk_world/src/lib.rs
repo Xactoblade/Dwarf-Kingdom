@@ -663,6 +663,52 @@ pub fn carve_caverns(map: &mut Map, seed: u64) -> Vec<Pos> {
     floors
 }
 
+/// Flood the deepest reaches with a magma sea: an open layer just above the
+/// adamantine spires, its floor a lake of molten rock. Dig down to it for a
+/// magma forge — or breach it and burn. Carves the terrain and fills the floor
+/// with magma (a saved tile property, so no new save field). Deterministic in
+/// `seed`; app-embark-only and only on full-depth maps.
+pub fn carve_magma_sea(map: &mut Map, seed: u64) {
+    use rand::{Rng, SeedableRng};
+    let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x0AA6_0AA6_0AA6_0AA6);
+    let (w, h, d) = (map.width, map.height, map.depth);
+    if w < 48 || h < 48 || d < 24 {
+        return;
+    }
+    // Just above the adamantine at z2, well below the cavern layer.
+    let floor_z = 3usize;
+    let ceil_z = 5usize;
+    let coarse = 7usize;
+    let (gw, gh) = (w / coarse + 2, h / coarse + 2);
+    let grid: Vec<f32> = (0..gw * gh).map(|_| rng.gen_range(0.0f32..1.0)).collect();
+    let noise = |x: usize, y: usize| -> f32 {
+        let (fx, fy) = (x as f32 / coarse as f32, y as f32 / coarse as f32);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (tx, ty) = (fx.fract(), fy.fract());
+        let g = |gx: usize, gy: usize| grid[gy * gw + gx];
+        let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
+        let bot = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
+        top * (1.0 - ty) + bot * ty
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let edge = x < 2 || y < 2 || x + 2 >= w || y + 2 >= h;
+            if edge || noise(x, y) <= 0.30 {
+                continue; // a rock island / rim stands in the sea
+            }
+            if !map.get(x, y, floor_z).is_solid() {
+                continue;
+            }
+            let fmat = map.get(x, y, floor_z).material;
+            for z in (floor_z + 1)..=ceil_z.min(d - 1) {
+                map.set(x, y, z, Tile::AIR);
+            }
+            map.set(x, y, floor_z, Tile::floor(fmat));
+            map.set_magma(Pos::new(x as i32, y as i32, floor_z as i32), MAX_WATER);
+        }
+    }
+}
+
 pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle, relief: Relief) -> Map {
     // The strata/heightfield math below assumes room for soil + stone layers.
     assert!(
