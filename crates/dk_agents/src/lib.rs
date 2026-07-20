@@ -305,6 +305,43 @@ impl ItemKind {
         ItemKind::Leather,
         ItemKind::Berry,
     ];
+
+    /// The stable name this kind is priced under in `data/economy/prices.ron`
+    /// (see `EconomyConfig`). Must match the variant name; a mismatch is caught
+    /// by `validate_economy`.
+    pub fn key(self) -> &'static str {
+        match self {
+            ItemKind::Boulder => "Boulder",
+            ItemKind::Seed => "Seed",
+            ItemKind::Crop => "Crop",
+            ItemKind::Meal => "Meal",
+            ItemKind::Drink => "Drink",
+            ItemKind::Artifact => "Artifact",
+            ItemKind::Corpse => "Corpse",
+            ItemKind::BodyPart => "BodyPart",
+            ItemKind::Craft => "Craft",
+            ItemKind::BoneCraft => "BoneCraft",
+            ItemKind::Wool => "Wool",
+            ItemKind::Cloth => "Cloth",
+            ItemKind::RoughGem => "RoughGem",
+            ItemKind::CutGem => "CutGem",
+            ItemKind::Weapon => "Weapon",
+            ItemKind::Glass => "Glass",
+            ItemKind::Bar => "Bar",
+            ItemKind::Armor => "Armor",
+            ItemKind::Shield => "Shield",
+            ItemKind::Bed => "Bed",
+            ItemKind::Clothes => "Clothes",
+            ItemKind::Log => "Log",
+            ItemKind::Barrel => "Barrel",
+            ItemKind::Bin => "Bin",
+            ItemKind::Statue => "Statue",
+            ItemKind::Instrument => "Instrument",
+            ItemKind::Hide => "Hide",
+            ItemKind::Leather => "Leather",
+            ItemKind::Berry => "Berry",
+        }
+    }
 }
 
 /// The sky's mood, cycling with the seasons.
@@ -1769,66 +1806,51 @@ pub struct Caravan {
     pub traders: Vec<usize>,
 }
 
-/// Trade value of an item, in a common coin.
+/// Trade value of an item, in a common coin. Prices come from the data-driven
+/// economy table (`data/economy/prices.ron`); a good is worth
+/// `material.value * mat_coeff + flat`, then quality is layered on. Rough and
+/// cut gems are the deliberate exception — priced by rarity tier in code.
 pub fn item_value(item: &Item, raws: &Raws) -> u32 {
     let base = match item.kind {
-        ItemKind::Boulder => raws.materials.get(item.stuff).value * 3,
-        ItemKind::Seed => 3,
-        ItemKind::Crop => 5,
-        ItemKind::Meal => 8,
-        ItemKind::Drink => 8,
-        // Precious, but not a wagon-buying cheat: the material matters.
-        ItemKind::Artifact => 50 + raws.materials.get(item.stuff).value * 5,
-        // The dead are not for sale, and neither is what's hacked off them.
-        ItemKind::Corpse | ItemKind::BodyPart => 0,
-        // A worked craft is worth several times its raw stone.
-        ItemKind::Craft => raws.materials.get(item.stuff).value * 12 + 4,
-        // A bone trinket: a fine renewable trade good, but plainer than stone.
-        ItemKind::BoneCraft => 10,
-        ItemKind::Wool => 4,
-        // Cloth is a fine, renewable trade good.
-        ItemKind::Cloth => 18,
-        // A rough gem, worth more the rarer the stone.
+        // A rough gem, worth more the rarer the stone; a cut gem is the fort's
+        // finest legitimate trade good — a cut diamond (tier 6) fetches far more
+        // than a cut agate (tier 1). Priced by tier, not a material multiplier,
+        // so no price row governs them.
         ItemKind::RoughGem => 4 * gem_value(item.stuff),
-        // A cut gem is the fort's finest legitimate trade good — a cut diamond
-        // (tier 6) fetches far more than a cut agate (tier 1).
         ItemKind::CutGem => 24 * gem_value(item.stuff),
-        // A forged weapon: worth several times its metal, and it arms a soldier.
-        ItemKind::Weapon => raws.materials.get(item.stuff).value * 10 + 20,
-        // Blown glass: the fort's finest ordinary trade good.
-        ItemKind::Glass => 85,
-        // A metal bar: refined stock, worth several times its raw ore.
-        ItemKind::Bar => raws.materials.get(item.stuff).value * 8 + 10,
-        // A suit of armor: costly plate, dearer than a weapon of the same metal.
-        ItemKind::Armor => raws.materials.get(item.stuff).value * 10 + 30,
-        // A shield: plainer than plate, and lighter.
-        ItemKind::Shield => raws.materials.get(item.stuff).value * 6 + 20,
-        // A bed: bulky furniture, a solid trade good in its own right.
-        ItemKind::Bed => raws.materials.get(item.stuff).value * 6 + 20,
-        // Sewn clothes: worth well more than the bolt of cloth they're made of.
-        ItemKind::Clothes => 40,
-        // A felled log: cheap raw wood.
-        // A felled log, valued by its wood — a fine hardwood is worth more.
-        ItemKind::Log => raws.materials.get(item.stuff).value * 2 + 6,
-        // A barrel: a fine wooden good, worth several logs. What it holds is
-        // valued separately — see `stack_value`, which the trade screen uses
-        // so nobody sells a barrel of wine for the price of the barrel.
-        ItemKind::Barrel => 45,
-        // A bin: plainer work than a barrel, and it need not hold water.
-        ItemKind::Bin => 30,
-        // A statue: a precious work of art, the fort's finest furnishing.
-        ItemKind::Statue => raws.materials.get(item.stuff).value * 15 + 40,
-        // A musical instrument: a fine crafted good.
-        ItemKind::Instrument => 55,
-        // A raw hide: cheap until it's tanned.
-        ItemKind::Hide => 6,
-        // Tanned leather: a fine, renewable trade good.
-        ItemKind::Leather => 30,
-        // Foraged berries: cheap wild food, but food all the same.
-        ItemKind::Berry => 4,
+        // Everything else: material value scaled by the good's coefficient, plus
+        // a flat worth. For flat goods (a meal, a bolt of cloth) mat_coeff is 0,
+        // so the material term drops out — matching the old hardcoded prices.
+        // A container's own worth is priced here; what it holds is valued
+        // separately by `stack_value`, so nobody sells a barrel of wine for the
+        // price of the barrel. A missing row (impossible after `validate_economy`
+        // passes at load) prices at 0 rather than panicking in the render path.
+        kind => raws
+            .economy
+            .price(kind.key())
+            .map_or(0, |p| raws.materials.get(item.stuff).value * p.mat_coeff + p.flat),
     };
     // Craftsdwarfship raises the worth: a masterwork (tier 5) is worth 3.5x.
     base + base * item.quality as u32 / 2
+}
+
+/// Every priced item kind must have a row in the economy table, or the fort
+/// would silently value it at nothing. Called once at load so a mistyped or
+/// missing `data/economy/prices.ron` entry fails loudly at startup instead of
+/// quietly zeroing a good's worth mid-game. Gems are priced in code, so they
+/// are exempt.
+pub fn validate_economy(raws: &Raws) -> Result<()> {
+    for kind in ItemKind::ALL {
+        if matches!(kind, ItemKind::RoughGem | ItemKind::CutGem) {
+            continue;
+        }
+        anyhow::ensure!(
+            raws.economy.price(kind.key()).is_some(),
+            "economy price list is missing a row for {} (see data/economy/prices.ron)",
+            kind.key()
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- sieges
@@ -5991,10 +6013,11 @@ impl Sim {
             .iter()
             .map(|&g| item_value(&caravan.goods[g], raws))
             .sum();
-        if (offered as f32) < asked as f32 * TRADE_MARGIN {
+        let margin = raws.economy.trade_margin;
+        if (offered as f32) < asked as f32 * margin {
             return Err(format!(
                 "the merchants scoff: they ask {} in goods for that (you offered {})",
-                (asked as f32 * TRADE_MARGIN).ceil() as u32,
+                (asked as f32 * margin).ceil() as u32,
                 offered
             ));
         }

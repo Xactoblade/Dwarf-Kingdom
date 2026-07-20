@@ -143,6 +143,96 @@ impl PlantRegistry {
     }
 }
 
+/// The price of one kind of item, in a common coin, as
+/// `material.value * mat_coeff + flat`. A worked craft is worth several times
+/// its raw stone (`mat_coeff` high), a meal is a flat few coins (`mat_coeff`
+/// zero). Quality is layered on top by the sim, not here.
+///
+/// The `kind` string matches an item-kind name the sim knows (`ItemKind::key`);
+/// keeping it a bare string keeps this crate engine-agnostic — dk_raws prices
+/// goods without knowing what an `ItemKind` is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KindPrice {
+    pub kind: String,
+    /// Multiplier on the item's material value. Zero for goods whose worth does
+    /// not depend on their stuff (a meal, a bolt of cloth).
+    pub mat_coeff: u32,
+    /// Flat worth added on top, regardless of material.
+    pub flat: u32,
+}
+
+/// The fort's price list and trade terms (data/economy/prices.ron). Lifts the
+/// old hardcoded `item_value` constants and `TRADE_MARGIN` out of the sim so
+/// they can be tuned and modded from data without a recompile.
+///
+/// Gems are the one deliberate exception: a rough/cut gem is priced by its
+/// rarity tier in code (`gem_value`), not a material multiplier, so no
+/// `KindPrice` row governs them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EconomyConfig {
+    /// A caravan buys at a margin: an offer must beat the asked value by this
+    /// ratio (they came a long way).
+    pub trade_margin: f32,
+    /// One row per priced item kind.
+    pub kind_prices: Vec<KindPrice>,
+}
+
+impl EconomyConfig {
+    /// The price row for a kind, by its `ItemKind::key` name.
+    pub fn price(&self, kind: &str) -> Option<&KindPrice> {
+        self.kind_prices.iter().find(|p| p.kind == kind)
+    }
+}
+
+impl Default for EconomyConfig {
+    /// The canonical shipped economy, in code. `data/economy/prices.ron` mirrors
+    /// these exact numbers for the real game; tests and tools that build `Raws`
+    /// without touching disk use this, and a parity test keeps the two in step.
+    fn default() -> Self {
+        // (kind, mat_coeff, flat) — see the old item_value match this replaced.
+        // Order mirrors data/economy/prices.ron so the two compare equal (the
+        // parity test relies on it): material-derived goods first, then flat.
+        let rows: &[(&str, u32, u32)] = &[
+            // material-derived
+            ("Boulder", 3, 0),
+            ("Craft", 12, 4),
+            ("Weapon", 10, 20),
+            ("Bar", 8, 10),
+            ("Armor", 10, 30),
+            ("Shield", 6, 20),
+            ("Bed", 6, 20),
+            ("Log", 2, 6),
+            ("Statue", 15, 40),
+            ("Artifact", 5, 50),
+            // flat-priced
+            ("Seed", 0, 3),
+            ("Crop", 0, 5),
+            ("Meal", 0, 8),
+            ("Drink", 0, 8),
+            ("Corpse", 0, 0),
+            ("BodyPart", 0, 0),
+            ("BoneCraft", 0, 10),
+            ("Wool", 0, 4),
+            ("Cloth", 0, 18),
+            ("Glass", 0, 85),
+            ("Clothes", 0, 40),
+            ("Barrel", 0, 45),
+            ("Bin", 0, 30),
+            ("Instrument", 0, 55),
+            ("Hide", 0, 6),
+            ("Leather", 0, 30),
+            ("Berry", 0, 4),
+        ];
+        EconomyConfig {
+            trade_margin: 1.2,
+            kind_prices: rows
+                .iter()
+                .map(|&(kind, mat_coeff, flat)| KindPrice { kind: kind.into(), mat_coeff, flat })
+                .collect(),
+        }
+    }
+}
+
 /// Sprite-sheet configuration (data/tileset.ron). Optional: when absent
 /// the renderer falls back to flat colored squares.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +253,7 @@ pub struct Raws {
     pub materials: MaterialRegistry,
     pub plants: PlantRegistry,
     pub tileset: Option<TilesetDef>,
+    pub economy: EconomyConfig,
 }
 
 impl Raws {
@@ -178,10 +269,16 @@ impl Raws {
         } else {
             None
         };
+        let economy_path = data_dir.join("economy").join("prices.ron");
+        let economy_text = std::fs::read_to_string(&economy_path)
+            .with_context(|| format!("reading {}", economy_path.display()))?;
+        let economy: EconomyConfig = ron::from_str(&economy_text)
+            .with_context(|| format!("parsing {}", economy_path.display()))?;
         Ok(Raws {
             materials: MaterialRegistry::load_dir(&data_dir.join("materials"))?,
             plants: PlantRegistry::load_dir(&data_dir.join("plants"))?,
             tileset,
+            economy,
         })
     }
 }

@@ -1447,6 +1447,7 @@ fn default_region(world: &World) -> (usize, usize) {
 fn main() {
     install_crash_logger();
     let raws = Raws::load(&data_dir()).expect("failed to load raws");
+    dk_agents::validate_economy(&raws).expect("economy price list is incomplete");
     let world = load_or_make_world();
     // DK_SHOT_SCREEN=embark|legends|title opens a menu screen instead of
     // embarking straight into a fort (screenshot verification only).
@@ -5809,7 +5810,7 @@ fn update_hud(
                 .filter(|&&g| g < caravan.goods.len())
                 .map(|&g| item_value(&caravan.goods[g], &reg.0))
                 .sum();
-            let need = (asked as f32 * dk_agents::TRADE_MARGIN).ceil() as u32;
+            let need = (asked as f32 * reg.0.economy.trade_margin).ceil() as u32;
             let mut left = format!("THEIR WAGON ({})\n", caravan.civ_name);
             for (g, it) in caravan.goods.iter().enumerate() {
                 let sel = if trade.request.contains(&g) { "[x]" } else { "[ ]" };

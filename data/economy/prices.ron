@@ -1,0 +1,50 @@
+// The fort's price list and trade terms. Lifted from the sim's old hardcoded
+// item_value constants so they can be tuned without a recompile.
+//
+//   worth = material.value * mat_coeff + flat   (then quality is layered on)
+//
+// A high mat_coeff means the good's worth rides on its stuff (a gold statue is
+// dear, a pewter one plain); mat_coeff 0 is a flat price (a meal is a meal).
+// Rough and cut gems are the one exception: they are priced by rarity tier in
+// code, so no row here governs them.
+//
+// EDIT AND THE GAME CHANGES ON NEXT LAUNCH. The shipped numbers below mirror
+// EconomyConfig::default(); the economy_default_matches_shipped_prices test
+// guards the two against drift, so an intentional edit here means updating that
+// test (and the item_value golden test) to match.
+(
+    // A caravan buys at a margin: your offer must beat the ask by this ratio.
+    trade_margin: 1.2,
+    kind_prices: [
+        // --- material-derived: worth scales with the stuff ---
+        (kind: "Boulder",    mat_coeff: 3,  flat: 0),   // mined stone
+        (kind: "Craft",      mat_coeff: 12, flat: 4),   // a worked stone trinket
+        (kind: "Weapon",     mat_coeff: 10, flat: 20),  // a forged arm
+        (kind: "Bar",        mat_coeff: 8,  flat: 10),  // a smelted metal bar
+        (kind: "Armor",      mat_coeff: 10, flat: 30),  // costly plate
+        (kind: "Shield",     mat_coeff: 6,  flat: 20),  // plainer than plate
+        (kind: "Bed",        mat_coeff: 6,  flat: 20),  // bulky furniture
+        (kind: "Log",        mat_coeff: 2,  flat: 6),   // felled wood
+        (kind: "Statue",     mat_coeff: 15, flat: 40),  // the finest furnishing
+        (kind: "Artifact",   mat_coeff: 5,  flat: 50),  // a strange mood's masterwork
+
+        // --- flat-priced: worth does not depend on the stuff ---
+        (kind: "Seed",       mat_coeff: 0,  flat: 3),
+        (kind: "Crop",       mat_coeff: 0,  flat: 5),
+        (kind: "Meal",       mat_coeff: 0,  flat: 8),
+        (kind: "Drink",      mat_coeff: 0,  flat: 8),
+        (kind: "Corpse",     mat_coeff: 0,  flat: 0),   // not for sale
+        (kind: "BodyPart",   mat_coeff: 0,  flat: 0),   // gore, worth nothing
+        (kind: "BoneCraft",  mat_coeff: 0,  flat: 10),  // a bone trinket
+        (kind: "Wool",       mat_coeff: 0,  flat: 4),
+        (kind: "Cloth",      mat_coeff: 0,  flat: 18),
+        (kind: "Glass",      mat_coeff: 0,  flat: 85),  // the finest ordinary good
+        (kind: "Clothes",    mat_coeff: 0,  flat: 40),
+        (kind: "Barrel",     mat_coeff: 0,  flat: 45),  // contents valued separately
+        (kind: "Bin",        mat_coeff: 0,  flat: 30),
+        (kind: "Instrument", mat_coeff: 0,  flat: 55),
+        (kind: "Hide",       mat_coeff: 0,  flat: 6),
+        (kind: "Leather",    mat_coeff: 0,  flat: 30),
+        (kind: "Berry",      mat_coeff: 0,  flat: 4),
+    ],
+)
