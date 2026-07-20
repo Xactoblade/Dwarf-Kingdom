@@ -5862,13 +5862,23 @@ fn update_hud(
             if below > 0 {
                 right.push_str(&format!("  ... {below} below ...\n"));
             }
+            let credit = sim.trade_credit;
+            let credit_note = if credit > 0 {
+                format!(" + {credit} credit")
+            } else {
+                String::new()
+            };
             for mut text in &mut q {
                 text.0 = format!(
                     "Dwarf Kingdom :: Trading with {}\n\
-                     offering {offered} | they ask {need} (their price {asked} + the road)\n\
+                     offering {offered}{credit_note} | they ask {need} (their price {asked} + the road)\n\
+                     ledger: {} bought | {} sold | {credit} credit on account\n\
                      tab/arrows: switch column & move   space: select   Enter: strike the deal   Esc: walk away\n\
                      {}\n\n{left}\n{right}",
-                    caravan.civ_name, trade.message
+                    caravan.civ_name,
+                    sim.stats.value_imported,
+                    sim.stats.value_exported,
+                    trade.message
                 );
             }
             return;

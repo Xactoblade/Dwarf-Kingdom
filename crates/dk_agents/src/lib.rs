@@ -1710,6 +1710,10 @@ pub struct SimStats {
     pub leather_tanned: u32,
     /// Corpses raised as undead by a necromancer.
     pub raised: u32,
+    /// Total trade value of goods bought from caravans over the fort's life.
+    pub value_imported: u64,
+    /// Total trade value of goods sold to caravans over the fort's life.
+    pub value_exported: u64,
 }
 
 /// Which discretionary crafts the fort wants more of this assignment pass,
@@ -2078,6 +2082,14 @@ pub struct Sim {
     pub cached_wealth: u32,
     /// Killing traders has consequences: no caravans until this tick.
     pub trade_ban_until: u64,
+    /// Standing goodwill with the trade partner, in trade value. Over-pay a
+    /// caravan and the surplus is banked here instead of thrown away; a later
+    /// trade can draw it down to pay for goods. Always >= 0 this phase (the
+    /// fort never owes the caravan — the accept check forbids it); typed i64
+    /// for headroom should a debt mechanic ever land. Counts toward fortress
+    /// wealth, so banking can't be used to hide masterworks from raiders.
+    #[serde(default)]
+    pub trade_credit: i64,
     /// Set when a hostile (not the fort) kills a trader — the caravan
     /// scatters but the civ blames the raiders, not you.
     trader_lost_to_raiders: bool,
@@ -2198,6 +2210,7 @@ impl Sim {
             caravan: None,
             cached_wealth: 0,
             trade_ban_until: 0,
+            trade_credit: 0,
             trader_lost_to_raiders: false,
             vermin: Vec::new(),
             vermin_kind: None,
@@ -4060,11 +4073,15 @@ impl Sim {
     /// contents scan. Whether the wine sits loose or packed in the barrel, the
     /// total is the same.
     pub fn fortress_wealth(&self, raws: &Raws) -> u32 {
-        self.items
+        let goods: u32 = self
+            .items
             .iter()
             .filter(|it| it.active())
             .map(|it| item_value(it, raws))
-            .sum()
+            .sum();
+        // Banked trade goodwill is wealth too — otherwise a fort could launder
+        // its masterworks into credit to hide them from wealth-scaled sieges.
+        goods + self.trade_credit.max(0) as u32
     }
 
     /// Refresh the cached wealth figure. Called on the day boundary; the HUD,
@@ -6076,13 +6093,24 @@ impl Sim {
             .iter()
             .map(|&g| item_value(&caravan.goods[g], raws))
             .sum();
+        // What the merchants must be paid: the asked value plus their margin
+        // (they came a long way). Standing goodwill counts toward it, so a fort
+        // that over-paid last season can draw the balance down now — even buy
+        // outright with no goods offered.
         let margin = raws.economy.trade_margin;
-        if (offered as f32) < asked as f32 * margin {
-            return Err(format!(
-                "the merchants scoff: they ask {} in goods for that (you offered {})",
-                (asked as f32 * margin).ceil() as u32,
-                offered
-            ));
+        let required = (asked as f32 * margin).ceil() as i64;
+        let available = offered as i64 + self.trade_credit;
+        if available < required {
+            let short = required - self.trade_credit;
+            return Err(if self.trade_credit > 0 {
+                format!(
+                    "the merchants want {short} more in goods (you offered {offered}; \
+                     {} credit applied)",
+                    self.trade_credit
+                )
+            } else {
+                format!("the merchants scoff: they ask {required} in goods (you offered {offered})")
+            });
         }
 
         // Deal. Your goods leave with the wagon; theirs land at a trader's feet.
@@ -6116,10 +6144,25 @@ impl Sim {
             it.made_at = bought_at;
             self.items.push(it);
         }
+        // Settle the goodwill: whatever the fort paid over (or under) the
+        // required amount rolls into the standing balance. `available >=
+        // required` was just checked, so this can never go negative — the fort
+        // never ends a trade owing the caravan.
+        let old_credit = self.trade_credit;
+        self.trade_credit = available - required;
         self.stats.trades_completed += 1;
+        self.stats.value_exported += offered as u64;
+        self.stats.value_imported += asked as u64;
+        let delta = self.trade_credit - old_credit;
+        let credit_note = if delta > 0 {
+            format!(" (+{delta} credit banked, {} total)", self.trade_credit)
+        } else if delta < 0 {
+            format!(" ({} credit drawn, {} left)", -delta, self.trade_credit)
+        } else {
+            String::new()
+        };
         self.log_event(format!(
-            "Trade completed: {} in goods for {} received.",
-            offered, asked
+            "Trade completed: {offered} in goods for {asked} received.{credit_note}"
         ));
         Ok(())
     }
@@ -10696,7 +10739,7 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 78;
+const SAVE_VERSION: u32 = 79;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
