@@ -13,12 +13,25 @@
 
 mod common;
 
-use dk_agents::{item_value, validate_economy, Item, ItemKind, ItemState};
+use dk_agents::{
+    item_value, raider_wave_size, validate_economy, Item, ItemKind, ItemState, Sim,
+};
 use dk_raws::{EconomyConfig, Raws};
 use dk_world::path::Pos;
 
 fn data_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data")
+}
+
+/// A small fort with a known-empty inventory, so wealth math starts from zero.
+/// `invasions` off keeps it out of the stochastic siege/migration paths.
+fn empty_fort(raws: &Raws, seed: u64) -> Sim {
+    let mut rng = dk_core::rng_from_seed(seed);
+    let map = dk_world::generate(&raws.materials, &mut rng, 32, 32, 16, seed);
+    let mut sim = Sim::new(map, raws, rng, 4);
+    sim.invasions = false;
+    sim.items.clear();
+    sim
 }
 
 /// An item of `kind` made of material/gem index `stuff` at the given quality.
@@ -131,4 +144,113 @@ fn validate_economy_rejects_a_missing_row() {
 fn trade_margin_comes_from_data() {
     let raws = Raws::load(&data_dir()).expect("load real raws");
     assert_eq!(raws.economy.trade_margin, 1.2);
+}
+
+// ------------------------------------------------------------- Slice 2: wealth
+
+/// Fortress wealth sums each active item's value exactly once — no double-count,
+/// and consumed items are invisible.
+#[test]
+fn fortress_wealth_sums_every_active_item_once() {
+    let raws = common::test_raws(); // every material is value 1
+    let mut sim = empty_fort(&raws, 7);
+    assert_eq!(sim.fortress_wealth(&raws), 0, "an empty fort is worth nothing");
+
+    // 3 granite boulders (1*3 = 3 each) + a masterwork statue (1*15+40 = 55,
+    // then quality 5: 55 + 55*5/2 = 192).
+    let granite = raws.materials.index_of("granite").unwrap();
+    sim.items.push(item(ItemKind::Boulder, granite, 0));
+    sim.items.push(item(ItemKind::Boulder, granite, 0));
+    sim.items.push(item(ItemKind::Boulder, granite, 0));
+    sim.items.push(item(ItemKind::Statue, granite, 5));
+    assert_eq!(sim.fortress_wealth(&raws), 3 + 3 + 3 + 192);
+
+    // A consumed item is worth nothing to the fort.
+    let mut ghost = item(ItemKind::Statue, granite, 5);
+    ghost.consumed = true;
+    sim.items.push(ghost);
+    assert_eq!(sim.fortress_wealth(&raws), 3 + 3 + 3 + 192, "consumed goods don't count");
+}
+
+/// The barrel invariant from the scope doc: a fort's wealth is the same whether
+/// its wine sits loose on the floor or packed inside a barrel. (Guards against
+/// the double-count / O(n²) trap of summing `stack_value` over all items.)
+#[test]
+fn wealth_is_the_same_whether_goods_are_loose_or_packed() {
+    let raws = common::test_raws();
+
+    let mut loose = empty_fort(&raws, 11);
+    loose.items.push(item(ItemKind::Barrel, 0, 0));
+    for _ in 0..3 {
+        loose.items.push(item(ItemKind::Drink, 0, 0)); // OnGround
+    }
+
+    let mut packed = empty_fort(&raws, 11);
+    packed.items.push(item(ItemKind::Barrel, 0, 0)); // index 0
+    for _ in 0..3 {
+        let mut d = item(ItemKind::Drink, 0, 0);
+        d.state = ItemState::Inside { container: 0 };
+        packed.items.push(d);
+    }
+
+    assert_eq!(loose.fortress_wealth(&raws), packed.fortress_wealth(&raws));
+    // sanity: barrel 45 + 3 drinks * 8 = 69
+    assert_eq!(loose.fortress_wealth(&raws), 45 + 3 * 8);
+}
+
+/// The siege wave scales with wealth and is capped, so a rich fort is besieged
+/// harder but a masterwork hoard can't summon an endless horde.
+#[test]
+fn raider_wave_size_scales_with_wealth_and_caps() {
+    assert_eq!(raider_wave_size(0), 1, "a penniless fort still draws a token raid");
+    assert_eq!(raider_wave_size(150), 1, "50 common rocks go unnoticed");
+    assert_eq!(raider_wave_size(1500), 2);
+    assert_eq!(raider_wave_size(1715), 2, "one masterwork gold statue nudges it up");
+    assert_eq!(raider_wave_size(4500), 4);
+    assert_eq!(raider_wave_size(6000), 5, "a rich fort draws the full wave");
+    assert_eq!(raider_wave_size(1_000_000), 5, "and no more than the full wave");
+}
+
+/// Slice 2's exit test: a fort holding one masterwork gold statue is worth more
+/// — and draws a bigger siege — than a fort holding fifty rocks. Wealth, not
+/// clutter, is what puts a target on the fort.
+#[test]
+fn a_gold_statue_outdraws_a_pile_of_rocks() {
+    let raws = Raws::load(&data_dir()).expect("load real raws"); // gold is value 30 here
+    let granite = raws.materials.index_of("granite").unwrap();
+    let gold = raws.materials.index_of("native_gold").unwrap();
+
+    let mut rock_fort = empty_fort(&raws, 3);
+    for _ in 0..50 {
+        rock_fort.debug_spawn_boulder(granite, Pos::new(1, 1, 1));
+    }
+
+    let mut gold_fort = empty_fort(&raws, 3);
+    gold_fort.items.push(item(ItemKind::Statue, gold, 5)); // masterwork gold statue
+
+    let rock_wealth = rock_fort.fortress_wealth(&raws);
+    let gold_wealth = gold_fort.fortress_wealth(&raws);
+    assert_eq!(rock_wealth, 150, "50 granite boulders at value 1: 50 * 3");
+    assert_eq!(gold_wealth, 1715, "gold statue: 30*15+40 = 490, masterwork x3.5");
+
+    assert!(gold_wealth > rock_wealth, "the gold statue is the richer fort");
+    assert!(
+        raider_wave_size(gold_wealth) > raider_wave_size(rock_wealth),
+        "and it draws a larger siege ({} vs {} raiders)",
+        raider_wave_size(gold_wealth),
+        raider_wave_size(rock_wealth),
+    );
+}
+
+/// The cached figure the HUD and siege read matches a fresh recompute.
+#[test]
+fn recompute_wealth_updates_the_cache() {
+    let raws = common::test_raws();
+    let mut sim = empty_fort(&raws, 5);
+    assert_eq!(sim.wealth(), 0);
+    let granite = raws.materials.index_of("granite").unwrap();
+    sim.items.push(item(ItemKind::Statue, granite, 0)); // 55
+    assert_eq!(sim.wealth(), 0, "the cache is stale until recomputed");
+    sim.recompute_wealth(&raws);
+    assert_eq!(sim.wealth(), 55, "recompute picks up the new statue");
 }

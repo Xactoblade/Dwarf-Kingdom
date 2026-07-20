@@ -6147,7 +6147,7 @@ fn update_hud(
             "Dwarf Kingdom\n\
              z {} / {}   cursor ({}, {})   {}\n\
              Year {}, {} {} ({})   {}   {:.0} fps\n\
-             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}\n\
+             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}   wealth {}\n\
              harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}   songs {}{}{}\n\
              Build & dig from the toolbar below (or press its key) -- click a tool, then click the map.   l:lever  t:pull   F1: full controls\n\
              space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
@@ -6172,6 +6172,7 @@ fn update_hud(
             sim.0.count_kind(ItemKind::Cloth),
             sim.0.alive_animals(),
             sim.0.pending_designations(),
+            sim.0.wealth(),
             sim.0.stats.crops_harvested,
             sim.0.stats.meals_cooked,
             sim.0.stats.drinks_brewed,

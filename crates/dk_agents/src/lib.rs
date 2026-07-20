@@ -1853,6 +1853,28 @@ pub fn validate_economy(raws: &Raws) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- wealth
+
+/// Summed trade value per extra raider in a siege wave. A fort worth this much
+/// draws one more attacker, up to the cap. Tuned against real material values
+/// (see docs/economy-scope.md): 50 common boulders is ~150, a masterwork gold
+/// statue ~1715, a fort with a real metal-and-gem industry several thousand —
+/// so gravel goes unnoticed and only made wealth invites a siege. Deliberately
+/// generous; expect to retune it once forts are played to maturity.
+pub const WEALTH_PER_RAIDER: u32 = 1500;
+
+/// Summed trade value per extra migrant in a wave — wealth draws settlers the
+/// way it draws raiders. Only applied in a live world (see `maybe_migrants`).
+pub const WEALTH_PER_MIGRANT: u32 = 1500;
+
+/// How many raiders a siege brings, by the fort's wealth. A poor fort draws a
+/// token raid (one); a rich one draws a wave, capped at five so a masterwork
+/// hoard can't summon an endless horde. Pure and total so it can be unit-tested
+/// without spawning anything.
+pub fn raider_wave_size(wealth: u32) -> u32 {
+    (1 + wealth / WEALTH_PER_RAIDER).min(5)
+}
+
 // ---------------------------------------------------------------- sieges
 
 
@@ -2047,6 +2069,13 @@ pub struct Sim {
     pub embark_world_year: u32,
     /// The caravan currently visiting, if any.
     pub caravan: Option<Caravan>,
+    /// The fort's created wealth — the summed trade value of everything it
+    /// owns — refreshed on the day boundary (`recompute_wealth`) and read by the
+    /// HUD, the siege planner, and the migration pull. Cached because a live
+    /// recompute every frame would scan every item; a day-old figure is plenty
+    /// for a number that only nudges migration and raid size.
+    #[serde(default)]
+    pub cached_wealth: u32,
     /// Killing traders has consequences: no caravans until this tick.
     pub trade_ban_until: u64,
     /// Set when a hostile (not the fort) kills a trader — the caravan
@@ -2167,6 +2196,7 @@ impl Sim {
             trade_partner: None,
             embark_world_year: 0,
             caravan: None,
+            cached_wealth: 0,
             trade_ban_until: 0,
             trader_lost_to_raiders: false,
             vermin: Vec::new(),
@@ -4023,6 +4053,32 @@ impl Sim {
         v
     }
 
+    /// The fort's created wealth: the summed trade value of everything it owns.
+    /// Each active item is counted exactly once — `item_value` never recurses
+    /// into a container's contents (only `stack_value` does), so a barrel and
+    /// the wine inside it are both summed with no double-count and no O(n²)
+    /// contents scan. Whether the wine sits loose or packed in the barrel, the
+    /// total is the same.
+    pub fn fortress_wealth(&self, raws: &Raws) -> u32 {
+        self.items
+            .iter()
+            .filter(|it| it.active())
+            .map(|it| item_value(it, raws))
+            .sum()
+    }
+
+    /// Refresh the cached wealth figure. Called on the day boundary; the HUD,
+    /// siege planner, and migration pull all read `cached_wealth` rather than
+    /// rescanning every item.
+    pub fn recompute_wealth(&mut self, raws: &Raws) {
+        self.cached_wealth = self.fortress_wealth(raws);
+    }
+
+    /// The fort's last-computed wealth (refreshed daily). See `fortress_wealth`.
+    pub fn wealth(&self) -> u32 {
+        self.cached_wealth
+    }
+
     fn find_container_for(&self, kind: ItemKind, near: Pos, region: u32) -> Option<usize> {
         self.items
             .iter()
@@ -4877,6 +4933,10 @@ impl Sim {
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
             self.tick_animals_husbandry();
             self.tick_spoilage();
+            // Reckon the fort's worth once a day, after spoilage has taken its
+            // due, so the HUD and the season-boundary siege below read a fresh
+            // figure. (A season boundary is always a day boundary too.)
+            self.recompute_wealth(raws);
         }
         self.tick_cats();
         self.tick_vermin();
@@ -4889,8 +4949,11 @@ impl Sim {
             // Cap active hostiles so stuck raiders don't accumulate season
             // over season into an unbounded horde.
             if self.invasions && seasons_elapsed >= 2 && self.alive_hostiles() < 8 {
-                let wealth = self.items.iter().filter(|i| i.active()).count();
-                let n = (1 + wealth / 150).min(5);
+                // Sieges scale to the fort's WEALTH, not its clutter: a hoard of
+                // worthless gravel draws nothing, but made goods — crafts, arms,
+                // gems, statues — invite raiders. `cached_wealth` was refreshed
+                // in today's daily block above.
+                let n = raider_wave_size(self.cached_wealth) as usize;
                 self.spawn_raiders(n, raws);
                 // Some sieges bring a necromancer who raises the fort's own
                 // dead against it. Chosen deterministically (no rng) so it never
@@ -6183,7 +6246,23 @@ impl Sim {
             return;
         };
         let anchor_region = self.regions.id(anchor);
-        let count = self.rng.gen_range(1..=3usize).min(POP_CAP - alive);
+        // Wealth attracts settlers the way it attracts raiders: a prosperous
+        // fort draws bigger waves. This is an ADDITIVE pull on top of the base
+        // draw, never a floor — the food/drink guard above is the only thing
+        // that can turn migrants away, so a broke-but-fed fort still grows.
+        //
+        // The base `gen_range` draw is taken first and unchanged, so the rng
+        // stream is untouched by wealth. The bonus itself is gated behind
+        // `invasions`: every headless test runs with invasions off, so migrant
+        // counts there stay byte-identical (more migrants would mean more
+        // `new_dwarf` draws and a diverged stream — the determinism landmine).
+        let base = self.rng.gen_range(1..=3usize);
+        let pull = if self.invasions {
+            (self.cached_wealth / WEALTH_PER_MIGRANT) as usize
+        } else {
+            0
+        };
+        let count = (base + pull).min(POP_CAP - alive);
         let mut spawned = 0;
         'outer: for y in 1..self.map.height - 1 {
             for x in [1usize, self.map.width - 2] {
@@ -10617,7 +10696,7 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 77;
+const SAVE_VERSION: u32 = 78;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
