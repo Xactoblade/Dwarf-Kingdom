@@ -705,6 +705,43 @@ fn data_dir() -> PathBuf {
     panic!("could not locate the data/ directory with material raws");
 }
 
+/// Mod folders to layer on top of `data/`, in load order. Sources: a `mods/`
+/// directory beside `data/` (every subfolder holding a `mod.ron`), plus any
+/// paths in the `DK_MODS` env var (colon-separated). Within `mods/` the order is
+/// alphabetical by folder name — deterministic, and the fingerprint in the world
+/// save records it, so a reorder is detected rather than silently reseeding.
+fn mod_roots(base: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mods_dir = base.parent().unwrap_or(Path::new("")).join("mods");
+    if let Ok(entries) = std::fs::read_dir(&mods_dir) {
+        let mut dirs: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.join("mod.ron").is_file())
+            .collect();
+        dirs.sort();
+        roots.extend(dirs);
+    }
+    if let Ok(list) = std::env::var("DK_MODS") {
+        for p in list.split(':').filter(|s| !s.is_empty()) {
+            let p = PathBuf::from(p);
+            if p.join("mod.ron").is_file() {
+                roots.push(p);
+            }
+        }
+    }
+    roots
+}
+
+/// The content fingerprint of the loaded raws (see `Raws::content_hash`),
+/// stashed once at startup so the world save/load path can read it without
+/// threading raws through every caller.
+static WORLD_CONTENT_HASH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+fn content_hash() -> u64 {
+    *WORLD_CONTENT_HASH.get().unwrap_or(&0)
+}
+
 /// Where a crash is recorded, so a panic that would otherwise vanish with the
 /// terminal leaves something to read afterward.
 fn crash_log_path() -> PathBuf {
@@ -767,7 +804,7 @@ fn world_path() -> PathBuf {
 /// + Figure.necromancer), which shifts the history RNG stream.
 /// v6: marriages, births and blood-heir succession (Figure gained spouse/parent/
 /// children), which shifts the history RNG stream again.
-const WORLDGEN_VERSION: u32 = 6;
+const WORLDGEN_VERSION: u32 = 7;
 
 /// The world this game is played in.
 ///
@@ -783,14 +820,24 @@ fn load_or_make_world() -> World {
     let seed = resolve_world_seed();
     if !screenshot_mode_on() {
         if let Ok(bytes) = std::fs::read(world_path()) {
-            match bincode::deserialize::<(u32, World)>(&bytes) {
-                Ok((v, world)) if v == WORLDGEN_VERSION && world.seed == seed => {
+            // Saved as (worldgen version, content fingerprint, world). The
+            // fingerprint changes when materials/plants/mods change, so a modded
+            // world is rebuilt instead of loaded against a seed that no longer
+            // means the same thing (adding a stone shifts the mapgen rng stream).
+            match bincode::deserialize::<(u32, u64, World)>(&bytes) {
+                Ok((v, h, world))
+                    if v == WORLDGEN_VERSION && h == content_hash() && world.seed == seed =>
+                {
                     info!("world loaded from {}", world_path().display());
                     return world;
                 }
-                Ok((v, _)) => warn!(
+                Ok((v, _, _)) if v != WORLDGEN_VERSION => warn!(
                     "saved world is from worldgen v{v} (this is v{WORLDGEN_VERSION}) - rebuilding it"
                 ),
+                Ok((_, h, _)) if h != content_hash() => warn!(
+                    "saved world was made with different content/mods - rebuilding it"
+                ),
+                Ok(_) => warn!("saved world is for a different seed - rebuilding it"),
                 Err(e) => warn!("saved world unreadable ({e}); rebuilding it"),
             }
         }
@@ -807,7 +854,7 @@ fn persist_world(world: &World) {
     if let Some(dir) = world_path().parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    match bincode::serialize(&(WORLDGEN_VERSION, world)) {
+    match bincode::serialize(&(WORLDGEN_VERSION, content_hash(), world)) {
         Ok(bytes) => {
             if let Err(e) = std::fs::write(world_path(), bytes) {
                 warn!("could not save the world: {e}");
@@ -1446,8 +1493,18 @@ fn default_region(world: &World) -> (usize, usize) {
 
 fn main() {
     install_crash_logger();
-    let raws = Raws::load(&data_dir()).expect("failed to load raws");
+    let base = data_dir();
+    let roots = mod_roots(&base);
+    let raws = Raws::load_with_mods(&base, &roots).expect("failed to load raws");
     dk_agents::validate_economy(&raws).expect("economy price list is incomplete");
+    // Printed, not info!'d: this runs before Bevy's log subscriber exists, so a
+    // tracing macro here would vanish. A startup banner is the right register anyway.
+    for m in &raws.mods {
+        println!("[mods] loaded \"{}\" v{} ({})", m.name, m.version, m.id);
+    }
+    // Stash the content fingerprint before any world load, so a modded world is
+    // detected and rebuilt rather than loaded against a mismatched seed.
+    let _ = WORLD_CONTENT_HASH.set(raws.content_hash());
     let world = load_or_make_world();
     // DK_SHOT_SCREEN=embark|legends|title opens a menu screen instead of
     // embarking straight into a fort (screenshot verification only).

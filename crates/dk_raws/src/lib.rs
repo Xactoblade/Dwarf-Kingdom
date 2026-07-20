@@ -249,16 +249,49 @@ pub struct TilesetDef {
 }
 
 /// Everything loaded from `data/`. Passed into the simulation.
+/// A mod's identity card — its `mod.ron`. A single RON struct at the root of a
+/// mod folder (not a `Vec` like the content files). The `id` is the stable key
+/// and de-facto namespace; `version` is stamped into saves so a world knows
+/// which mods made it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModManifest {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// Which game/content version this mod targets. Advisory for now.
+    #[serde(default)]
+    pub target_game_version: String,
+    /// Mod ids this one expects to load after (a load-order hint). Recorded but
+    /// not yet used to reorder — load order is alphabetical by folder this slice.
+    #[serde(default)]
+    pub load_after: Vec<String>,
+}
+
+/// Everything loaded from `data/` (and any mods). Passed into the simulation.
 pub struct Raws {
     pub materials: MaterialRegistry,
     pub plants: PlantRegistry,
     pub tileset: Option<TilesetDef>,
     pub economy: EconomyConfig,
+    /// The active mods, in resolved load order (empty for an unmodded game).
+    pub mods: Vec<ModManifest>,
 }
 
 impl Raws {
+    /// Load the base game only. Convenience for tests and tools; the app uses
+    /// `load_with_mods`.
     pub fn load(data_dir: &Path) -> Result<Self> {
-        let tileset_path = data_dir.join("tileset.ron");
+        Self::load_with_mods(data_dir, &[])
+    }
+
+    /// Load the base `data/` directory, then layer mod folders on top in the
+    /// given order. Materials and plants are ADDITIVE across roots: a mod's defs
+    /// are appended to the base set. A duplicate id (a mod redefining an existing
+    /// material/plant) is a hard error this slice — overriding is not yet
+    /// supported, and a silent clobber is exactly the hazard we won't ship.
+    /// Tileset and economy are base-only for now.
+    pub fn load_with_mods(base: &Path, mod_roots: &[std::path::PathBuf]) -> Result<Self> {
+        let tileset_path = base.join("tileset.ron");
         let tileset = if tileset_path.is_file() {
             let text = std::fs::read_to_string(&tileset_path)
                 .with_context(|| format!("reading {}", tileset_path.display()))?;
@@ -269,17 +302,89 @@ impl Raws {
         } else {
             None
         };
-        let economy_path = data_dir.join("economy").join("prices.ron");
+        let economy_path = base.join("economy").join("prices.ron");
         let economy_text = std::fs::read_to_string(&economy_path)
             .with_context(|| format!("reading {}", economy_path.display()))?;
         let economy: EconomyConfig = ron::from_str(&economy_text)
             .with_context(|| format!("parsing {}", economy_path.display()))?;
+
+        // Base content first — the always-present, always-first root.
+        let mut material_defs: Vec<MaterialDef> = load_ron_dir(&base.join("materials"))?;
+        let mut plant_defs: Vec<PlantDef> = load_ron_dir(&base.join("plants"))?;
+
+        // Then each mod, in load order, appending what it adds.
+        let mut mods = Vec::new();
+        for root in mod_roots {
+            let manifest_path = root.join("mod.ron");
+            let text = std::fs::read_to_string(&manifest_path)
+                .with_context(|| format!("reading mod manifest {}", manifest_path.display()))?;
+            let manifest: ModManifest = ron::from_str(&text)
+                .with_context(|| format!("parsing mod manifest {}", manifest_path.display()))?;
+            let mat_dir = root.join("materials");
+            if mat_dir.is_dir() {
+                material_defs.extend(load_ron_dir::<MaterialDef>(&mat_dir)?);
+            }
+            let plant_dir = root.join("plants");
+            if plant_dir.is_dir() {
+                plant_defs.extend(load_ron_dir::<PlantDef>(&plant_dir)?);
+            }
+            mods.push(manifest);
+        }
+
         Ok(Raws {
-            materials: MaterialRegistry::load_dir(&data_dir.join("materials"))?,
-            plants: PlantRegistry::load_dir(&data_dir.join("plants"))?,
+            // from_defs enforces unique ids across the whole merged set, so a mod
+            // colliding with a base id (or another mod) fails loudly here.
+            materials: MaterialRegistry::from_defs(material_defs)
+                .context("merging materials from base + mods")?,
+            plants: PlantRegistry::from_defs(plant_defs)
+                .context("merging plants from base + mods")?,
             tileset,
             economy,
+            mods,
         })
+    }
+
+    /// A stable fingerprint of the RNG-relevant content: material (id, category)
+    /// in registry order, plant ids, and the active mod (id, version) list. Two
+    /// raws sets with the same hash generate the same world from the same seed;
+    /// a different hash means the seed would diverge, so the app rebuilds the
+    /// world rather than loading a mismatched map.
+    ///
+    /// It must hash CATEGORY, not just ids: worldgen draws from
+    /// `indices_in_category(...)`, so re-tagging a stone's category shifts the
+    /// stream even though its id is unchanged.
+    pub fn content_hash(&self) -> u64 {
+        // FNV-1a — small, dependency-free, and byte-stable across platforms
+        // (unlike the std default hasher), so a save shared between machines
+        // agrees on the fingerprint.
+        const OFFSET: u64 = 0xcbf29ce484222325;
+        const PRIME: u64 = 0x100000001b3;
+        let mut h = OFFSET;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(PRIME);
+            }
+        };
+        eat(b"materials\0");
+        for i in 0..self.materials.len() {
+            let m = self.materials.get(i as u16);
+            eat(m.id.as_bytes());
+            eat(&[0, m.category as u8]);
+        }
+        eat(b"plants\0");
+        for id in self.plants.id_manifest() {
+            eat(id.as_bytes());
+            eat(&[0]);
+        }
+        eat(b"mods\0");
+        for m in &self.mods {
+            eat(m.id.as_bytes());
+            eat(b"@");
+            eat(m.version.as_bytes());
+            eat(&[0]);
+        }
+        h
     }
 }
 

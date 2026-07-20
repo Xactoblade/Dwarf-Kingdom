@@ -46,5 +46,5 @@ pub fn test_raws() -> Raws {
         },
     ])
     .unwrap();
-    Raws { materials, plants, tileset: None, economy: EconomyConfig::default() }
+    Raws { materials, plants, tileset: None, economy: EconomyConfig::default(), mods: Vec::new() }
 }

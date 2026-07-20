@@ -155,8 +155,8 @@ fn a_reordered_registry_remaps_dwarf_favorites_and_tree_species() {
         ])
         .unwrap()
     };
-    let raws_a = Raws { materials: MaterialRegistry::from_defs(defs(false)).unwrap(), plants: plants(), tileset: None, economy: EconomyConfig::default() };
-    let raws_b = Raws { materials: MaterialRegistry::from_defs(defs(true)).unwrap(), plants: plants(), tileset: None, economy: EconomyConfig::default() };
+    let raws_a = Raws { materials: MaterialRegistry::from_defs(defs(false)).unwrap(), plants: plants(), tileset: None, economy: EconomyConfig::default(), mods: Vec::new() };
+    let raws_b = Raws { materials: MaterialRegistry::from_defs(defs(true)).unwrap(), plants: plants(), tileset: None, economy: EconomyConfig::default(), mods: Vec::new() };
 
     let mut rng = dk_core::rng_from_seed(99);
     let map = dk_world::generate(&raws_a.materials, &mut rng, 24, 24, 12, 99);
