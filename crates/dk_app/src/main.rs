@@ -1309,8 +1309,16 @@ fn add_water_features(map: &mut dk_world::Map, region: &dk_history::Region, seed
     let (w, h) = (map.width, map.height);
     let center = (w / 2, h / 2);
     if region.river {
-        let from = region.river_in.map(|d| edge_point(d, w, h)).unwrap_or(center);
-        let to = region.river_out.map(|d| edge_point(d, w, h)).unwrap_or(center);
+        // A river crosses the map edge to edge. If the overworld gives only one
+        // end — its source or mouth lies in this very region — send the other
+        // end out the OPPOSITE edge, never to the fort's own centre (which used
+        // to drop the river's mouth right on the spawn and drown the settlers).
+        let (from, to) = match (region.river_in, region.river_out) {
+            (Some(i), Some(o)) => (edge_point(i, w, h), edge_point(o, w, h)),
+            (Some(i), None) => (edge_point(i, w, h), edge_point(i.opposite(), w, h)),
+            (None, Some(o)) => (edge_point(o.opposite(), w, h), edge_point(o, w, h)),
+            (None, None) => (center, center),
+        };
         if from != to {
             dk_world::carve_river(map, seed, from, to);
         }

@@ -453,6 +453,15 @@ pub fn carve_river(map: &mut Map, seed: u64, from: (usize, usize), to: (usize, u
             for ox in -r..=r {
                 if ox * ox + oy * oy <= r * r {
                     let (nx, ny) = (cx as i32 + ox, cy as i32 + oy);
+                    // Never flood the fort's spawn clearing at map centre: the
+                    // river fords dry around it, so dwarves begin on solid, safe
+                    // ground rather than in the water. The keep-out is a touch
+                    // wider than the clearing's flat core so no deep water sits
+                    // right at the settlers' feet.
+                    let (dcx, dcy) = (nx - (w / 2) as i32, ny - (h / 2) as i32);
+                    if dcx * dcx + dcy * dcy <= FORT_KEEPOUT * FORT_KEEPOUT {
+                        continue;
+                    }
                     if nx >= 1 && ny >= 1 && (nx as usize) < w - 1 && (ny as usize) < h - 1 {
                         tiles.insert((nx as usize, ny as usize));
                     }
@@ -462,6 +471,11 @@ pub fn carve_river(map: &mut Map, seed: u64, from: (usize, usize), to: (usize, u
     }
     carve_water_body(map, &tiles);
 }
+
+/// Radius (tiles) around map centre kept dry of river water, so the embark
+/// clearing and the dwarves' spawn are never underwater. Wider than the
+/// clearing's flat core (8) plus a bank of margin.
+const FORT_KEEPOUT: i32 = 12;
 
 /// Fill a basin with a lake: an irregular blob of water centred at `(cx, cy)`,
 /// its shore wobbled by seed so it reads as a natural pond or lake, not a disc.
