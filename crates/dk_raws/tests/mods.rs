@@ -164,6 +164,48 @@ fn a_mod_can_add_a_gem() {
     assert_eq!(raws.gems.len(), dk_raws::canonical_gems().len() + 1, "one gem added");
 }
 
+// --- weapons: the second former-enum content axis, now data-driven ---
+
+#[test]
+fn base_weapons_match_the_canonical_list_in_order() {
+    // data/weapons/weapons.ron must equal canonical_weapons() (the old
+    // WeaponKind::ALL order), so a saved weapon's variant index and the forge's
+    // melee draw are unchanged.
+    let raws = Raws::load(&base_dir()).unwrap();
+    let canon = dk_raws::canonical_weapons();
+    assert_eq!(raws.weapons.len(), canon.len(), "the base ships exactly the canonical weapons");
+    for (i, w) in canon.iter().enumerate() {
+        assert_eq!(raws.weapons.get(i as u16), w, "weapon #{i} matches canonical");
+    }
+    // The melee subset is the first five (crossbow is the ranged one at the end),
+    // so the forge's gen_range draw is byte-identical to the old MELEE_WEAPONS.
+    assert_eq!(raws.weapons.melee_indices(), vec![0, 1, 2, 3, 4]);
+    assert!(raws.weapons.is_ranged(raws.weapons.index_of("crossbow").unwrap()));
+}
+
+#[test]
+fn a_mod_can_add_a_weapon() {
+    let base = base_dir();
+    let m = TmpMod::new("warhammers");
+    std::fs::create_dir_all(m.path().join("weapons")).unwrap();
+    std::fs::write(
+        m.path().join("mod.ron"),
+        "ModManifest(id:\"warhammers\", name:\"Warhammers\", version:\"1.0.0\")",
+    )
+    .unwrap();
+    std::fs::write(
+        m.path().join("weapons").join("w.ron"),
+        "[ WeaponDef(id:\"greathammer\", name:\"greathammer\", damage_type: Blunt, heft: 3.0, verb:\"pulverizes\") ]",
+    )
+    .unwrap();
+    let raws = Raws::load_with_mods(&base, &[m.path()]).expect("load base + weapon mod");
+    let idx = raws.weapons.index_of("greathammer").expect("the mod's weapon is present");
+    assert_eq!(raws.weapons.heft(idx), 3.0);
+    assert!(!raws.weapons.is_ranged(idx), "a melee weapon joins the melee pool");
+    assert!(raws.weapons.melee_indices().contains(&idx));
+    assert!(raws.weapons.index_of("sword").is_some(), "base weapons remain");
+}
+
 #[test]
 fn required_category_validator_catches_an_emptied_category() {
     // Base has soil/sedimentary/igneous, so it passes.
@@ -224,6 +266,7 @@ fn raws_with(mats: Vec<MaterialDef>) -> Raws {
         }])
         .unwrap(),
         gems: dk_raws::GemRegistry::from_defs(dk_raws::canonical_gems()).unwrap(),
+        weapons: dk_raws::WeaponRegistry::from_defs(dk_raws::canonical_weapons()).unwrap(),
         tileset: None,
         economy: EconomyConfig::default(),
         mods: Vec::new(),

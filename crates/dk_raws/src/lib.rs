@@ -73,6 +73,24 @@ impl Default for CombatStats {
     }
 }
 
+/// How a weapon hurts. Dwarf Fortress's three practical melee classes: an edge
+/// cuts, a point punches through, a blunt head crushes. Each meets armour and
+/// flesh differently, which is the whole reason the class matters. Lives here so
+/// a data-defined `WeaponDef` can name it; the sim re-exports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DamageType {
+    /// Slashing. Cuts through flesh with the material's edge; a keener blade
+    /// bites deeper, and a lesser metal is turned by a better armour.
+    Edge,
+    /// Stabbing. An edge attack, but narrow — it punches a small deep wound,
+    /// which is how a spear finds an organ a slash would only score.
+    Pierce,
+    /// Crushing. Ignores the edge and drives force through the armour into the
+    /// flesh, breaking bone the armour never stopped. Beaten by weight, not
+    /// sharpness.
+    Blunt,
+}
+
 /// A crop that can be farmed, then eaten raw-ish (cooked) or brewed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlantDef {
@@ -350,6 +368,119 @@ pub fn canonical_gems() -> Vec<GemDef> {
     ]
 }
 
+/// A weapon a fort can forge (or a raider can carry). Its `damage_type`, `heft`
+/// (mass, driving blunt force), combat `verb`, and whether it is `ranged` were a
+/// Rust enum's match arms; they are data now, so a mod can add a weapon. The
+/// wielding material is separate — a weapon stores its metal in `Item::stuff` and
+/// its kind (an index into this registry) in `Item::variant`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeaponDef {
+    pub id: String,
+    pub name: String,
+    pub damage_type: DamageType,
+    /// A rough stand-in for DF's SIZE — heavier heads hit harder with blunt force.
+    pub heft: f32,
+    /// The combat-log verb: a sword slashes, a hammer smashes.
+    pub verb: String,
+    /// A ranged weapon (a crossbow) fires at a distance rather than closing to
+    /// strike; up close it bashes. The forge makes ranged arms only for
+    /// marksdwarves, and a general weaponsmithing job draws only from melee arms.
+    #[serde(default)]
+    pub ranged: bool,
+}
+
+/// All loaded weapons, indexed by a stable u16 handle a `Weapon` item stores in
+/// `variant`. Modelled on `MaterialRegistry`.
+pub struct WeaponRegistry {
+    weapons: Vec<WeaponDef>,
+    by_id: HashMap<String, u16>,
+    unknown: WeaponDef,
+}
+
+impl WeaponRegistry {
+    pub fn from_defs(weapons: Vec<WeaponDef>) -> Result<Self> {
+        anyhow::ensure!(!weapons.is_empty(), "no weapons defined");
+        anyhow::ensure!(weapons.len() < u16::MAX as usize, "too many weapons");
+        let mut by_id = HashMap::new();
+        for (i, w) in weapons.iter().enumerate() {
+            if by_id.insert(w.id.clone(), i as u16).is_some() {
+                anyhow::bail!("duplicate weapon id: {}", w.id);
+            }
+        }
+        Ok(Self {
+            weapons,
+            by_id,
+            unknown: WeaponDef {
+                id: "fist".into(),
+                name: "fist".into(),
+                damage_type: DamageType::Blunt,
+                heft: 0.5,
+                verb: "strikes".into(),
+                ranged: false,
+            },
+        })
+    }
+
+    pub fn get(&self, idx: u16) -> &WeaponDef {
+        self.weapons.get(idx as usize).unwrap_or(&self.unknown)
+    }
+    pub fn name(&self, idx: u16) -> &str {
+        &self.get(idx).name
+    }
+    pub fn damage_type(&self, idx: u16) -> DamageType {
+        self.get(idx).damage_type
+    }
+    pub fn heft(&self, idx: u16) -> f32 {
+        self.get(idx).heft
+    }
+    pub fn verb(&self, idx: u16) -> &str {
+        &self.get(idx).verb
+    }
+    pub fn is_ranged(&self, idx: u16) -> bool {
+        self.get(idx).ranged
+    }
+    pub fn index_of(&self, id: &str) -> Option<u16> {
+        self.by_id.get(id).copied()
+    }
+    pub fn id_manifest(&self) -> Vec<String> {
+        self.weapons.iter().map(|w| w.id.clone()).collect()
+    }
+    pub fn len(&self) -> usize {
+        self.weapons.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.weapons.is_empty()
+    }
+    /// The melee weapon indices, in registry order — everything but the ranged
+    /// arms. A general weaponsmithing job cycles through these, so keeping the
+    /// base order preserves the forge's rng stream.
+    pub fn melee_indices(&self) -> Vec<u16> {
+        self.weapons
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| !w.ranged)
+            .map(|(i, _)| i as u16)
+            .collect()
+    }
+}
+
+/// The base game's 6 weapons, in the order the old `WeaponKind::ALL` defined them
+/// (sword, axe, spear, mace, hammer, crossbow) so a saved weapon's `variant`
+/// index still names the same weapon. `data/weapons/weapons.ron` mirrors this.
+pub fn canonical_weapons() -> Vec<WeaponDef> {
+    let w = |id: &str, name: &str, damage_type: DamageType, heft: f32, verb: &str, ranged: bool| {
+        WeaponDef { id: id.into(), name: name.into(), damage_type, heft, verb: verb.into(), ranged }
+    };
+    vec![
+        w("sword", "sword", DamageType::Edge, 1.0, "slashes", false),
+        w("axe", "axe", DamageType::Edge, 1.5, "hacks", false),
+        w("spear", "spear", DamageType::Pierce, 1.1, "stabs", false),
+        w("mace", "mace", DamageType::Blunt, 2.0, "bashes", false),
+        w("hammer", "war hammer", DamageType::Blunt, 1.8, "smashes", false),
+        w("crossbow", "crossbow", DamageType::Blunt, 1.3, "bashes", true),
+    ]
+}
+
 /// A mod's identity card — its `mod.ron`. A single RON struct at the root of a
 /// mod folder (not a `Vec` like the content files). The `id` is the stable key
 /// and de-facto namespace; `version` is stamped into saves so a world knows
@@ -378,6 +509,7 @@ pub struct Raws {
     pub materials: MaterialRegistry,
     pub plants: PlantRegistry,
     pub gems: GemRegistry,
+    pub weapons: WeaponRegistry,
     pub tileset: Option<TilesetDef>,
     pub economy: EconomyConfig,
     /// The active mods, in resolved load order (empty for an unmodded game).
@@ -425,7 +557,9 @@ impl Raws {
         let mut plant_sources: Vec<(String, HashSet<String>, Vec<PlantDef>)> =
             vec![("core".into(), no_overrides.clone(), load_ron_dir(&base.join("plants"))?)];
         let mut gem_sources: Vec<(String, HashSet<String>, Vec<GemDef>)> =
-            vec![("core".into(), no_overrides, load_ron_dir(&base.join("gems"))?)];
+            vec![("core".into(), no_overrides.clone(), load_ron_dir(&base.join("gems"))?)];
+        let mut weapon_sources: Vec<(String, HashSet<String>, Vec<WeaponDef>)> =
+            vec![("core".into(), no_overrides, load_ron_dir(&base.join("weapons"))?)];
 
         let mut mods = Vec::new();
         for root in mod_roots {
@@ -441,15 +575,19 @@ impl Raws {
             let plants = if plant_dir.is_dir() { load_ron_dir::<PlantDef>(&plant_dir)? } else { Vec::new() };
             let gem_dir = root.join("gems");
             let gems = if gem_dir.is_dir() { load_ron_dir::<GemDef>(&gem_dir)? } else { Vec::new() };
+            let weapon_dir = root.join("weapons");
+            let weapons = if weapon_dir.is_dir() { load_ron_dir::<WeaponDef>(&weapon_dir)? } else { Vec::new() };
             mat_sources.push((manifest.id.clone(), overrides.clone(), mats));
             plant_sources.push((manifest.id.clone(), overrides.clone(), plants));
-            gem_sources.push((manifest.id.clone(), overrides, gems));
+            gem_sources.push((manifest.id.clone(), overrides.clone(), gems));
+            weapon_sources.push((manifest.id.clone(), overrides, weapons));
             mods.push(manifest);
         }
 
         let material_defs = merge_by_id(mat_sources, |m: &MaterialDef| m.id.as_str(), "material")?;
         let plant_defs = merge_by_id(plant_sources, |p: &PlantDef| p.id.as_str(), "plant")?;
         let gem_defs = merge_by_id(gem_sources, |g: &GemDef| g.id.as_str(), "gem")?;
+        let weapon_defs = merge_by_id(weapon_sources, |w: &WeaponDef| w.id.as_str(), "weapon")?;
 
         Ok(Raws {
             materials: MaterialRegistry::from_defs(material_defs)
@@ -457,6 +595,8 @@ impl Raws {
             plants: PlantRegistry::from_defs(plant_defs)
                 .context("building the plant registry")?,
             gems: GemRegistry::from_defs(gem_defs).context("building the gem registry")?,
+            weapons: WeaponRegistry::from_defs(weapon_defs)
+                .context("building the weapon registry")?,
             tileset,
             economy,
             mods,

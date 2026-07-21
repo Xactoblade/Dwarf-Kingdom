@@ -5,7 +5,7 @@
 
 mod common;
 
-use dk_agents::{Faction, Sim, Uniform, WeaponKind};
+use dk_agents::{Faction, Sim, Uniform};
 use dk_world::path::Pos;
 use dk_world::{Map, Tile};
 
@@ -32,7 +32,8 @@ fn muster_marksdwarf(sim: &mut Sim, raws: &dk_raws::Raws, bolts: u32) {
     sim.toggle_soldier(sim.dwarves[0].pos);
     sim.set_squad_uniform(0, Uniform::Ranged);
     let iron = raws.materials.index_of("hematite").unwrap();
-    sim.debug_spawn_weapon(WeaponKind::Crossbow, iron, sim.dwarves[0].pos);
+    let crossbow = raws.weapons.index_of("crossbow").unwrap();
+    sim.debug_spawn_weapon(crossbow, iron, sim.dwarves[0].pos);
     sim.bolts = bolts;
 }
 
@@ -137,23 +138,25 @@ fn the_armoury_issues_crossbows_to_marks_and_blades_to_the_line() {
     // are marksdwarves and must all draw crossbows, none a blade.
     sim.set_squad_uniform(0, Uniform::Ranged);
     let iron = raws.materials.index_of("hematite").unwrap();
+    let crossbow = raws.weapons.index_of("crossbow").unwrap();
+    let sword = raws.weapons.index_of("sword").unwrap();
     // Two crossbows and two swords in the armoury.
     let p = sim.dwarves[0].pos;
-    sim.debug_spawn_weapon(WeaponKind::Crossbow, iron, p);
-    sim.debug_spawn_weapon(WeaponKind::Crossbow, iron, p);
-    sim.debug_spawn_weapon(WeaponKind::Sword, iron, p);
-    sim.debug_spawn_weapon(WeaponKind::Sword, iron, p);
+    sim.debug_spawn_weapon(crossbow, iron, p);
+    sim.debug_spawn_weapon(crossbow, iron, p);
+    sim.debug_spawn_weapon(sword, iron, p);
+    sim.debug_spawn_weapon(sword, iron, p);
 
     // Each of the four marksdwarves draws a weapon; only two crossbows exist,
     // so exactly two are armed (with crossbows), and the swords are ignored by
     // the ranged line.
     let armed_with_crossbow = (0..4)
-        .filter_map(|i| sim.debug_weapon_kind(i))
-        .filter(|k| *k == WeaponKind::Crossbow)
+        .filter_map(|i| sim.debug_weapon_variant(i, &raws))
+        .filter(|v| *v == crossbow)
         .count();
     assert_eq!(armed_with_crossbow, 2, "the two crossbows arm two marksdwarves");
     assert!(
-        (0..4).all(|i| sim.debug_weapon_kind(i) != Some(WeaponKind::Sword)),
+        (0..4).all(|i| sim.debug_weapon_variant(i, &raws) != Some(sword)),
         "a ranged squad never draws a blade"
     );
 }

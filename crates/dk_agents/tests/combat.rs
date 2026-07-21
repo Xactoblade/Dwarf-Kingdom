@@ -5,7 +5,7 @@
 
 mod common;
 
-use dk_agents::{resolve_blow, CombatStats, DamageType, ItemKind, Sim, WeaponKind};
+use dk_agents::{resolve_blow, CombatStats, DamageType, ItemKind, Sim};
 use dk_world::path::Pos;
 
 fn mat(sharpness: f32, density: f32, hardness: f32) -> CombatStats {
@@ -24,13 +24,13 @@ fn adamantine() -> CombatStats {
 }
 
 fn edge(w: CombatStats, armor: Option<CombatStats>) -> i16 {
-    resolve_blow(15.0, Some((DamageType::Edge, WeaponKind::Sword.heft(), w)), armor).damage
+    resolve_blow(15.0, Some((DamageType::Edge, 1.0, w)), armor).damage
 }
 fn pierce(w: CombatStats, armor: Option<CombatStats>) -> i16 {
-    resolve_blow(15.0, Some((DamageType::Pierce, WeaponKind::Spear.heft(), w)), armor).damage
+    resolve_blow(15.0, Some((DamageType::Pierce, 1.1, w)), armor).damage
 }
 fn blunt(w: CombatStats, armor: Option<CombatStats>) -> i16 {
-    resolve_blow(15.0, Some((DamageType::Blunt, WeaponKind::Hammer.heft(), w)), armor).damage
+    resolve_blow(15.0, Some((DamageType::Blunt, 1.8, w)), armor).damage
 }
 
 #[test]

@@ -1,0 +1,18 @@
+// Dwarf Kingdom weapon raws — the arms a fort can forge and a raider can carry.
+// damage_type is how it hurts (Edge cuts, Pierce punches, Blunt crushes), heft
+// is its mass (heavier heads hit harder with blunt force), verb is the combat
+// log word, and ranged marks the crossbow (fires bolts; bashes up close).
+//
+// ORDER IS LOAD-BEARING: a Weapon item stores its kind as an index here, and the
+// forge draws a melee weapon by index, so appending is safe but reordering
+// changes existing saves' weapons and forge rng. This mirrors
+// dk_raws::canonical_weapons(); the weapons_match_the_canonical_list test guards
+// the two against drift.
+[
+    WeaponDef(id: "sword",    name: "sword",      damage_type: Edge,   heft: 1.0, verb: "slashes"),
+    WeaponDef(id: "axe",      name: "axe",        damage_type: Edge,   heft: 1.5, verb: "hacks"),
+    WeaponDef(id: "spear",    name: "spear",      damage_type: Pierce, heft: 1.1, verb: "stabs"),
+    WeaponDef(id: "mace",     name: "mace",       damage_type: Blunt,  heft: 2.0, verb: "bashes"),
+    WeaponDef(id: "hammer",   name: "war hammer", damage_type: Blunt,  heft: 1.8, verb: "smashes"),
+    WeaponDef(id: "crossbow", name: "crossbow",   damage_type: Blunt,  heft: 1.3, verb: "bashes", ranged: true),
+]

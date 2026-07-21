@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use dk_core::{Calendar, Season, DAYS_PER_SEASON, SEASONS_PER_YEAR, TICKS_PER_DAY};
 use dk_raws::{MaterialCategory, Raws};
-pub use dk_raws::CombatStats;
+pub use dk_raws::{CombatStats, DamageType};
 use dk_sim::{FluidSim, WaterSim};
 use dk_world::path::{self, Pos, Regions};
 use dk_world::{Map, Tile, TileShape, NO_MATERIAL};
@@ -409,12 +409,13 @@ pub struct Item {
 }
 
 impl Item {
-    /// This weapon's kind, or `None` if it is not a weapon.
-    pub fn weapon_kind(&self) -> Option<WeaponKind> {
+    /// This weapon's kind as an index into `raws.weapons`, or `None` if it is not
+    /// a weapon. Combat/UI resolve the index against the weapon registry.
+    pub fn weapon_variant(&self) -> Option<u16> {
         if self.kind != ItemKind::Weapon {
             return None;
         }
-        WeaponKind::ALL.get(self.variant as usize).copied()
+        Some(self.variant as u16)
     }
 }
 
@@ -958,111 +959,11 @@ pub struct BodyPart {
     pub bleeding: u8,
 }
 
-/// How a weapon hurts. Dwarf Fortress's three practical melee classes: an
-/// edge cuts, a point punches through, a blunt head crushes. Each meets armour
-/// and flesh differently, which is the whole reason the class matters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DamageType {
-    /// Slashing. Cuts through flesh with the material's edge; a keener blade
-    /// bites deeper, and a lesser metal is turned by a better armour.
-    Edge,
-    /// Stabbing. An edge attack, but narrow — it punches a small deep wound,
-    /// which is how a spear finds an organ a slash would only score.
-    Pierce,
-    /// Crushing. Ignores the edge and drives force through the armour into the
-    /// flesh, breaking bone the armour never stopped. Beaten by weight, not
-    /// sharpness.
-    Blunt,
-}
-
-/// The weapons a fort can forge or a raider can carry. Each is a damage type,
-/// a mass (which drives blunt force and the weight behind any blow), and the
-/// skill that wields it. Dwarf Fortress's own roster, pared to the ones a
-/// dwarf can make.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WeaponKind {
-    Sword,
-    Axe,
-    Spear,
-    Mace,
-    Hammer,
-    /// The dwarves' ranged arm: fires bolts at a distance, and bashes like a
-    /// heavy club up close when the bolts run out or a foe closes in.
-    Crossbow,
-}
-
-impl WeaponKind {
-    pub const ALL: [WeaponKind; 6] = [
-        WeaponKind::Sword,
-        WeaponKind::Axe,
-        WeaponKind::Spear,
-        WeaponKind::Mace,
-        WeaponKind::Hammer,
-        WeaponKind::Crossbow,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            WeaponKind::Sword => "sword",
-            WeaponKind::Axe => "axe",
-            WeaponKind::Spear => "spear",
-            WeaponKind::Mace => "mace",
-            WeaponKind::Hammer => "war hammer",
-            WeaponKind::Crossbow => "crossbow",
-        }
-    }
-
-    /// The damage a blow with this weapon deals in MELEE. A crossbow used to
-    /// bash is blunt; the bolts it fires pierce, but that is the bolt's doing,
-    /// resolved separately.
-    pub fn damage_type(self) -> DamageType {
-        match self {
-            WeaponKind::Sword | WeaponKind::Axe => DamageType::Edge,
-            WeaponKind::Spear => DamageType::Pierce,
-            WeaponKind::Mace | WeaponKind::Hammer | WeaponKind::Crossbow => DamageType::Blunt,
-        }
-    }
-
-    /// The weapon's own heft, a rough stand-in for DF's SIZE token. Heavier
-    /// heads hit harder with blunt force; a sword is quick and light.
-    pub fn heft(self) -> f32 {
-        match self {
-            WeaponKind::Sword => 1.0,
-            WeaponKind::Spear => 1.1,
-            WeaponKind::Crossbow => 1.3,
-            WeaponKind::Axe => 1.5,
-            WeaponKind::Hammer => 1.8,
-            WeaponKind::Mace => 2.0,
-        }
-    }
-
-    /// The verb for the combat log — a sword slashes, a hammer bashes.
-    pub fn verb(self) -> &'static str {
-        match self {
-            WeaponKind::Sword => "slashes",
-            WeaponKind::Axe => "hacks",
-            WeaponKind::Spear => "stabs",
-            WeaponKind::Mace => "bashes",
-            WeaponKind::Hammer => "smashes",
-            WeaponKind::Crossbow => "bashes",
-        }
-    }
-
-    /// A ranged weapon fires at a distance rather than closing to strike.
-    pub fn is_ranged(self) -> bool {
-        matches!(self, WeaponKind::Crossbow)
-    }
-}
-
-/// The melee kinds a general weaponsmithing job cycles through — every
-/// WeaponKind but the crossbow, which the forge makes only for marksdwarves.
-pub const MELEE_WEAPONS: [WeaponKind; 5] = [
-    WeaponKind::Sword,
-    WeaponKind::Axe,
-    WeaponKind::Spear,
-    WeaponKind::Mace,
-    WeaponKind::Hammer,
-];
+// Weapons are data now — see `dk_raws::WeaponRegistry` (`data/weapons/*.ron`).
+// A `Weapon` item stores its kind as an index into that registry in `variant`;
+// combat reads `raws.weapons.damage_type/heft/verb/is_ranged(variant)`, the
+// forge draws from `raws.weapons.melee_indices()`, and `DamageType` is re-
+// exported from dk_raws above.
 
 fn default_body() -> Vec<BodyPart> {
     let part = |kind: PartKind, hp: i16| BodyPart { kind, hp, max_hp: hp, bleeding: 0 };
@@ -4203,7 +4104,7 @@ impl Sim {
 
         // No hero walks into a saga bare-handed. If they carry no weapon,
         // hand them a sword to start — the roads are armed now.
-        if self.wielded_weapon(hero).is_none() {
+        if self.wielded_weapon(hero, raws).is_none() {
             let metal = raws
                 .materials
                 .indices_in_category(MaterialCategory::Ore)
@@ -4212,7 +4113,7 @@ impl Sim {
                 .unwrap_or(0);
             let pos = self.dwarves[hero].pos;
             self.spawn_item(ItemKind::Weapon, metal, pos);
-            self.set_last_weapon_kind(WeaponKind::Sword);
+            self.set_last_weapon(raws.weapons.index_of("sword").unwrap_or(0));
             let w = self.items.len() - 1;
             self.items[w].state = ItemState::Carried { by: hero };
         }
@@ -4713,15 +4614,16 @@ impl Sim {
     /// Spawn a weapon of a specific kind (scenarios/tests) — e.g. a crossbow
     /// for a marksdwarf. Ordinary forging cycles the melee kinds, so this is
     /// how a test puts a particular arm in the armoury.
-    pub fn debug_spawn_weapon(&mut self, kind: WeaponKind, stuff: u16, pos: Pos) {
+    pub fn debug_spawn_weapon(&mut self, variant: u16, stuff: u16, pos: Pos) {
         self.spawn_item(ItemKind::Weapon, stuff, pos);
-        self.set_last_weapon_kind(kind);
+        self.set_last_weapon(variant);
     }
 
     /// The kind of weapon this soldier would draw from the armoury right now —
-    /// what `wielded_weapon` resolves to, exposed for scenarios/tests.
-    pub fn debug_weapon_kind(&self, i: usize) -> Option<WeaponKind> {
-        self.wielded_weapon(i).and_then(|w| self.items[w].weapon_kind())
+    /// The weapon-registry index of what `wielded_weapon` resolves to, exposed
+    /// for scenarios/tests (compare against `raws.weapons.index_of(id)`).
+    pub fn debug_weapon_variant(&self, i: usize, raws: &Raws) -> Option<u16> {
+        self.wielded_weapon(i, raws).and_then(|w| self.items[w].weapon_variant())
     }
 
     /// Drop a set of clothes on the ground (scenarios/tests). Clothes are worn
@@ -5180,10 +5082,11 @@ impl Sim {
         // (they have no marksmanship AI, and a crossbow is a feeble club). Drawn
         // from the five melee kinds, which also keeps the rng stream identical
         // to before the crossbow was added.
-        let kind = MELEE_WEAPONS[self.rng.gen_range(0..MELEE_WEAPONS.len())];
+        let melee = raws.weapons.melee_indices();
+        let variant = melee[self.rng.gen_range(0..melee.len())];
         let pos = self.dwarves[i].pos;
         self.spawn_item(ItemKind::Weapon, metal, pos);
-        self.set_last_weapon_kind(kind);
+        self.set_last_weapon(variant);
         let w = self.items.len() - 1;
         self.items[w].state = ItemState::Carried { by: i };
     }
@@ -6374,7 +6277,7 @@ impl Sim {
             .filter(|it| {
                 it.active()
                     && it.kind == ItemKind::Weapon
-                    && it.weapon_kind().is_some_and(|k| k.is_ranged())
+                    && it.weapon_variant().is_some_and(|v| raws.weapons.is_ranged(v))
             })
             .count();
         let melee_weapons_on_hand = self
@@ -6383,7 +6286,7 @@ impl Sim {
             .filter(|it| {
                 it.active()
                     && it.kind == ItemKind::Weapon
-                    && it.weapon_kind().is_some_and(|k| !k.is_ranged())
+                    && it.weapon_variant().is_some_and(|v| !raws.weapons.is_ranged(v))
             })
             .count();
         for i in 0..self.dwarves.len() {
@@ -7564,7 +7467,7 @@ impl Sim {
     /// The actual weapon in this fighter's hands, as an item index — a soldier's
     /// issued arm, or an adventurer's carried one. Combat reads its kind and
     /// material off the real item rather than settling for "armed: yes/no".
-    fn wielded_weapon(&self, i: usize) -> Option<usize> {
+    fn wielded_weapon(&self, i: usize, raws: &Raws) -> Option<usize> {
         // An adventurer or the player carries their own blade.
         if let Some(idx) = self.items.iter().position(|it| {
             it.active()
@@ -7587,7 +7490,7 @@ impl Sim {
             .filter(|(_, it)| {
                 it.active()
                     && it.kind == ItemKind::Weapon
-                    && it.weapon_kind().is_some_and(|k| k.is_ranged() == want_ranged)
+                    && it.weapon_variant().is_some_and(|v| raws.weapons.is_ranged(v) == want_ranged)
             })
             .nth(rank)
             .map(|(idx, _)| idx)
@@ -7617,7 +7520,7 @@ impl Sim {
     /// Beasts are too vast to dodge or parry, which is why they must be worn
     /// down. Draws RNG only when a defence is actually possible, so an
     /// undefended blow (a raw dwarf, a beast) shifts no stream it didn't before.
-    fn try_defend(&mut self, defender: usize) -> Option<&'static str> {
+    fn try_defend(&mut self, defender: usize, raws: &Raws) -> Option<&'static str> {
         let d = &self.dwarves[defender];
         // The sleeping, the fallen, and the fleeing do not defend.
         if !d.alive || matches!(d.task, Task::Sleep { .. }) {
@@ -7644,7 +7547,7 @@ impl Sim {
             return Some("blocks the blow with a shield");
         }
         // Parry: an armed fighter turns a blow with their own weapon.
-        let parry = if !beast && self.wielded_weapon(defender).is_some() {
+        let parry = if !beast && self.wielded_weapon(defender, raws).is_some() {
             skill * 0.03
         } else {
             0.0
@@ -8017,9 +7920,9 @@ impl Sim {
                 // dry, fire_bolt returns false and it closes in to bash instead.
                 let marks = self.squad_uniform(i) == Uniform::Ranged
                     && self
-                        .wielded_weapon(i)
-                        .and_then(|w| self.items[w].weapon_kind())
-                        .is_some_and(|k| k.is_ranged());
+                        .wielded_weapon(i, raws)
+                        .and_then(|w| self.items[w].weapon_variant())
+                        .is_some_and(|v| raws.weapons.is_ranged(v));
                 if marks
                     && self.dwarves[q].pos.manhattan(my_pos) <= RANGED_RANGE
                     && self.map.clear_shot(my_pos, self.dwarves[q].pos)
@@ -8721,10 +8624,11 @@ impl Sim {
                                 // a hammer for armoured foes. Crossbows are their
                                 // own job, so this cycles the five melee kinds.
                                 self.stats.weapons_forged += 1;
-                                let kind = MELEE_WEAPONS
-                                    [self.stats.weapons_forged as usize % MELEE_WEAPONS.len()];
+                                let melee = raws.weapons.melee_indices();
+                                let variant =
+                                    melee[self.stats.weapons_forged as usize % melee.len()];
                                 self.spawn_quality_item(ItemKind::Weapon, stuff, shop, q);
-                                self.set_last_weapon_kind(kind);
+                                self.set_last_weapon(variant);
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::ForgeCrossbow => {
@@ -8732,7 +8636,7 @@ impl Sim {
                                 // any other, but of the ranged kind.
                                 self.stats.crossbows_forged += 1;
                                 self.spawn_quality_item(ItemKind::Weapon, stuff, shop, q);
-                                self.set_last_weapon_kind(WeaponKind::Crossbow);
+                                self.set_last_weapon(raws.weapons.index_of("crossbow").unwrap_or(0));
                                 self.push_thought(i, ThoughtKind::CookedMeal);
                             }
                             CraftKind::ForgeBolts => {
@@ -9516,7 +9420,7 @@ impl Sim {
         // The defender's chance to turn the blow before it ever bites — dodge,
         // block, or parry. A skilled fighter with a shield lives where a raw
         // recruit is cut down.
-        if let Some(defence) = self.try_defend(defender) {
+        if let Some(defence) = self.try_defend(defender, raws) {
             // The attacker still learns from the exchange.
             self.add_xp(attacker, Skill::Fighting, 2);
             let att = self.dwarves[attacker].name.clone();
@@ -9542,13 +9446,13 @@ impl Sim {
         // adventurer wields whatever they carry; a bare-handed brawler has
         // only fists.
         let weapon = self
-            .wielded_weapon(attacker)
+            .wielded_weapon(attacker, raws)
             .and_then(|w| {
                 let it = &self.items[w];
-                let kind = it.weapon_kind()?;
+                let v = it.weapon_variant()?;
                 Some((
-                    kind.damage_type(),
-                    kind.heft(),
+                    raws.weapons.damage_type(v),
+                    raws.weapons.heft(v),
                     raws.materials.get(it.stuff).combat,
                 ))
             })
@@ -9563,9 +9467,9 @@ impl Sim {
                 ))
             });
         let verb = self
-            .wielded_weapon(attacker)
-            .and_then(|w| self.items[w].weapon_kind())
-            .map(|k| k.verb())
+            .wielded_weapon(attacker, raws)
+            .and_then(|w| self.items[w].weapon_variant())
+            .map(|v| raws.weapons.verb(v))
             .unwrap_or("strikes");
 
         self.land_hit(attacker, defender, force, weapon, part_kind, verb, raws);
@@ -9678,7 +9582,7 @@ impl Sim {
 
         // A bolt can be dodged or turned by a shield, but there is no parrying
         // an arrow out of the air.
-        if let Some(defence) = self.try_defend(defender) {
+        if let Some(defence) = self.try_defend(defender, raws) {
             let att = self.dwarves[attacker].name.clone();
             let def = self.dwarves[defender].name.clone();
             self.log_event(format!("{def} {defence} from {att}'s bolt."));
@@ -10092,9 +9996,9 @@ impl Sim {
     /// Set the kind of the weapon most recently spawned. Weapons come off the
     /// forge through `spawn_quality_item`, which knows nothing of kinds — this
     /// stamps the one just made.
-    fn set_last_weapon_kind(&mut self, kind: WeaponKind) {
+    fn set_last_weapon(&mut self, variant: u16) {
         if let Some(it) = self.items.last_mut() {
-            it.variant = WeaponKind::ALL.iter().position(|&k| k == kind).unwrap_or(0) as u8;
+            it.variant = variant as u8;
         }
     }
 
@@ -10709,7 +10613,7 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 81;
+const SAVE_VERSION: u32 = 82;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -10718,6 +10622,7 @@ struct SaveOut<'a> {
     material_ids: Vec<String>,
     plant_ids: Vec<String>,
     gem_ids: Vec<String>,
+    weapon_ids: Vec<String>,
     /// The mods (id, version) that made this fort, so a load can tell whether
     /// they are present before it tries to resolve their content.
     mods: Vec<(String, String)>,
@@ -10727,7 +10632,7 @@ struct SaveOut<'a> {
 // Read as header-then-body so version mismatches produce a clear error
 // instead of a bincode failure mid-struct. bincode serializes struct fields
 // sequentially, so this matches SaveOut's layout exactly.
-type SaveBody = (Vec<String>, Vec<String>, Vec<String>, Vec<(String, String)>, Sim);
+type SaveBody = (Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<(String, String)>, Sim);
 
 /// Render a mod stamp for a player-facing message: "cool_mod v1.0.0, other v2.1"
 /// or "none".
@@ -10752,6 +10657,7 @@ pub fn save_sim(sim: &Sim, path: &FsPath, raws: &Raws) -> Result<()> {
         material_ids: raws.materials.id_manifest(),
         plant_ids: raws.plants.id_manifest(),
         gem_ids: raws.gems.id_manifest(),
+        weapon_ids: raws.weapons.id_manifest(),
         mods: raws.mod_stamp(),
         sim,
     };
@@ -10773,7 +10679,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
         "save version {version} unsupported (expected {SAVE_VERSION}) — this save \
          is from another game version"
     );
-    let (material_ids, plant_ids, gem_ids, saved_mods, sim): SaveBody =
+    let (material_ids, plant_ids, gem_ids, weapon_ids, saved_mods, sim): SaveBody =
         bincode::deserialize_from(&mut reader)
             .with_context(|| format!("deserializing {}", path.display()))?;
     // Refuse a fort whose mods aren't the ones now loaded, with a clear message —
@@ -10818,6 +10724,17 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
                 .with_context(|| format!("save uses gem '{id}' missing from current raws"))
         })
         .collect::<Result<_>>()?;
+    // Weapons are data too (dk_raws::WeaponRegistry); a Weapon's kind is stored
+    // by index in `variant`, remapped like gems so a reordered/mod-extended
+    // weapon list survives a save.
+    let weapon_remap: Vec<u16> = weapon_ids
+        .iter()
+        .map(|id| {
+            raws.weapons
+                .index_of(id)
+                .with_context(|| format!("save uses weapon '{id}' missing from current raws"))
+        })
+        .collect::<Result<_>>()?;
     let remap_one = |table: &[u16], v: u16, what: &str| -> Result<u16> {
         anyhow::ensure!((v as usize) < table.len(), "corrupt save: {what} index {v} out of range");
         Ok(table[v as usize])
@@ -10853,6 +10770,11 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Leather => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
+        // A weapon's `stuff` is its metal (remapped above); its `variant` is its
+        // kind, an index into the weapon registry — remap that too.
+        if item.kind == ItemKind::Weapon {
+            item.variant = remap_one(&weapon_remap, item.variant as u16, "weapon")? as u8;
+        }
         Ok(())
     };
     for item in &mut sim.items {

@@ -5,7 +5,7 @@
 mod common;
 
 use dk_agents::{
-    resolve_blow, BuildingKind, CombatStats, DamageType, ItemKind, Sim, WeaponKind,
+    resolve_blow, BuildingKind, CombatStats, DamageType, ItemKind, Sim,
 };
 
 fn forge_fort(seed: u64) -> (Sim, dk_raws::Raws) {
@@ -20,7 +20,7 @@ fn forge_fort(seed: u64) -> (Sim, dk_raws::Raws) {
 #[test]
 fn a_forged_blade_bites_far_deeper_than_a_bare_fist() {
     let iron = CombatStats { sharpness: 1.0, density: 7.8, hardness: 100.0 };
-    let sword = Some((DamageType::Edge, WeaponKind::Sword.heft(), iron));
+    let sword = Some((DamageType::Edge, 1.0, iron));
     let armed = resolve_blow(15.0, sword, None).damage;
     let fist = resolve_blow(15.0, None, None).damage;
     assert!(armed > fist * 3, "a sword ({armed}) is far deadlier than a fist ({fist})");
