@@ -685,6 +685,20 @@ struct CursorSprite;
 #[derive(Component)]
 struct HudText;
 
+/// The full-width status bar across the top, in the Dwarf Fortress mould: a
+/// stone ribbon with the fort's identity at the left, its stores in the middle,
+/// and the date at the right. Three text cells spread across the bar.
+#[derive(Component, Clone, Copy)]
+enum HudBar {
+    Left,
+    Mid,
+    Right,
+}
+
+/// The bar's container, toggled off on the title screen.
+#[derive(Component)]
+struct HudBarRoot;
+
 /// Borrow shims so system bodies written against `SimRes(Sim)` (field access
 /// via `.0`) keep working now that SimRes holds an Option.
 struct SimRef<'a>(&'a Sim);
@@ -1715,6 +1729,7 @@ fn main() {
                     sync_agent_sprites,
                     position_cursor_sprite,
                     update_hud,
+                    update_topbar,
                     update_minimap,
                     update_stocks,
                     handle_help_button,
@@ -1887,6 +1902,50 @@ fn setup(
         CursorSprite,
     ));
 
+    // The DF-style top status bar: a full-width stone ribbon with the fort's
+    // identity, its stores, and the date spread left/centre/right.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(16.0),
+                // Reserve the top-right corner for the Stocks / ? buttons.
+                padding: UiRect {
+                    left: Val::Px(16.0),
+                    right: Val::Px(150.0),
+                    top: Val::Px(7.0),
+                    bottom: Val::Px(7.0),
+                },
+                border: UiRect::bottom(Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(UI_PANEL),
+            BorderColor(UI_FRAME_HI),
+            HudBarRoot,
+        ))
+        .with_children(|bar| {
+            for cell in [HudBar::Left, HudBar::Mid, HudBar::Right] {
+                bar.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 15.0,
+                        line_height: bevy::text::LineHeight::RelativeToFont(1.3),
+                        ..default()
+                    },
+                    TextColor(UI_TEXT),
+                    cell,
+                ));
+            }
+        });
+
+    // The detail panel (event log, cursor read-out, orders) sits just under the
+    // bar rather than at the very top.
     commands.spawn((
         Text::new(""),
         TextFont {
@@ -1898,8 +1957,8 @@ fn setup(
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(8.0),
-            top: Val::Px(8.0),
-            max_width: Val::Percent(74.0),
+            top: Val::Px(48.0),
+            max_width: Val::Percent(66.0),
             padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
             border: UiRect::all(Val::Px(2.0)),
             ..default()
@@ -5655,6 +5714,63 @@ fn position_cursor_sprite(
     }
 }
 
+/// Fill the DF-style top status bar: fort identity (left), stores (middle), and
+/// the date + speed (right), spread across the stone ribbon.
+fn update_topbar(
+    sim: Res<SimRes>,
+    world: Res<WorldRes>,
+    screen: Res<ScreenRes>,
+    control: Res<SimControl>,
+    diagnostics: Res<DiagnosticsStore>,
+    mut cells: Query<(&mut Text, &HudBar)>,
+    mut root_vis: Query<&mut Visibility, With<HudBarRoot>>,
+) {
+    // The bar belongs to fortress mode; hide it on the title, embark, and menu
+    // screens (where there's no fort to describe).
+    let show = matches!(screen.0, Screen::Playing) && sim.0.as_ref().is_some();
+    if let Ok(mut v) = root_vis.single_mut() {
+        *v = if show { Visibility::Inherited } else { Visibility::Hidden };
+    }
+    if !show {
+        return;
+    }
+    let Some(sim) = sim.0.as_ref() else { return };
+    let alive = sim.alive_dwarves();
+    let idle = sim.dwarves.iter().filter(|d| d.alive && d.is_idle()).count();
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
+
+    let food = sim.count_kind(ItemKind::Meal)
+        + sim.count_kind(ItemKind::Crop)
+        + sim.count_kind(ItemKind::Berry);
+    let drink = sim.count_kind(ItemKind::Drink);
+    let seeds = sim.count_kind(ItemKind::Seed);
+    let crafts = sim.count_kind(ItemKind::Craft);
+    let cloth = sim.count_kind(ItemKind::Cloth);
+    let wealth = sim.wealth();
+    let speed = if control.paused {
+        "PAUSED".to_string()
+    } else {
+        format!("speed {}", control.speed)
+    };
+    let name = if world.0.name.is_empty() { "Dwarf Kingdom" } else { world.0.name.as_str() };
+    let (year, season, day) =
+        (sim.clock.year(), sim.clock.season().name(), sim.clock.day_of_season());
+    let weather = sim.weather.name();
+
+    for (mut text, cell) in &mut cells {
+        text.0 = match cell {
+            HudBar::Left => format!("{name}\nPop {alive}  ({idle} idle)"),
+            HudBar::Mid => format!(
+                "Food {food}   Drink {drink}   Seeds {seeds}   Crafts {crafts}   Cloth {cloth}   Wealth {wealth}"
+            ),
+            HudBar::Right => format!("Year {year}, {season} {day}\n{weather}  |  {speed}  |  {fps:.0} fps"),
+        };
+    }
+}
+
 fn update_hud(
     sim: Res<SimRes>,
     reg: Res<Registry>,
@@ -6223,55 +6339,24 @@ fn update_hud(
         .collect::<String>();
 
     for mut text in &mut q {
+        // The top bar carries the fort's identity, stores, and the date; this
+        // panel keeps only what the bar doesn't — the cursor read-out, alerts,
+        // orders, and the running event log — so the map is no longer buried
+        // under a wall of text.
+        let _ = (alive, idle, fps, cal);
         text.0 = format!(
-            "Dwarf Kingdom\n\
-             z {} / {}   cursor ({}, {})   {}\n\
-             Year {}, {} {} ({})   {}   {:.0} fps\n\
-             dwarves {} ({} idle, {} lost)   meals {}   drinks {}   crops {}   crafts {}   cloth {}   livestock {}   jobs {}   wealth {}\n\
-             harvested {}   cooked {}   brewed {}   gems {}/{}   migrants {}   raiders {} ({} slain, {} drowned)   beasts slain {}   veterans {}   armed {}   armored {}   poems {}   songs {}{}{}\n\
-             Build & dig from the toolbar below (or press its key) -- click a tool, then click the map.   l:lever  t:pull   F1: full controls\n\
-             space:pause 1/2/3:speed   [ ]:z   r:trade y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}",
+            "z {} / {}   cursor ({}, {})   {}{}{}\n\
+             l:lever  t:pull   [ ]:z   r:trade  y:legends   F1:help   F2:alarm{}   F5/F9:save/load   F8:retire   Q:quit{}{}{}{}",
             view_z.0,
             MAP_D - 1,
             cursor.x,
             cursor.y,
             under,
-            cal.year(),
-            cal.season().name(),
-            cal.day_of_season(),
-            sim.0.weather.name(),
             status,
-            fps,
-            alive,
-            idle,
-            sim.0.stats.deaths,
-            sim.0.count_kind(ItemKind::Meal),
-            sim.0.count_kind(ItemKind::Drink),
-            sim.0.count_kind(ItemKind::Crop),
-            sim.0.count_kind(ItemKind::Craft),
-            sim.0.count_kind(ItemKind::Cloth),
-            sim.0.alive_animals(),
-            sim.0.pending_designations(),
-            sim.0.wealth(),
-            sim.0.stats.crops_harvested,
-            sim.0.stats.meals_cooked,
-            sim.0.stats.drinks_brewed,
-            sim.0.stats.gems_found,
-            sim.0.stats.gems_cut,
-            sim.0.stats.migrants_arrived,
-            sim.0.alive_hostiles(),
-            sim.0.stats.raiders_slain,
-            sim.0.stats.drownings,
-            sim.0.stats.beasts_slain,
-            sim.0.veterans(),
-            sim.0.armed_soldiers(),
-            sim.0.armored_soldiers(),
-            sim.0.poems.len(),
-            sim.0.songs.len(),
+            mode_txt,
+            alarm_txt,
             vampire_txt,
             squad_txt,
-            alarm_txt,
-            mode_txt,
             log_tail,
             dwarf_panel,
         );
