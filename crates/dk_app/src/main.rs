@@ -4758,8 +4758,12 @@ fn tile_visual(
     selection: Option<(Pos, Pos)>,
     traffic: &std::collections::HashMap<(i32, i32), f32>,
 ) -> (Color, &'static str) {
-    const DIM: [f32; 4] = [1.0, 0.55, 0.34, 0.20];
-    let mut rgb = [0.02, 0.02, 0.03];
+    // Looking down through open air: show the terrain BELOW, fading gently with
+    // depth (Dwarf-Fortress-style z-fog) so a pit or valley reads as depth rather
+    // than a black void. Reaches many levels down with a soft ~0.78/level falloff;
+    // only genuinely deep air stays near-black.
+    const DIM: [f32; 10] = [1.0, 0.72, 0.56, 0.44, 0.35, 0.28, 0.22, 0.17, 0.13, 0.10];
+    let mut rgb = [0.03, 0.03, 0.04];
     let mut glyph = "block";
     let season = sim.clock.season();
     for (levels_down, factor) in DIM.iter().enumerate() {
