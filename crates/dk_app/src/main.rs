@@ -377,6 +377,33 @@ struct WasPressed(bool);
 /// The category names, indexed by the `cat` field on each tool.
 const CATEGORIES: &[&str] = &["Dig", "Zones", "Workshops", "Orders", "Piles"];
 
+/// Icon file stem (`assets/icons/<stem>.png`) for a category launcher, if any.
+fn category_icon(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Dig" => "dig",
+        "Zones" => "zones",
+        "Workshops" => "workshops",
+        "Orders" => "orders",
+        "Piles" => "piles",
+        _ => return None,
+    })
+}
+
+/// Icon file stem for a tool button, if it has one (a subset for now — unmapped
+/// tools just show their label). Icons are OpenMoji (CC-BY-SA), tinted at render.
+fn tool_icon(label: &str) -> Option<&'static str> {
+    Some(match label {
+        "Mine" => "mine",
+        "Stairs" => "stairs",
+        "Channel" => "channel",
+        "Chop" => "chop",
+        "Gather" => "gather",
+        "Wall" => "wall",
+        "Engrave" => "engrave",
+        _ => return None,
+    })
+}
+
 /// Which of the world's layers the embark map is painting.
 ///
 /// The world knows six fields and its own good and evil, and until now the map
@@ -2145,6 +2172,9 @@ fn setup(
                             Button,
                             Node {
                                 display: Display::None, // hidden until its category opens
+                                flex_direction: FlexDirection::Row,
+                                align_items: AlignItems::Center,
+                                column_gap: Val::Px(6.0),
                                 padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
@@ -2155,6 +2185,16 @@ fn setup(
                             t.clone(),
                         ))
                         .with_children(|b| {
+                            if let Some(icon) = tool_icon(t.label) {
+                                b.spawn((
+                                    ImageNode {
+                                        image: asset_server.load(format!("icons/{icon}.png")),
+                                        color: UI_TEXT,
+                                        ..default()
+                                    },
+                                    Node { width: Val::Px(15.0), height: Val::Px(15.0), ..default() },
+                                ));
+                            }
                             b.spawn((
                                 Text::new(t.label),
                                 TextFont { font_size: 13.0, ..default() },
@@ -2184,6 +2224,9 @@ fn setup(
                     bar.spawn((
                         Button,
                         Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(7.0),
                             padding: UiRect::axes(Val::Px(14.0), Val::Px(6.0)),
                             border: UiRect::all(Val::Px(1.0)),
                             ..default()
@@ -2194,11 +2237,23 @@ fn setup(
                         CategoryButton(i as u8),
                         WasPressed::default(),
                     ))
-                    .with_child((
-                        Text::new(*name),
-                        TextFont { font_size: 15.0, ..default() },
-                        TextColor(UI_TEXT),
-                    ));
+                    .with_children(|b| {
+                        if let Some(icon) = category_icon(name) {
+                            b.spawn((
+                                ImageNode {
+                                    image: asset_server.load(format!("icons/{icon}.png")),
+                                    color: UI_TEXT,
+                                    ..default()
+                                },
+                                Node { width: Val::Px(18.0), height: Val::Px(18.0), ..default() },
+                            ));
+                        }
+                        b.spawn((
+                            Text::new(*name),
+                            TextFont { font_size: 15.0, ..default() },
+                            TextColor(UI_TEXT),
+                        ));
+                    });
                 }
             });
         });
