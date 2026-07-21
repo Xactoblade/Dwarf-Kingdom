@@ -2021,7 +2021,9 @@ fn setup(
                         })
                         .with_children(|tier| {
                             tier.spawn((
-                                ImageNode::new(faces[i].clone()),
+                                // White line-art tinted to this tier's mood colour
+                                // (green ecstatic -> red miserable), DF-style.
+                                ImageNode { image: faces[i].clone(), color: col, ..default() },
                                 Node { width: Val::Px(17.0), height: Val::Px(17.0), ..default() },
                             ));
                             tier.spawn((

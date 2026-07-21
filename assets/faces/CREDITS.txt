@@ -1,4 +1,4 @@
 Happiness-mood face icons (face_0..face_4.png) are derived from OpenMoji
-(https://openmoji.org), the open-source emoji set, licensed CC-BY-SA 4.0.
-Source glyphs: U+1F600, U+1F642, U+1F610, U+1F641, U+2639 (black/line variant),
-recoloured to white line-art and tinted per mood tier at render time.
+(https://openmoji.org), CC-BY-SA 4.0. Source glyphs (black/line variant):
+U+1F600, U+1F642, U+1F610, U+1F641, U+2639 -- recoloured to white line-art and
+tinted per mood tier (green ecstatic -> red miserable) at render time.
