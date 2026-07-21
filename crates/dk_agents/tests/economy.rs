@@ -267,86 +267,30 @@ fn recompute_wealth_updates_the_cache() {
     assert_eq!(sim.wealth(), 55, "recompute picks up the new statue");
 }
 
-// ---------------------------------------------------------- Slice 3: trade credit
+// ------------------------------------------------------------- barter (no credit)
 
-/// The required price: the good's value plus the merchant's margin, rounded up.
-fn required_price(value: u32, raws: &Raws) -> i64 {
-    (value as f32 * raws.economy.trade_margin).ceil() as i64
-}
-
-/// Over-pay a caravan and the surplus is banked as goodwill rather than thrown
-/// away; the ledger records both sides of the deal.
+/// Pure barter: an offer that meets the merchant's margin in goods is accepted,
+/// one that doesn't is refused. No standing balance — a trade is goods for goods,
+/// like Dwarf Fortress's caravans.
 #[test]
-fn overpaying_a_caravan_banks_the_surplus_as_credit() {
+fn a_trade_must_meet_the_merchants_margin_in_goods() {
     let raws = common::test_raws();
-    let mut sim = empty_fort(&raws, 21);
     let granite = raws.materials.index_of("granite").unwrap();
-    // Offer three statues (55 each = 165) for one craft (16). Wild over-payment.
-    sim.items.push(item(ItemKind::Statue, granite, 0)); // idx 0
-    sim.items.push(item(ItemKind::Statue, granite, 0)); // idx 1
-    sim.items.push(item(ItemKind::Statue, granite, 0)); // idx 2
-    sim.caravan = Some(test_caravan(vec![item(ItemKind::Craft, granite, 0)]));
 
-    let required = required_price(16, &raws); // ceil(16 * 1.2) = 20
-    assert_eq!(sim.trade_credit, 0);
-    sim.execute_trade(&[0, 1, 2], &[0], &raws).expect("over-payment is accepted");
+    // Buy one craft (value 16): the merchant wants ceil(16*1.2)=20 in goods. A
+    // single statue (55) more than covers it; a lone boulder (3) does not.
+    let mut rich = empty_fort(&raws, 21);
+    rich.items.push(item(ItemKind::Statue, granite, 0)); // value 55
+    rich.caravan = Some(test_caravan(vec![item(ItemKind::Craft, granite, 0)]));
+    rich.execute_trade(&[0], &[0], &raws).expect("an ample offer is accepted");
+    assert_eq!(rich.stats.trades_completed, 1);
+    assert_eq!(rich.stats.value_exported, 55);
+    assert_eq!(rich.stats.value_imported, 16);
+    assert!(rich.items.iter().any(|it| it.active() && it.kind == ItemKind::Craft));
 
-    assert_eq!(sim.trade_credit, 165 - required, "the surplus over the ask is banked");
-    assert_eq!(sim.stats.value_exported, 165, "all offered value is exported");
-    assert_eq!(sim.stats.value_imported, 16, "the craft's value is imported");
-    assert_eq!(sim.stats.trades_completed, 1);
-}
-
-/// Banked goodwill can buy goods outright, with nothing offered in return — the
-/// caravan tab from last season pays this season's bill.
-#[test]
-fn banked_credit_buys_goods_with_nothing_offered() {
-    let raws = common::test_raws();
-    let mut sim = empty_fort(&raws, 22);
-    let granite = raws.materials.index_of("granite").unwrap();
-    sim.trade_credit = 100;
-    sim.caravan = Some(test_caravan(vec![item(ItemKind::Craft, granite, 0)])); // value 16
-
-    let required = required_price(16, &raws); // 20
-    sim.execute_trade(&[], &[0], &raws).expect("credit alone covers the price");
-
-    assert_eq!(sim.trade_credit, 100 - required, "credit is drawn down by the price");
-    assert_eq!(sim.stats.value_exported, 0, "no goods left the fort");
-    assert_eq!(sim.stats.value_imported, 16);
-    assert!(
-        sim.items.iter().any(|it| it.active() && it.kind == ItemKind::Craft),
-        "the bought craft lands in the fort"
-    );
-}
-
-/// A trade the fort can't cover — even counting credit — is refused, and a
-/// refusal never touches the balance.
-#[test]
-fn an_unaffordable_trade_is_refused_and_leaves_credit_untouched() {
-    let raws = common::test_raws();
-    let mut sim = empty_fort(&raws, 23);
-    let granite = raws.materials.index_of("granite").unwrap();
-    sim.trade_credit = 5;
-    sim.caravan = Some(test_caravan(vec![item(ItemKind::Statue, granite, 0)])); // value 55
-
-    let err = sim.execute_trade(&[], &[0], &raws).unwrap_err();
-    assert!(!err.is_empty());
-    assert_eq!(sim.trade_credit, 5, "a scoffed-at offer doesn't spend the balance");
-    assert_eq!(sim.stats.trades_completed, 0);
-    assert_eq!(sim.stats.value_imported, 0);
-}
-
-/// Goodwill on account is wealth too, so a fort can't launder its masterworks
-/// into credit to duck a wealth-scaled siege.
-#[test]
-fn banked_credit_counts_toward_fortress_wealth() {
-    let raws = common::test_raws();
-    let mut sim = empty_fort(&raws, 24);
-    assert_eq!(sim.fortress_wealth(&raws), 0);
-    sim.trade_credit = 250;
-    assert_eq!(sim.fortress_wealth(&raws), 250, "credit on account counts as wealth");
-    // and on top of real goods
-    let granite = raws.materials.index_of("granite").unwrap();
-    sim.items.push(item(ItemKind::Statue, granite, 0)); // 55
-    assert_eq!(sim.fortress_wealth(&raws), 250 + 55);
+    let mut poor = empty_fort(&raws, 22);
+    poor.items.push(item(ItemKind::Boulder, granite, 0)); // value 3
+    poor.caravan = Some(test_caravan(vec![item(ItemKind::Craft, granite, 0)]));
+    assert!(poor.execute_trade(&[0], &[0], &raws).is_err(), "a lowball is refused");
+    assert_eq!(poor.stats.trades_completed, 0);
 }

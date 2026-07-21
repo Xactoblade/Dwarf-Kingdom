@@ -172,21 +172,26 @@ masterworks and hide wealth from raiders.
 
 ---
 
-## 6. Deferred (revisit next phase)
+## 6. Status of the two deferred items
 
-- **Minted coins (`ItemKind::Coin` + Mint workshop).** Cut because coins have no
-  demand side while wallets/wages/ownership are out: a coin can only raise wealth
-  (pure downside), be a tribute sink, or be bartered — and bartering the source
-  metal bar is strictly better. Ship coins only once they get one edge over barter
-  (e.g. buy caravan goods at par, skipping the margin) **and** a value-conservation
-  constraint on minting (`coins_per_bar × coin_value ≈ bar value`, with a test) so
-  minting neither inflates wealth for free nor silently destroys it.
-- **Noble economic demands.** DF export mandates are *bans* ("don't sell material
-  X"), not "sell N value"; DF taxation skims the fort's *own* wealth for the baron,
-  not tribute to an offscreen civ. If added later, implement the real export ban —
-  it fits the `Mandate` progress-vs-baseline frame in `tick_nobility` (`:5618`)
-  cleanly and needs no coins. `PayTribute`-to-parent-civ is not DF-faithful and is
-  dropped.
+- **Noble economic demands — DONE (Part 2a, `86267a4`).** Implemented as a
+  DF-faithful **export ban**: a baron with a trade partner forbids selling a
+  material to caravans; defying it is punished, honouring it pleases him. Not the
+  "sell N value" quota (wrong) nor `PayTribute`-to-parent-civ (not DF-faithful).
+
+- **Minted coins — DROPPED (not deferred).** Decided against, on the same grounds
+  that killed Dwarf Fortress's own economy: **DF built a circulating coin economy
+  (wages, rent, taxes, purchases) and then *disabled* it** — it death-spiralled
+  (dwarves going broke and refusing to work). Modern DF coins are a mintable trade
+  good only, not currency. For DK, coins with no demand side are exactly that trap;
+  the only viable version (coins buy caravan goods at par, with a value-conserving
+  mint) adds `ItemKind` ripple + an `execute_trade` rework for a thin payoff. So we
+  do **not** build coins — the economy layer is complete without them.
+
+**The economy layer is done:** data-driven prices (Slice 1), created-wealth
+driving sieges/migration (Slice 2), trade credit (Slice 3), and noble export bans
+(Part 2a). If per-dwarf ownership/wallets ever land in a later phase, revisit
+coins then — with a real in-fort marketplace to give them a sink.
 
 ## 7. Open questions
 
