@@ -354,6 +354,13 @@ impl Raws {
         })
     }
 
+    /// The active mods as `(id, version)` pairs in load order — the analogue of
+    /// `id_manifest` for save stamping. A fort save records this so it can tell,
+    /// on load, whether the mods that made it are present.
+    pub fn mod_stamp(&self) -> Vec<(String, String)> {
+        self.mods.iter().map(|m| (m.id.clone(), m.version.clone())).collect()
+    }
+
     /// A stable fingerprint of the WORLDGEN-relevant content: material
     /// (id, category) in registry order, then plant ids. Two raws sets with the
     /// same hash generate the same world from the same seed; a different hash

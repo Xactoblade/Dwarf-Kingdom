@@ -10739,7 +10739,7 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 79;
+const SAVE_VERSION: u32 = 80;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -10747,13 +10747,29 @@ struct SaveOut<'a> {
     version: u32,
     material_ids: Vec<String>,
     plant_ids: Vec<String>,
+    /// The mods (id, version) that made this fort, so a load can tell whether
+    /// they are present before it tries to resolve their content.
+    mods: Vec<(String, String)>,
     sim: &'a Sim,
 }
 
 // Read as header-then-body so version mismatches produce a clear error
 // instead of a bincode failure mid-struct. bincode serializes struct fields
 // sequentially, so this matches SaveOut's layout exactly.
-type SaveBody = (Vec<String>, Vec<String>, Sim);
+type SaveBody = (Vec<String>, Vec<String>, Vec<(String, String)>, Sim);
+
+/// Render a mod stamp for a player-facing message: "cool_mod v1.0.0, other v2.1"
+/// or "none".
+fn fmt_mod_stamp(mods: &[(String, String)]) -> String {
+    if mods.is_empty() {
+        "none".to_string()
+    } else {
+        mods.iter()
+            .map(|(id, v)| format!("{id} v{v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
 
 pub fn save_sim(sim: &Sim, path: &FsPath, raws: &Raws) -> Result<()> {
     if let Some(dir) = path.parent() {
@@ -10764,6 +10780,7 @@ pub fn save_sim(sim: &Sim, path: &FsPath, raws: &Raws) -> Result<()> {
         version: SAVE_VERSION,
         material_ids: raws.materials.id_manifest(),
         plant_ids: raws.plants.id_manifest(),
+        mods: raws.mod_stamp(),
         sim,
     };
     let file = std::fs::File::create(path)
@@ -10784,8 +10801,25 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
         "save version {version} unsupported (expected {SAVE_VERSION}) — this save \
          is from another game version"
     );
-    let (material_ids, plant_ids, sim): SaveBody = bincode::deserialize_from(&mut reader)
+    let (material_ids, plant_ids, saved_mods, sim): SaveBody = bincode::deserialize_from(&mut reader)
         .with_context(|| format!("deserializing {}", path.display()))?;
+    // Refuse a fort whose mods aren't the ones now loaded, with a clear message —
+    // friendlier than the cryptic "material 'X' missing" the remap would raise if
+    // a mod that added content is gone. Compared as a set (order-independent): the
+    // id-manifest remap already tolerates a load-order change. `mod_stamp` carries
+    // version too, so a different version of a mod is treated as a different mod.
+    {
+        let mut have = raws.mod_stamp();
+        have.sort();
+        let mut need = saved_mods.clone();
+        need.sort();
+        anyhow::ensure!(
+            have == need,
+            "this fortress was made with mods [{}] but you have [{}] — load the matching mods to reclaim it",
+            fmt_mod_stamp(&saved_mods),
+            fmt_mod_stamp(&raws.mod_stamp()),
+        );
+    }
     let mut sim = sim;
     sim.map.validate()?;
     sim.map.remap_materials(&material_ids, &raws.materials)?;
