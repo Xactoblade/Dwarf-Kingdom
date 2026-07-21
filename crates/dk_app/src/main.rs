@@ -6156,7 +6156,7 @@ fn update_hud(
         let days_left = m.deadline.saturating_sub(sim.0.clock.tick) / dk_core::TICKS_PER_DAY;
         status.push_str(&format!(
             "   MANDATE: {} ({} days left)",
-            m.kind.describe(m.amount),
+            m.describe(&reg.0),
             days_left
         ));
     }

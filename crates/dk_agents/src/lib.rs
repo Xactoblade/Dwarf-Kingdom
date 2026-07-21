@@ -1636,19 +1636,16 @@ pub enum MandateKind {
     CookMeals,
     BrewDrinks,
     MineBoulders,
+    /// A DF-faithful noble whim: forbid the sale of a material to caravans for
+    /// the mandate's span. The banned material is the mandate's `target`; selling
+    /// a good of it defies the baron and is punished when the edict lapses.
+    ExportBan,
 }
 
-impl MandateKind {
-    pub fn describe(self, amount: u32) -> String {
-        match self {
-            MandateKind::CookMeals => format!("{amount} meals be cooked"),
-            MandateKind::BrewDrinks => format!("{amount} drinks be brewed"),
-            MandateKind::MineBoulders => format!("{amount} boulders be mined"),
-        }
-    }
-}
-
-/// A baron's demand: produce `amount` of something before `deadline`.
+/// A baron's demand. For production kinds: make `amount` of something before
+/// `deadline` (progress = current stat - `baseline`). For an `ExportBan`: keep
+/// the `target` material off the caravans until `deadline`; `violated` records a
+/// defiant sale.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Mandate {
     pub kind: MandateKind,
@@ -1656,6 +1653,26 @@ pub struct Mandate {
     pub deadline: u64,
     /// Stat value when the mandate was issued (progress = current - baseline).
     pub baseline: u32,
+    /// The banned material index, for an `ExportBan` (unused otherwise).
+    #[serde(default)]
+    pub target: u16,
+    /// Set when the fort defies an `ExportBan` by selling the banned material.
+    #[serde(default)]
+    pub violated: bool,
+}
+
+impl Mandate {
+    /// A player-facing description of the demand.
+    pub fn describe(&self, raws: &Raws) -> String {
+        match self.kind {
+            MandateKind::CookMeals => format!("{} meals be cooked", self.amount),
+            MandateKind::BrewDrinks => format!("{} drinks be brewed", self.amount),
+            MandateKind::MineBoulders => format!("{} boulders be mined", self.amount),
+            MandateKind::ExportBan => {
+                format!("no {} leave the fort by caravan", raws.materials.get(self.target).name)
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------- trade
@@ -4800,7 +4817,7 @@ impl Sim {
 
         // The barony: appointments, demands, and judgments (daily check).
         if self.clock.tick % TICKS_PER_DAY == 0 && self.clock.tick > 0 {
-            self.tick_nobility();
+            self.tick_nobility(raws);
             self.tick_weather();
             self.tick_culture();
         }
@@ -5586,7 +5603,7 @@ impl Sim {
     }
 
     /// Barons arrive with population, demand things, and punish failure.
-    fn tick_nobility(&mut self) {
+    fn tick_nobility(&mut self, raws: &Raws) {
         // Appointment: the fort's happiest citizen takes the title.
         if self.baron.is_none() && self.alive_dwarves() >= BARONY_AT {
             let chosen = self
@@ -5621,33 +5638,93 @@ impl Sim {
         }
         let Some(baron) = self.baron else { return };
 
+        let deadline = self.clock.tick + MANDATE_DAYS * TICKS_PER_DAY;
         match self.mandate {
             None => {
-                // A new demand, colored by the baron's tastes.
-                let kind = match self.rng.gen_range(0..3) {
-                    0 => MandateKind::CookMeals,
-                    1 => MandateKind::BrewDrinks,
-                    _ => MandateKind::MineBoulders,
+                // With a caravan to sell to, the baron may instead forbid an
+                // export (a DF noble's caprice). This branch — and its rng — runs
+                // ONLY for a fort with a trade partner, so forts without trade
+                // (every headless nobility test) keep the exact production-mandate
+                // stream, gated by the short-circuit on `trade_partner`.
+                let mut export_ban = None;
+                if self.trade_partner.is_some() && self.rng.gen_ratio(1, 3) {
+                    let cands: Vec<u16> = self
+                        .items
+                        .iter()
+                        .filter(|it| {
+                            it.active()
+                                && matches!(
+                                    it.kind,
+                                    ItemKind::Boulder
+                                        | ItemKind::Bar
+                                        | ItemKind::Craft
+                                        | ItemKind::Weapon
+                                        | ItemKind::Armor
+                                        | ItemKind::Statue
+                                )
+                        })
+                        .map(|it| it.stuff)
+                        .collect();
+                    if !cands.is_empty() {
+                        export_ban = Some(cands[self.rng.gen_range(0..cands.len())]);
+                    }
+                }
+                let mandate = if let Some(target) = export_ban {
+                    Mandate {
+                        kind: MandateKind::ExportBan,
+                        amount: 0,
+                        deadline,
+                        baseline: 0,
+                        target,
+                        violated: false,
+                    }
+                } else {
+                    // The production quota, colored by the baron's tastes —
+                    // unchanged from before, so the rng stream is identical.
+                    let kind = match self.rng.gen_range(0..3) {
+                        0 => MandateKind::CookMeals,
+                        1 => MandateKind::BrewDrinks,
+                        _ => MandateKind::MineBoulders,
+                    };
+                    let amount = self.rng.gen_range(3..8u32);
+                    let baseline = match kind {
+                        MandateKind::CookMeals => self.stats.meals_cooked,
+                        MandateKind::BrewDrinks => self.stats.drinks_brewed,
+                        MandateKind::MineBoulders => self.stats.boulders_mined,
+                        MandateKind::ExportBan => 0,
+                    };
+                    Mandate { kind, amount, deadline, baseline, target: 0, violated: false }
                 };
-                let amount = self.rng.gen_range(3..8u32);
-                let baseline = match kind {
-                    MandateKind::CookMeals => self.stats.meals_cooked,
-                    MandateKind::BrewDrinks => self.stats.drinks_brewed,
-                    MandateKind::MineBoulders => self.stats.boulders_mined,
-                };
-                let deadline = self.clock.tick + MANDATE_DAYS * TICKS_PER_DAY;
-                self.mandate = Some(Mandate { kind, amount, deadline, baseline });
+                self.mandate = Some(mandate);
                 let name = self.dwarves[baron].name.clone();
+                let verb = if mandate.kind == MandateKind::ExportBan { "decrees" } else { "demands" };
                 self.log_event(format!(
-                    "Baron {name} demands that {} within {MANDATE_DAYS} days!",
-                    kind.describe(amount)
+                    "Baron {name} {verb} that {} within {MANDATE_DAYS} days!",
+                    mandate.describe(raws)
                 ));
+            }
+            Some(m) if m.kind == MandateKind::ExportBan => {
+                // A passive prohibition: nothing to check until it lapses, then
+                // the baron judges whether it was honoured.
+                if self.clock.tick >= m.deadline {
+                    self.mandate = None;
+                    let name = self.dwarves[baron].name.clone();
+                    if m.violated {
+                        self.stats.mandates_failed += 1;
+                        self.punish_for_mandate(baron, m, raws);
+                    } else {
+                        self.stats.mandates_met += 1;
+                        self.push_thought(baron, ThoughtKind::MandateMet);
+                        self.log_event(format!("Baron {name}'s edict held; the ban lifts."));
+                    }
+                }
             }
             Some(m) => {
                 let progress = match m.kind {
                     MandateKind::CookMeals => self.stats.meals_cooked - m.baseline,
                     MandateKind::BrewDrinks => self.stats.drinks_brewed - m.baseline,
                     MandateKind::MineBoulders => self.stats.boulders_mined - m.baseline,
+                    MandateKind::ExportBan => 0,
                 };
                 if progress >= m.amount {
                     self.mandate = None;
@@ -5658,14 +5735,14 @@ impl Sim {
                 } else if self.clock.tick >= m.deadline {
                     self.mandate = None;
                     self.stats.mandates_failed += 1;
-                    self.punish_for_mandate(baron, m);
+                    self.punish_for_mandate(baron, m, raws);
                 }
             }
         }
     }
 
     /// Justice, of a sort: some poor soul answers for the shortfall.
-    fn punish_for_mandate(&mut self, baron: usize, m: Mandate) {
+    fn punish_for_mandate(&mut self, baron: usize, m: Mandate, raws: &Raws) {
         let candidates: Vec<usize> = self
             .dwarves
             .iter()
@@ -5685,7 +5762,7 @@ impl Sim {
         else {
             self.log_event(format!(
                 "Baron {baron_name}'s mandate ({}) went unmet, but there was no one to blame.",
-                m.kind.describe(m.amount)
+                m.describe(raws)
             ));
             return;
         };
@@ -5980,6 +6057,36 @@ impl Sim {
             } else {
                 format!("the merchants scoff: they ask {required} in goods (you offered {offered})")
             });
+        }
+
+        // Defying the baron's export ban: selling a good of the forbidden
+        // material is allowed, but noted — the baron answers it when the edict
+        // lapses (see tick_nobility). Checked before the goods leave.
+        if let Some(target) = self
+            .mandate
+            .filter(|m| m.kind == MandateKind::ExportBan)
+            .map(|m| m.target)
+        {
+            let banned_kind = |k: ItemKind| {
+                matches!(
+                    k,
+                    ItemKind::Boulder
+                        | ItemKind::Bar
+                        | ItemKind::Craft
+                        | ItemKind::Weapon
+                        | ItemKind::Armor
+                        | ItemKind::Statue
+                )
+            };
+            let defied = offer
+                .iter()
+                .filter_map(|&i| self.items.get(i))
+                .any(|it| it.stuff == target && banned_kind(it.kind));
+            if defied {
+                if let Some(m) = &mut self.mandate {
+                    m.violated = true;
+                }
+            }
         }
 
         // Deal. Your goods leave with the wagon; theirs land at a trader's feet.
@@ -10613,7 +10720,7 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 82;
+const SAVE_VERSION: u32 = 83;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
