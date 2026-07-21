@@ -363,43 +363,9 @@ impl Weather {
     }
 }
 
-/// Gem varieties: (name, display color, value tier). Indexed by `Item::stuff`
-/// for RoughGem/CutGem. Append only — a saved fort stores gems by this index, so
-/// the existing order must not move. The value tier (1 ornamental .. 6 the
-/// rarest) scales the worth of a cut stone, so a diamond dwarfs an agate.
-pub const GEM_KINDS: [(&str, [u8; 3], u32); 18] = [
-    ("ruby", [200, 40, 60], 5),
-    ("emerald", [40, 190, 90], 5),
-    ("sapphire", [50, 90, 210], 5),
-    ("amethyst", [160, 80, 200], 3),
-    ("topaz", [220, 180, 60], 3),
-    ("opal", [210, 220, 230], 3),
-    ("diamond", [235, 240, 250], 6),
-    ("garnet", [150, 30, 45], 3),
-    ("aquamarine", [130, 210, 210], 3),
-    ("citrine", [232, 196, 92], 2),
-    ("jade", [86, 176, 128], 3),
-    ("onyx", [44, 44, 52], 2),
-    ("turquoise", [72, 200, 190], 2),
-    ("lapis lazuli", [46, 76, 178], 3),
-    ("malachite", [34, 150, 92], 2),
-    ("jasper", [172, 84, 60], 2),
-    ("agate", [192, 156, 126], 1),
-    ("peridot", [172, 210, 84], 2),
-];
-
-pub fn gem_name(idx: u16) -> &'static str {
-    GEM_KINDS.get(idx as usize).map(|(n, _, _)| *n).unwrap_or("gem")
-}
-
-pub fn gem_color(idx: u16) -> [u8; 3] {
-    GEM_KINDS.get(idx as usize).map(|(_, c, _)| *c).unwrap_or([180, 180, 200])
-}
-
-/// A gem's value tier (1 ornamental .. 6 rarest); scales its trade worth.
-pub fn gem_value(idx: u16) -> u32 {
-    GEM_KINDS.get(idx as usize).map(|(_, _, v)| *v).unwrap_or(2)
-}
+// Gems are data now — see `dk_raws::GemRegistry` (`data/gems/*.ron`). Access is
+// `raws.gems.name/color/value_tier(idx)`; a `RoughGem`/`CutGem` still stores its
+// gem by index in `stuff`, remapped on load like any other raws index.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemState {
@@ -1820,8 +1786,8 @@ pub fn item_value(item: &Item, raws: &Raws) -> u32 {
         // finest legitimate trade good — a cut diamond (tier 6) fetches far more
         // than a cut agate (tier 1). Priced by tier, not a material multiplier,
         // so no price row governs them.
-        ItemKind::RoughGem => 4 * gem_value(item.stuff),
-        ItemKind::CutGem => 24 * gem_value(item.stuff),
+        ItemKind::RoughGem => 4 * raws.gems.value_tier(item.stuff),
+        ItemKind::CutGem => 24 * raws.gems.value_tier(item.stuff),
         // Everything else: material value scaled by the good's coefficient, plus
         // a flat worth. For flat goods (a meal, a bolt of cloth) mat_coeff is 0,
         // so the material term drops out — matching the old hardcoded prices.
@@ -10470,13 +10436,17 @@ impl Sim {
             };
             self.spawn_item(ItemKind::Boulder, boulder_from.material, drop_at);
             self.stats.boulders_mined += 1;
-            // A glint in the stone: rarely, the pick strikes a gem.
-            if self.rng.gen_ratio(1, 22) {
-                let gem = self.rng.gen_range(0..GEM_KINDS.len()) as u16;
+            // A glint in the stone: rarely, the pick strikes a gem. The
+            // gen_ratio roll is taken first and unchanged (so the rng stream is
+            // identical to before gems were data), then guarded against an empty
+            // gem set — data-driving turns the old const `.len()` into a possible
+            // `gen_range(0..0)` panic if a mod ships no gems.
+            if self.rng.gen_ratio(1, 22) && !raws.gems.is_empty() {
+                let gem = self.rng.gen_range(0..raws.gems.len()) as u16;
                 self.spawn_item(ItemKind::RoughGem, gem, drop_at);
                 self.stats.gems_found += 1;
                 let name = self.dwarves[i].name.clone();
-                self.log_event(format!("{name} strikes a rough {}!", gem_name(gem)));
+                self.log_event(format!("{name} strikes a rough {}!", raws.gems.name(gem)));
             }
         }
         // Adamantine — the deep wonder-metal. And if this cap held back the
@@ -10739,7 +10709,7 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 80;
+const SAVE_VERSION: u32 = 81;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
@@ -10747,6 +10717,7 @@ struct SaveOut<'a> {
     version: u32,
     material_ids: Vec<String>,
     plant_ids: Vec<String>,
+    gem_ids: Vec<String>,
     /// The mods (id, version) that made this fort, so a load can tell whether
     /// they are present before it tries to resolve their content.
     mods: Vec<(String, String)>,
@@ -10756,7 +10727,7 @@ struct SaveOut<'a> {
 // Read as header-then-body so version mismatches produce a clear error
 // instead of a bincode failure mid-struct. bincode serializes struct fields
 // sequentially, so this matches SaveOut's layout exactly.
-type SaveBody = (Vec<String>, Vec<String>, Vec<(String, String)>, Sim);
+type SaveBody = (Vec<String>, Vec<String>, Vec<String>, Vec<(String, String)>, Sim);
 
 /// Render a mod stamp for a player-facing message: "cool_mod v1.0.0, other v2.1"
 /// or "none".
@@ -10780,6 +10751,7 @@ pub fn save_sim(sim: &Sim, path: &FsPath, raws: &Raws) -> Result<()> {
         version: SAVE_VERSION,
         material_ids: raws.materials.id_manifest(),
         plant_ids: raws.plants.id_manifest(),
+        gem_ids: raws.gems.id_manifest(),
         mods: raws.mod_stamp(),
         sim,
     };
@@ -10801,8 +10773,9 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
         "save version {version} unsupported (expected {SAVE_VERSION}) — this save \
          is from another game version"
     );
-    let (material_ids, plant_ids, saved_mods, sim): SaveBody = bincode::deserialize_from(&mut reader)
-        .with_context(|| format!("deserializing {}", path.display()))?;
+    let (material_ids, plant_ids, gem_ids, saved_mods, sim): SaveBody =
+        bincode::deserialize_from(&mut reader)
+            .with_context(|| format!("deserializing {}", path.display()))?;
     // Refuse a fort whose mods aren't the ones now loaded, with a clear message —
     // friendlier than the cryptic "material 'X' missing" the remap would raise if
     // a mod that added content is gone. Compared as a set (order-independent): the
@@ -10833,6 +10806,18 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
                 .with_context(|| format!("save uses plant '{id}' missing from current raws"))
         })
         .collect::<Result<_>>()?;
+    // Gems are data now (dk_raws::GemRegistry), stored by index in a RoughGem/
+    // CutGem's `stuff` — remap them like materials/plants so a reordered or
+    // mod-extended gem list survives a save. (A missing gem should already be
+    // caught by the mod-set check above, but name it clearly just in case.)
+    let gem_remap: Vec<u16> = gem_ids
+        .iter()
+        .map(|id| {
+            raws.gems
+                .index_of(id)
+                .with_context(|| format!("save uses gem '{id}' missing from current raws"))
+        })
+        .collect::<Result<_>>()?;
     let remap_one = |table: &[u16], v: u16, what: &str| -> Result<u16> {
         anyhow::ensure!((v as usize) < table.len(), "corrupt save: {what} index {v} out of range");
         Ok(table[v as usize])
@@ -10854,7 +10839,9 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             // below stay flat) carries a wood-material index.
             | ItemKind::Log
             | ItemKind::Statue => remap_one(&mat_remap, item.stuff, "material")?,
-            // These carry no raws index (dwarf index, gem type, or nothing).
+            // A rough or cut gem stores its gem index in `stuff`.
+            ItemKind::RoughGem | ItemKind::CutGem => remap_one(&gem_remap, item.stuff, "gem")?,
+            // These carry no raws index (dwarf index, or nothing).
             ItemKind::Corpse
             | ItemKind::Wool
             | ItemKind::Cloth
@@ -10863,9 +10850,7 @@ pub fn load_sim(path: &FsPath, raws: &Raws) -> Result<Sim> {
             | ItemKind::Bin
             | ItemKind::Instrument
             | ItemKind::Hide
-            | ItemKind::Leather
-            | ItemKind::RoughGem
-            | ItemKind::CutGem => item.stuff,
+            | ItemKind::Leather => item.stuff,
             _ => remap_one(&plant_remap, item.stuff, "plant")?,
         };
         Ok(())

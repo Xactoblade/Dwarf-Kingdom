@@ -77,5 +77,31 @@ fn mining_sometimes_strikes_gems_and_the_jeweler_cuts_them() {
         "a cut gem carries premium trade value"
     );
     // The gem keeps its variety (a valid gem index).
-    assert!((cut_gem.stuff as usize) < dk_agents::GEM_KINDS.len());
+    assert!((cut_gem.stuff as usize) < raws.gems.len());
+}
+
+/// A cut gem stores its variety by index into the (now data-driven) gem
+/// registry; a save records the gem id-manifest and remaps it on load, so the
+/// gem survives a round trip.
+#[test]
+fn a_cut_gem_survives_a_save_and_reload() {
+    let raws = common::test_raws();
+    let mut rng = dk_core::rng_from_seed(9);
+    let map = dk_world::generate(&raws.materials, &mut rng, 24, 24, 12, 9);
+    let mut sim = Sim::new(map, &raws, rng, 2);
+    let diamond = raws.gems.index_of("diamond").expect("diamond is a base gem");
+    let pos = sim.dwarves[0].pos;
+    sim.debug_spawn_item(ItemKind::CutGem, diamond, pos);
+
+    let path = std::env::temp_dir().join(format!("dk_gem_{}.bin", std::process::id()));
+    dk_agents::save_sim(&sim, &path, &raws).expect("save");
+    let loaded = dk_agents::load_sim(&path, &raws).expect("load");
+
+    let gem = loaded
+        .items
+        .iter()
+        .find(|i| i.active() && i.kind == ItemKind::CutGem)
+        .expect("the cut gem is still there");
+    assert_eq!(raws.gems.name(gem.stuff), "diamond", "still a diamond after reload");
+    let _ = std::fs::remove_file(&path);
 }

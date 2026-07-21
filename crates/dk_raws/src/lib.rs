@@ -249,6 +249,107 @@ pub struct TilesetDef {
 }
 
 /// Everything loaded from `data/`. Passed into the simulation.
+/// A gem variety — struck while mining, cut into a premium trade good. Priced by
+/// its rarity `value_tier` (1 ornamental .. 6 the rarest), not a material
+/// multiplier. Gems were a Rust const array; they are the first former-enum
+/// content axis moved into data, chosen because the sim never matches on a gem
+/// exhaustively — access is only these name/color/value lookups.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GemDef {
+    pub id: String,
+    pub name: String,
+    /// Display color, sRGB 0-255.
+    pub color: [u8; 3],
+    /// Rarity tier 1 (ornamental) .. 6 (the rarest); scales the cut stone's worth.
+    pub value_tier: u32,
+}
+
+/// All loaded gems, indexed by a stable u16 handle that `RoughGem`/`CutGem`
+/// items store in `stuff`. Modelled on `MaterialRegistry`.
+pub struct GemRegistry {
+    gems: Vec<GemDef>,
+    by_id: HashMap<String, u16>,
+    /// Neutral stand-in for an out-of-range index, so a lookup never panics —
+    /// the same graceful fallback the old `gem_*` helpers gave with `unwrap_or`.
+    unknown: GemDef,
+}
+
+impl GemRegistry {
+    pub fn from_defs(gems: Vec<GemDef>) -> Result<Self> {
+        anyhow::ensure!(!gems.is_empty(), "no gems defined");
+        anyhow::ensure!(gems.len() < u16::MAX as usize, "too many gems");
+        let mut by_id = HashMap::new();
+        for (i, g) in gems.iter().enumerate() {
+            if by_id.insert(g.id.clone(), i as u16).is_some() {
+                anyhow::bail!("duplicate gem id: {}", g.id);
+            }
+        }
+        Ok(Self {
+            gems,
+            by_id,
+            unknown: GemDef { id: "gem".into(), name: "gem".into(), color: [180, 180, 200], value_tier: 2 },
+        })
+    }
+
+    pub fn get(&self, idx: u16) -> &GemDef {
+        self.gems.get(idx as usize).unwrap_or(&self.unknown)
+    }
+    pub fn name(&self, idx: u16) -> &str {
+        &self.get(idx).name
+    }
+    pub fn color(&self, idx: u16) -> [u8; 3] {
+        self.get(idx).color
+    }
+    pub fn value_tier(&self, idx: u16) -> u32 {
+        self.get(idx).value_tier
+    }
+    pub fn index_of(&self, id: &str) -> Option<u16> {
+        self.by_id.get(id).copied()
+    }
+    pub fn id_manifest(&self) -> Vec<String> {
+        self.gems.iter().map(|g| g.id.clone()).collect()
+    }
+    pub fn len(&self) -> usize {
+        self.gems.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.gems.is_empty()
+    }
+}
+
+/// The base game's 18 gems, in the order the old `GEM_KINDS` const defined them.
+/// `data/gems/gems.ron` mirrors this exactly (a parity test guards them), and
+/// keeping the order preserves every existing world seed's gem strikes. Test
+/// fixtures that don't touch disk build a registry from this.
+pub fn canonical_gems() -> Vec<GemDef> {
+    let g = |id: &str, name: &str, color: [u8; 3], value_tier: u32| GemDef {
+        id: id.into(),
+        name: name.into(),
+        color,
+        value_tier,
+    };
+    vec![
+        g("ruby", "ruby", [200, 40, 60], 5),
+        g("emerald", "emerald", [40, 190, 90], 5),
+        g("sapphire", "sapphire", [50, 90, 210], 5),
+        g("amethyst", "amethyst", [160, 80, 200], 3),
+        g("topaz", "topaz", [220, 180, 60], 3),
+        g("opal", "opal", [210, 220, 230], 3),
+        g("diamond", "diamond", [235, 240, 250], 6),
+        g("garnet", "garnet", [150, 30, 45], 3),
+        g("aquamarine", "aquamarine", [130, 210, 210], 3),
+        g("citrine", "citrine", [232, 196, 92], 2),
+        g("jade", "jade", [86, 176, 128], 3),
+        g("onyx", "onyx", [44, 44, 52], 2),
+        g("turquoise", "turquoise", [72, 200, 190], 2),
+        g("lapis_lazuli", "lapis lazuli", [46, 76, 178], 3),
+        g("malachite", "malachite", [34, 150, 92], 2),
+        g("jasper", "jasper", [172, 84, 60], 2),
+        g("agate", "agate", [192, 156, 126], 1),
+        g("peridot", "peridot", [172, 210, 84], 2),
+    ]
+}
+
 /// A mod's identity card — its `mod.ron`. A single RON struct at the root of a
 /// mod folder (not a `Vec` like the content files). The `id` is the stable key
 /// and de-facto namespace; `version` is stamped into saves so a world knows
@@ -276,6 +377,7 @@ pub struct ModManifest {
 pub struct Raws {
     pub materials: MaterialRegistry,
     pub plants: PlantRegistry,
+    pub gems: GemRegistry,
     pub tileset: Option<TilesetDef>,
     pub economy: EconomyConfig,
     /// The active mods, in resolved load order (empty for an unmodded game).
@@ -321,7 +423,9 @@ impl Raws {
         let mut mat_sources: Vec<(String, HashSet<String>, Vec<MaterialDef>)> =
             vec![("core".into(), no_overrides.clone(), load_ron_dir(&base.join("materials"))?)];
         let mut plant_sources: Vec<(String, HashSet<String>, Vec<PlantDef>)> =
-            vec![("core".into(), no_overrides, load_ron_dir(&base.join("plants"))?)];
+            vec![("core".into(), no_overrides.clone(), load_ron_dir(&base.join("plants"))?)];
+        let mut gem_sources: Vec<(String, HashSet<String>, Vec<GemDef>)> =
+            vec![("core".into(), no_overrides, load_ron_dir(&base.join("gems"))?)];
 
         let mut mods = Vec::new();
         for root in mod_roots {
@@ -335,19 +439,24 @@ impl Raws {
             let mats = if mat_dir.is_dir() { load_ron_dir::<MaterialDef>(&mat_dir)? } else { Vec::new() };
             let plant_dir = root.join("plants");
             let plants = if plant_dir.is_dir() { load_ron_dir::<PlantDef>(&plant_dir)? } else { Vec::new() };
+            let gem_dir = root.join("gems");
+            let gems = if gem_dir.is_dir() { load_ron_dir::<GemDef>(&gem_dir)? } else { Vec::new() };
             mat_sources.push((manifest.id.clone(), overrides.clone(), mats));
-            plant_sources.push((manifest.id.clone(), overrides, plants));
+            plant_sources.push((manifest.id.clone(), overrides.clone(), plants));
+            gem_sources.push((manifest.id.clone(), overrides, gems));
             mods.push(manifest);
         }
 
         let material_defs = merge_by_id(mat_sources, |m: &MaterialDef| m.id.as_str(), "material")?;
         let plant_defs = merge_by_id(plant_sources, |p: &PlantDef| p.id.as_str(), "plant")?;
+        let gem_defs = merge_by_id(gem_sources, |g: &GemDef| g.id.as_str(), "gem")?;
 
         Ok(Raws {
             materials: MaterialRegistry::from_defs(material_defs)
                 .context("building the material registry")?,
             plants: PlantRegistry::from_defs(plant_defs)
                 .context("building the plant registry")?,
+            gems: GemRegistry::from_defs(gem_defs).context("building the gem registry")?,
             tileset,
             economy,
             mods,

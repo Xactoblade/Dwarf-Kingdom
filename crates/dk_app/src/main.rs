@@ -5257,8 +5257,8 @@ fn item_label(raws: &Raws, it: &dk_agents::Item) -> String {
         ItemKind::BoneCraft => "bone trinket".to_string(),
         ItemKind::Wool => "raw wool".to_string(),
         ItemKind::Cloth => "bolt of cloth".to_string(),
-        ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
-        ItemKind::CutGem => format!("cut {}", dk_agents::gem_name(it.stuff)),
+        ItemKind::RoughGem => format!("rough {}", raws.gems.name(it.stuff)),
+        ItemKind::CutGem => format!("cut {}", raws.gems.name(it.stuff)),
         ItemKind::Weapon => format!("{} weapon", raws.materials.get(it.stuff).name),
         ItemKind::Glass => "blown glass".to_string(),
         ItemKind::Bar => format!("{} bar", raws.materials.get(it.stuff).name),
@@ -5317,7 +5317,7 @@ fn item_color(raws: &Raws, kind: ItemKind, stuff: u16) -> Color {
         ItemKind::Wool => Color::srgb(0.92, 0.9, 0.82),
         ItemKind::Cloth => Color::srgb(0.6, 0.55, 0.85),
         ItemKind::RoughGem | ItemKind::CutGem => {
-            let [r, g, b] = dk_agents::gem_color(stuff);
+            let [r, g, b] = raws.gems.color(stuff);
             let l = |v: u8| (v as f32 / 255.0).min(1.0);
             Color::srgb(l(r), l(g), l(b))
         }
@@ -6057,8 +6057,8 @@ fn update_hud(
             ItemKind::BoneCraft => "bone trinket (trade good)".to_string(),
             ItemKind::Wool => "raw wool".to_string(),
             ItemKind::Cloth => "bolt of cloth (trade good)".to_string(),
-            ItemKind::RoughGem => format!("rough {}", dk_agents::gem_name(it.stuff)),
-            ItemKind::CutGem => format!("cut {} (trade good)", dk_agents::gem_name(it.stuff)),
+            ItemKind::RoughGem => format!("rough {}", reg.0.gems.name(it.stuff)),
+            ItemKind::CutGem => format!("cut {} (trade good)", reg.0.gems.name(it.stuff)),
             ItemKind::Weapon => format!("{} weapon", reg.0.materials.get(it.stuff).name),
             ItemKind::Glass => "blown glass (trade good)".to_string(),
             ItemKind::Bar => format!("{} bar (trade good)", reg.0.materials.get(it.stuff).name),

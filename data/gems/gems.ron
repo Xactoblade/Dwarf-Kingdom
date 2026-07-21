@@ -1,0 +1,28 @@
+// Dwarf Kingdom gem raws — the stones a pick can strike, cut into the fort's
+// finest trade goods. value_tier is rarity (1 ornamental .. 6 the rarest) and
+// scales a cut stone's worth (a cut diamond dwarfs a cut agate).
+//
+// ORDER IS LOAD-BEARING: RoughGem/CutGem items store a gem by its index here,
+// and worldgen strikes a gem by index, so appending is safe but reordering
+// changes existing seeds' strikes. This file mirrors dk_raws::canonical_gems()
+// exactly; the gems_match_the_canonical_list test guards the two against drift.
+[
+    GemDef(id: "ruby",         name: "ruby",         color: (200, 40, 60),   value_tier: 5),
+    GemDef(id: "emerald",      name: "emerald",      color: (40, 190, 90),   value_tier: 5),
+    GemDef(id: "sapphire",     name: "sapphire",     color: (50, 90, 210),   value_tier: 5),
+    GemDef(id: "amethyst",     name: "amethyst",     color: (160, 80, 200),  value_tier: 3),
+    GemDef(id: "topaz",        name: "topaz",        color: (220, 180, 60),  value_tier: 3),
+    GemDef(id: "opal",         name: "opal",         color: (210, 220, 230), value_tier: 3),
+    GemDef(id: "diamond",      name: "diamond",      color: (235, 240, 250), value_tier: 6),
+    GemDef(id: "garnet",       name: "garnet",       color: (150, 30, 45),   value_tier: 3),
+    GemDef(id: "aquamarine",   name: "aquamarine",   color: (130, 210, 210), value_tier: 3),
+    GemDef(id: "citrine",      name: "citrine",      color: (232, 196, 92),  value_tier: 2),
+    GemDef(id: "jade",         name: "jade",         color: (86, 176, 128),  value_tier: 3),
+    GemDef(id: "onyx",         name: "onyx",         color: (44, 44, 52),    value_tier: 2),
+    GemDef(id: "turquoise",    name: "turquoise",    color: (72, 200, 190),  value_tier: 2),
+    GemDef(id: "lapis_lazuli", name: "lapis lazuli", color: (46, 76, 178),   value_tier: 3),
+    GemDef(id: "malachite",    name: "malachite",    color: (34, 150, 92),   value_tier: 2),
+    GemDef(id: "jasper",       name: "jasper",       color: (172, 84, 60),   value_tier: 2),
+    GemDef(id: "agate",        name: "agate",        color: (192, 156, 126), value_tier: 1),
+    GemDef(id: "peridot",      name: "peridot",      color: (172, 210, 84),  value_tier: 2),
+]

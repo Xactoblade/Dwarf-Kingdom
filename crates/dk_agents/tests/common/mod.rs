@@ -1,6 +1,9 @@
 //! Shared fixtures for dk_agents integration tests.
 
-use dk_raws::{CombatStats, EconomyConfig, MaterialCategory, MaterialDef, MaterialRegistry, PlantDef, PlantRegistry, Raws};
+use dk_raws::{
+    canonical_gems, CombatStats, EconomyConfig, GemRegistry, MaterialCategory, MaterialDef,
+    MaterialRegistry, PlantDef, PlantRegistry, Raws,
+};
 
 pub fn test_raws() -> Raws {
     let m = |id: &str, cat: MaterialCategory, combat: CombatStats| MaterialDef {
@@ -46,5 +49,12 @@ pub fn test_raws() -> Raws {
         },
     ])
     .unwrap();
-    Raws { materials, plants, tileset: None, economy: EconomyConfig::default(), mods: Vec::new() }
+    Raws {
+        materials,
+        plants,
+        gems: GemRegistry::from_defs(canonical_gems()).unwrap(),
+        tileset: None,
+        economy: EconomyConfig::default(),
+        mods: Vec::new(),
+    }
 }

@@ -32,6 +32,18 @@ impl TmpMod {
         self.write(id, overrides, materials_ron)
     }
 
+    /// Write a `mod.ron` and one gems file holding `gems_ron` (a RON list).
+    fn with_gems(self, id: &str, gems_ron: &str) -> Self {
+        std::fs::create_dir_all(self.0.join("gems")).unwrap();
+        std::fs::write(
+            self.0.join("mod.ron"),
+            format!("ModManifest(id:\"{id}\", name:\"{id} Pack\", version:\"1.0.0\")"),
+        )
+        .unwrap();
+        std::fs::write(self.0.join("gems").join("g.ron"), gems_ron).unwrap();
+        self
+    }
+
     fn write(self, id: &str, overrides: &[&str], materials_ron: &str) -> Self {
         std::fs::create_dir_all(self.0.join("materials")).unwrap();
         let ov = overrides
@@ -122,6 +134,36 @@ fn a_declared_override_replaces_a_base_material_in_place() {
     );
 }
 
+// --- gems: the first former-const content axis, now data-driven ---
+
+#[test]
+fn base_gems_match_the_canonical_list_in_order() {
+    // The shipped data/gems/gems.ron must equal the code mirror canonical_gems(),
+    // which reproduces the old GEM_KINDS const in order — so every existing world
+    // seed strikes the same gems.
+    let raws = Raws::load(&base_dir()).unwrap();
+    let canon = dk_raws::canonical_gems();
+    assert_eq!(raws.gems.len(), canon.len(), "the base ships exactly the canonical gems");
+    for (i, g) in canon.iter().enumerate() {
+        assert_eq!(raws.gems.get(i as u16), g, "gem #{i} matches canonical (order + fields)");
+    }
+}
+
+#[test]
+fn a_mod_can_add_a_gem() {
+    let base = base_dir();
+    let m = TmpMod::new("shinies").with_gems(
+        "shinies",
+        "[ GemDef(id:\"starstone\", name:\"starstone\", color:(90,90,255), value_tier:6) ]",
+    );
+    let raws = Raws::load_with_mods(&base, &[m.path()]).expect("load base + gem mod");
+    let idx = raws.gems.index_of("starstone").expect("the mod's gem is present");
+    assert_eq!(raws.gems.name(idx), "starstone");
+    assert_eq!(raws.gems.value_tier(idx), 6);
+    assert!(raws.gems.index_of("ruby").is_some(), "base gems remain");
+    assert_eq!(raws.gems.len(), dk_raws::canonical_gems().len() + 1, "one gem added");
+}
+
 #[test]
 fn required_category_validator_catches_an_emptied_category() {
     // Base has soil/sedimentary/igneous, so it passes.
@@ -181,6 +223,7 @@ fn raws_with(mats: Vec<MaterialDef>) -> Raws {
             brewable: true,
         }])
         .unwrap(),
+        gems: dk_raws::GemRegistry::from_defs(dk_raws::canonical_gems()).unwrap(),
         tileset: None,
         economy: EconomyConfig::default(),
         mods: Vec::new(),
