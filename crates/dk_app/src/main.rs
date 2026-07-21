@@ -691,13 +691,43 @@ struct HudText;
 #[derive(Component, Clone, Copy)]
 enum HudBar {
     Left,
-    Mid,
     Right,
 }
 
 /// The bar's container, toggled off on the title screen.
 #[derive(Component)]
 struct HudBarRoot;
+
+/// A coloured resource readout in the bar's centre (index into `RES_SLOTS`).
+#[derive(Component)]
+struct ResCell(usize);
+
+/// A coloured happiness tally in the bar's left (index into `MOOD_TIERS`).
+#[derive(Component)]
+struct MoodCell(usize);
+
+/// The bar's stores: label + label colour (Dwarf-Fortress category hues). The
+/// counts are summed from the sim each HUD refresh.
+const RES_SLOTS: [(&str, [f32; 3]); 8] = [
+    ("Food", [0.369, 0.659, 0.235]),   // green
+    ("Drink", [0.851, 0.643, 0.255]),  // amber
+    ("Seeds", [0.780, 0.635, 0.294]),  // straw
+    ("Wood", [0.600, 0.420, 0.235]),   // brown
+    ("Stone", [0.722, 0.690, 0.627]),  // stone-grey
+    ("Cloth", [0.682, 0.620, 0.800]),  // lavender
+    ("Crafts", [0.247, 0.745, 0.769]), // teal
+    ("Wealth", [0.831, 0.686, 0.216]), // gold
+];
+
+/// Happiness tiers, best -> worst: an ASCII face + its tint. (Sprite faces will
+/// replace the glyph once the assets exist; the coloured count stays.)
+const MOOD_TIERS: [(&str, [f32; 3]); 5] = [
+    (":)", [0.310, 0.761, 0.310]),  // ecstatic
+    (":]", [0.624, 0.776, 0.227]),  // happy
+    (":|", [0.894, 0.765, 0.227]),  // content
+    (":(", [0.878, 0.541, 0.180]),  // unhappy
+    (":X", [0.753, 0.224, 0.169]),  // miserable
+];
 
 /// Borrow shims so system bodies written against `SimRes(Sim)` (field access
 /// via `.0`) keep working now that SimRes holds an Option.
@@ -1930,18 +1960,62 @@ fn setup(
             HudBarRoot,
         ))
         .with_children(|bar| {
-            for cell in [HudBar::Left, HudBar::Mid, HudBar::Right] {
-                bar.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 15.0,
-                        line_height: bevy::text::LineHeight::RelativeToFont(1.3),
-                        ..default()
-                    },
-                    TextColor(UI_TEXT),
-                    cell,
-                ));
-            }
+            let cell_font = || TextFont {
+                font_size: 15.0,
+                line_height: bevy::text::LineHeight::RelativeToFont(1.25),
+                ..default()
+            };
+            // LEFT: fort identity, then a coloured happiness tally row.
+            bar.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            })
+            .with_children(|left| {
+                left.spawn((Text::new(""), cell_font(), TextColor(UI_TEXT), HudBar::Left));
+                left.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(11.0),
+                    ..default()
+                })
+                .with_children(|mood| {
+                    for (i, (_, c)) in MOOD_TIERS.iter().enumerate() {
+                        mood.spawn((
+                            Text::new(""),
+                            TextFont { font_size: 14.0, ..default() },
+                            TextColor(Color::srgb(c[0], c[1], c[2])),
+                            MoodCell(i),
+                        ));
+                    }
+                });
+            });
+            // CENTRE: the coloured stores, wrapping if the window is narrow.
+            bar.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(14.0),
+                row_gap: Val::Px(2.0),
+                flex_wrap: FlexWrap::Wrap,
+                justify_content: JustifyContent::Center,
+                max_width: Val::Percent(52.0),
+                ..default()
+            })
+            .with_children(|mid| {
+                for (i, (_, c)) in RES_SLOTS.iter().enumerate() {
+                    mid.spawn((
+                        Text::new(""),
+                        cell_font(),
+                        TextColor(Color::srgb(c[0], c[1], c[2])),
+                        ResCell(i),
+                    ));
+                }
+            });
+            // RIGHT: the date, weather, and speed.
+            bar.spawn((
+                Text::new(""),
+                cell_font(),
+                TextColor(Color::srgb(0.847, 0.804, 0.706)),
+                HudBar::Right,
+            ));
         });
 
     // The detail panel (event log, cursor read-out, orders) sits just under the
@@ -1957,7 +2031,7 @@ fn setup(
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(8.0),
-            top: Val::Px(48.0),
+            top: Val::Px(82.0),
             max_width: Val::Percent(66.0),
             padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
             border: UiRect::all(Val::Px(2.0)),
@@ -5723,6 +5797,8 @@ fn update_topbar(
     control: Res<SimControl>,
     diagnostics: Res<DiagnosticsStore>,
     mut cells: Query<(&mut Text, &HudBar)>,
+    mut res_cells: Query<(&mut Text, &ResCell), (Without<HudBar>, Without<MoodCell>)>,
+    mut mood_cells: Query<(&mut Text, &MoodCell), (Without<HudBar>, Without<ResCell>)>,
     mut root_vis: Query<&mut Visibility, With<HudBarRoot>>,
 ) {
     // The bar belongs to fortress mode; hide it on the title, embark, and menu
@@ -5742,14 +5818,49 @@ fn update_topbar(
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
 
-    let food = sim.count_kind(ItemKind::Meal)
-        + sim.count_kind(ItemKind::Crop)
-        + sim.count_kind(ItemKind::Berry);
-    let drink = sim.count_kind(ItemKind::Drink);
-    let seeds = sim.count_kind(ItemKind::Seed);
-    let crafts = sim.count_kind(ItemKind::Craft);
-    let cloth = sim.count_kind(ItemKind::Cloth);
-    let wealth = sim.wealth();
+    // Coloured stores, in RES_SLOTS order.
+    let counts: [usize; 8] = [
+        sim.count_kind(ItemKind::Meal)
+            + sim.count_kind(ItemKind::Crop)
+            + sim.count_kind(ItemKind::Berry),
+        sim.count_kind(ItemKind::Drink),
+        sim.count_kind(ItemKind::Seed),
+        sim.count_kind(ItemKind::Log),
+        sim.count_kind(ItemKind::Boulder),
+        sim.count_kind(ItemKind::Cloth) + sim.count_kind(ItemKind::Wool),
+        sim.count_kind(ItemKind::Craft)
+            + sim.count_kind(ItemKind::BoneCraft)
+            + sim.count_kind(ItemKind::Glass)
+            + sim.count_kind(ItemKind::Instrument)
+            + sim.count_kind(ItemKind::Clothes)
+            + sim.count_kind(ItemKind::Artifact),
+        sim.wealth() as usize,
+    ];
+    for (mut text, ResCell(i)) in &mut res_cells {
+        text.0 = format!("{} {}", RES_SLOTS[*i].0, counts[*i]);
+    }
+
+    // Happiness tally: bucket fort citizens best -> worst (stress overrides a
+    // decent happiness — it's the tantrum trigger).
+    let mut moods = [0usize; 5];
+    for d in sim.dwarves.iter().filter(|d| d.alive && d.faction == Faction::Fort) {
+        let tier = if d.stress >= 100.0 || d.happiness < 20.0 {
+            4
+        } else if d.happiness < 40.0 {
+            3
+        } else if d.happiness < 65.0 {
+            2
+        } else if d.happiness < 80.0 {
+            1
+        } else {
+            0
+        };
+        moods[tier] += 1;
+    }
+    for (mut text, MoodCell(i)) in &mut mood_cells {
+        text.0 = format!("{} {}", MOOD_TIERS[*i].0, moods[*i]);
+    }
+
     let speed = if control.paused {
         "PAUSED".to_string()
     } else {
@@ -5762,11 +5873,22 @@ fn update_topbar(
 
     for (mut text, cell) in &mut cells {
         text.0 = match cell {
-            HudBar::Left => format!("{name}\nPop {alive}  ({idle} idle)"),
-            HudBar::Mid => format!(
-                "Food {food}   Drink {drink}   Seeds {seeds}   Crafts {crafts}   Cloth {cloth}   Wealth {wealth}"
-            ),
-            HudBar::Right => format!("Year {year}, {season} {day}\n{weather}  |  {speed}  |  {fps:.0} fps"),
+            HudBar::Left => format!("{name}    Pop {alive}  ({idle} idle)"),
+            HudBar::Right => {
+                // DF-style date: each of DK's 28-day seasons is one DF month.
+                let month =
+                    ["Granite", "Hematite", "Limestone", "Moonstone"][sim.clock.season_index() as usize];
+                let suffix = match (day % 10, day % 100) {
+                    (_, 11..=13) => "th",
+                    (1, _) => "st",
+                    (2, _) => "nd",
+                    (3, _) => "rd",
+                    _ => "th",
+                };
+                format!(
+                    "{day}{suffix} {month}, {season}\nYear {year}  |  {weather}  |  {speed}  |  {fps:.0} fps"
+                )
+            }
         };
     }
 }
