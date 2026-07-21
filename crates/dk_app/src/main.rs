@@ -580,6 +580,17 @@ struct MinimapContainer;
 /// The minimap image node itself (side of the square in screen px).
 const MINIMAP_PX: f32 = 190.0;
 
+/// The vertical elevation gauge on the right edge (DF-style): a track spanning
+/// the z-stack with a thumb marking the current level.
+#[derive(Component)]
+struct ZBarRoot;
+/// The moving thumb on the elevation gauge — its `top` tracks the view level.
+#[derive(Component)]
+struct ZBarThumb;
+/// The elevation caption ("Elevation N") under the gauge.
+#[derive(Component)]
+struct ZBarLabel;
+
 /// Marks a clickable toolbar button and carries what it does + how to describe it.
 #[derive(Component, Clone)]
 struct ToolButton {
@@ -1683,10 +1694,16 @@ fn main() {
         };
         (screen, None)
     };
-    let start_z = sim
-        .as_ref()
-        .and_then(|s| s.map.walk_surface_z(MAP_W / 2, MAP_H / 2))
-        .unwrap_or(MAP_D / 2) as i32;
+    let start_z = {
+        let z = sim
+            .as_ref()
+            .and_then(|s| s.map.walk_surface_z(MAP_W / 2, MAP_H / 2))
+            .unwrap_or(MAP_D / 2) as i32;
+        match std::env::var("DK_VIEW_Z_OFFSET").ok().and_then(|s| s.parse::<i32>().ok()) {
+            Some(off) => (z + off).clamp(0, MAP_D as i32 - 1),
+            None => z,
+        }
+    };
     let sim_hz = if screenshot_mode_on() { 180.0 } else { dk_core::SIM_HZ };
 
     let window = if screenshot_mode_on() {
@@ -1788,6 +1805,7 @@ fn main() {
                     update_hud,
                     update_topbar,
                     update_minimap,
+                    update_z_bar,
                     update_stocks,
                     handle_help_button,
                     play_event_sounds,
@@ -2288,6 +2306,66 @@ fn setup(
             BorderColor(UI_ACCENT),
             MinimapViewport,
         ));
+
+    // Elevation gauge: a vertical DF-style depth bar on the far right, spanning
+    // the whole z-stack, with a bright thumb at the current level and an
+    // "Elevation N" caption beneath — so the player always knows which slice of
+    // the world they're looking at. Sits above the minimap.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(96.0),
+                bottom: Val::Px(60.0 + MINIMAP_PX + 30.0),
+                width: Val::Px(30.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(4.0),
+                padding: UiRect::all(Val::Px(3.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(UI_PANEL),
+            BorderColor(UI_FRAME_HI),
+            BorderRadius::all(Val::Px(3.0)),
+            ZBarRoot,
+        ))
+        .with_children(|bar| {
+            // The track: the full run of levels, dark, with the moving thumb.
+            bar.spawn((
+                Node {
+                    width: Val::Px(12.0),
+                    flex_grow: 1.0,
+                    ..default()
+                },
+                BackgroundColor(UI_PANEL_DARK),
+                BorderRadius::all(Val::Px(2.0)),
+            ))
+            .with_child((
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Percent(0.0),
+                    left: Val::Px(-2.0),
+                    right: Val::Px(-2.0),
+                    height: Val::Px(9.0),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(UI_ACCENT),
+                BorderColor(UI_FRAME),
+                BorderRadius::all(Val::Px(2.0)),
+                ZBarThumb,
+            ));
+            // The elevation number, beneath the track.
+            bar.spawn((
+                Text::new(""),
+                TextFont { font_size: 12.0, ..default() },
+                TextColor(UI_TEXT),
+                TextLayout::new_with_justify(JustifyText::Center),
+                ZBarLabel,
+            ));
+        });
 
     // Clickable action buttons for the embark / world-map screen (shown only
     // there). Keyboard shortcuts still work.
@@ -3240,6 +3318,37 @@ fn update_minimap(
         node.top = Val::Px((MAP_H as f32 - y1) * ppt);
         node.width = Val::Px((x1 - x0).max(2.0) * ppt);
         node.height = Val::Px((y1 - y0).max(2.0) * ppt);
+    }
+}
+
+/// Drive the right-edge elevation gauge: slide the thumb to the current view
+/// level (top = surface, bottom = the deepest z) and print the level number.
+fn update_z_bar(
+    screen: Res<ScreenRes>,
+    view_z: Res<ViewZ>,
+    mut root: Query<&mut Visibility, With<ZBarRoot>>,
+    mut thumb: Query<&mut Node, With<ZBarThumb>>,
+    mut label: Query<&mut Text, With<ZBarLabel>>,
+) {
+    let playing = screen.0 == Screen::Playing;
+    if let Ok(mut vis) = root.single_mut() {
+        *vis = if playing { Visibility::Inherited } else { Visibility::Hidden };
+    }
+    if !playing {
+        return;
+    }
+    // High levels sit at the top of the track, level 0 at the bottom. Keep the
+    // thumb (9px tall) fully inside the track by mapping into 0..94%.
+    let top = MAP_D as i32 - 1;
+    let frac = 1.0 - (view_z.0.clamp(0, top) as f32 / top as f32);
+    if let Ok(mut node) = thumb.single_mut() {
+        node.top = Val::Percent(frac * 94.0);
+    }
+    if let Ok(mut t) = label.single_mut() {
+        let s = format!("z\n{}", view_z.0);
+        if t.0 != s {
+            t.0 = s;
+        }
     }
 }
 
@@ -4763,8 +4872,14 @@ fn tile_visual(
     // than a black void. Reaches many levels down with a soft ~0.78/level falloff;
     // only genuinely deep air stays near-black.
     const DIM: [f32; 10] = [1.0, 0.72, 0.56, 0.44, 0.35, 0.28, 0.22, 0.17, 0.13, 0.10];
-    let mut rgb = [0.03, 0.03, 0.04];
+    let mut rgb = [0.07, 0.065, 0.06];
     let mut glyph = "block";
+    // The surface the down-look lands on, and how far below the view it sits. The
+    // depth fade is applied ONCE at the very end (not inline), so groundcover —
+    // grass, textures, worn paths — renders on a floor seen from above exactly as
+    // it does underfoot, just dimmed. depth_factor 0 means genuinely deep air.
+    let mut depth_factor = 0.0_f32;
+    let mut found_z = view_z;
     let season = sim.clock.season();
     for (levels_down, factor) in DIM.iter().enumerate() {
         let z = view_z - levels_down as i32;
@@ -4776,6 +4891,8 @@ fn tile_visual(
         if tile.shape == TileShape::Empty {
             continue;
         }
+        found_z = z;
+        depth_factor = *factor;
         let [r, g, b] = raws.materials.get(tile.material).color;
         let shade = match tile.shape {
             TileShape::Solid | TileShape::Gate => 1.0,
@@ -4806,7 +4923,7 @@ fn tile_visual(
             if matches!(season, Season::Winter) {
                 wcol = mix(wcol, [0.74, 0.83, 0.89], 0.55);
             }
-            rgb = [wcol[0] * factor, wcol[1] * factor, wcol[2] * factor];
+            rgb = wcol;
             glyph = "water";
             break;
         }
@@ -4819,9 +4936,9 @@ fn tile_visual(
             TileShape::Empty => unreachable!(),
         };
         rgb = [
-            r as f32 / 255.0 * factor * shade,
-            g as f32 / 255.0 * factor * shade,
-            b as f32 / 255.0 * factor * shade,
+            r as f32 / 255.0 * shade,
+            g as f32 / 255.0 * shade,
+            b as f32 / 255.0 * shade,
         ];
         break;
     }
@@ -4857,8 +4974,12 @@ fn tile_visual(
     // deterministic per-tile; trees, farms, zones and buildings all paint over
     // it. (x, y are in-bounds and non-negative here, so the hashes stay small
     // and positive.)
-    if sim.map.water_at(here) == 0 && sim.map.walkable(here) {
-        if let Some(t) = sim.map.tile_at(here) {
+    // The surface to detail is whatever the down-look landed on — the tile
+    // underfoot at the view level, or a floor glimpsed some levels below through
+    // open air. Either way it gets the full groundcover, then the depth fade.
+    let surf = Pos::new(x, y, found_z);
+    if depth_factor > 0.0 && sim.map.water_at(surf) == 0 && sim.map.walkable(surf) {
+        if let Some(t) = sim.map.tile_at(surf) {
             let m = raws.materials.get(t.material);
             // Textured ground sprites (a few variants each) only stand in for a
             // plain floor; ramps and stairs keep their own shape but still take
@@ -4945,7 +5066,7 @@ fn tile_visual(
                 let jitter = 0.20 + 0.16 * ((x * 271 + y * 331).rem_euclid(5) as f32 / 4.0);
                 let mut bank = false;
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let Some((nmat, nwater)) = surface_at(sim, x + dx, y + dy, view_z) else {
+                    let Some((nmat, nwater)) = surface_at(sim, x + dx, y + dy, found_z) else {
                         continue;
                     };
                     if nwater > 0 {
@@ -5192,6 +5313,14 @@ fn tile_visual(
         dk_agents::Weather::Snow => rgb = mix(rgb, [0.85, 0.88, 0.95], 0.22),
         dk_agents::Weather::Clear => {}
     }
+    // Depth fade, applied ONCE at the end: the surface underfoot renders at full
+    // brightness (depth_factor 1.0), a floor glimpsed below through open air is
+    // the same picture dimmed by how far down it lies — so looking down reads as
+    // depth, like Dwarf Fortress, not a black void. (depth_factor 0 = nothing
+    // found within reach; the terrain's own base colour is left as the dark.)
+    if depth_factor > 0.0 && depth_factor < 1.0 {
+        rgb = [rgb[0] * depth_factor, rgb[1] * depth_factor, rgb[2] * depth_factor];
+    }
     (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
 }
 
@@ -5208,54 +5337,74 @@ fn tile_ground(
     view_z: i32,
     traffic: &std::collections::HashMap<(i32, i32), f32>,
 ) -> (Color, &'static str) {
+    // The backing must follow the SAME down-look as tile_visual: when the view
+    // level is open air, fill behind the transparent foreground sprites (trees,
+    // boulders, tufts) with the dimmed ground below — otherwise those sprites sit
+    // on a black box when looking down a level. depth-dimmed to match the terrain.
+    const DIM: [f32; 10] = [1.0, 0.72, 0.56, 0.44, 0.35, 0.28, 0.22, 0.17, 0.13, 0.10];
     let clear = Color::srgba(0.0, 0.0, 0.0, 0.0);
-    let here = Pos::new(x, y, view_z);
-    if sim.map.water_at(here) > 0 {
-        return (Color::srgb(0.12, 0.34, 0.60), "water");
-    }
-    let Some(t) = sim.map.tile_at(here) else { return (clear, "block") };
-    if t.is_solid() {
-        let [r, g, b] = raws.materials.get(t.material).color;
-        return (Color::srgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0), "wall");
-    }
-    if !sim.map.walkable(here) {
-        return (clear, "block");
-    }
-    let m = raws.materials.get(t.material);
-    let [r, g, b] = m.color;
-    let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
-    let glyph;
-    if m.category == MaterialCategory::Soil && m.id != "sand" {
-        // Match tile_visual's grass so the ground round a tree reads the same as
-        // the meadow beside it.
-        let kind = ((x / 5) * 6151 + (y / 5) * 3079).rem_euclid(4) as usize;
-        let mottle = ((x / 3) * 7919 + (y / 3) * 1049).rem_euclid(8) as f32 / 7.0;
-        let base = GRASS_TYPES[kind];
-        let green = [base[0] + 0.03 * mottle, base[1] + 0.05 * mottle, base[2] + 0.03 * mottle];
-        let (green, cover) = match sim.clock.season() {
-            Season::Spring => (mix(green, [0.40, 0.72, 0.32], 0.28), 0.72),
-            Season::Summer => (green, 0.72),
-            Season::Autumn => (mix(green, [0.68, 0.50, 0.18], 0.55), 0.72),
-            Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.85),
-        };
-        rgb = mix(rgb, green, cover);
-        // Worn dirt path where the fort treads most — matched to tile_visual so
-        // the ground beneath a tree on a trodden route reads brown like the path
-        // around it, not a green halo.
-        let wear = traffic.get(&(x, y)).copied().unwrap_or(0.0);
-        if t.shape == TileShape::Floor && wear > 0.7 {
-            let k = ((wear - 0.7) / 2.4).clamp(0.0, 0.82);
-            rgb = mix(rgb, [0.34, 0.26, 0.16], k);
+    for (levels_down, factor) in DIM.iter().enumerate() {
+        let z = view_z - levels_down as i32;
+        if z < 0 {
+            break;
+        }
+        let here = Pos::new(x, y, z);
+        let Some(t) = sim.map.tile_at(here) else { break };
+        if t.shape == TileShape::Empty {
+            continue; // look deeper through open air
+        }
+        let f = *factor;
+        if sim.map.water_at(here) > 0 {
+            return (Color::srgb(0.12 * f, 0.34 * f, 0.60 * f), "water");
+        }
+        if t.is_solid() {
+            let [r, g, b] = raws.materials.get(t.material).color;
+            return (
+                Color::srgb(r as f32 / 255.0 * f, g as f32 / 255.0 * f, b as f32 / 255.0 * f),
+                "wall",
+            );
+        }
+        if !sim.map.walkable(here) {
+            break;
+        }
+        let m = raws.materials.get(t.material);
+        let [r, g, b] = m.color;
+        let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+        let glyph;
+        if m.category == MaterialCategory::Soil && m.id != "sand" {
+            // Match tile_visual's grass so the ground round a tree reads the same
+            // as the meadow beside it.
+            let kind = ((x / 5) * 6151 + (y / 5) * 3079).rem_euclid(4) as usize;
+            let mottle = ((x / 3) * 7919 + (y / 3) * 1049).rem_euclid(8) as f32 / 7.0;
+            let base = GRASS_TYPES[kind];
+            let green =
+                [base[0] + 0.03 * mottle, base[1] + 0.05 * mottle, base[2] + 0.03 * mottle];
+            let (green, cover) = match sim.clock.season() {
+                Season::Spring => (mix(green, [0.40, 0.72, 0.32], 0.28), 0.72),
+                Season::Summer => (green, 0.72),
+                Season::Autumn => (mix(green, [0.68, 0.50, 0.18], 0.55), 0.72),
+                Season::Winter => (mix(green, [0.90, 0.93, 0.97], 0.82), 0.85),
+            };
+            rgb = mix(rgb, green, cover);
+            // Worn dirt path where the fort treads most — matched to tile_visual so
+            // the ground beneath a tree on a trodden route reads brown like the path
+            // around it, not a green halo.
+            let wear = traffic.get(&(x, y)).copied().unwrap_or(0.0);
+            if t.shape == TileShape::Floor && wear > 0.7 {
+                let k = ((wear - 0.7) / 2.4).clamp(0.0, 0.82);
+                rgb = mix(rgb, [0.34, 0.26, 0.16], k);
+                glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
+            } else {
+                glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
+            }
+        } else if m.category == MaterialCategory::Soil {
             glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
         } else {
-            glyph = GRASS_SPRITES[(x * 6151 + y * 3079).rem_euclid(3) as usize];
+            glyph = ROCK_SPRITES[(x * 15_731 + y * 789).rem_euclid(2) as usize];
         }
-    } else if m.category == MaterialCategory::Soil {
-        glyph = DIRT_SPRITES[(x * 40_503 + y * 1259).rem_euclid(2) as usize];
-    } else {
-        glyph = ROCK_SPRITES[(x * 15_731 + y * 789).rem_euclid(2) as usize];
+        return (Color::srgb(rgb[0] * f, rgb[1] * f, rgb[2] * f), glyph);
     }
-    (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
+    (clear, "block")
 }
 
 fn redraw_tiles(
