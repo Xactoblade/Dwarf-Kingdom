@@ -1934,6 +1934,9 @@ fn setup(
 
     // The DF-style top status bar: a full-width stone ribbon with the fort's
     // identity, its stores, and the date spread left/centre/right.
+    // Happiness-face icons (OpenMoji, CC-BY-SA), white line-art tinted per mood.
+    let faces: [Handle<Image>; 5] =
+        std::array::from_fn(|i| asset_server.load(format!("faces/face_{i}.png")));
     commands
         .spawn((
             Node {
@@ -1975,17 +1978,32 @@ fn setup(
                 left.spawn((Text::new(""), cell_font(), TextColor(UI_TEXT), HudBar::Left));
                 left.spawn(Node {
                     flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(11.0),
+                    column_gap: Val::Px(12.0),
+                    align_items: AlignItems::Center,
                     ..default()
                 })
                 .with_children(|mood| {
                     for (i, (_, c)) in MOOD_TIERS.iter().enumerate() {
-                        mood.spawn((
-                            Text::new(""),
-                            TextFont { font_size: 14.0, ..default() },
-                            TextColor(Color::srgb(c[0], c[1], c[2])),
-                            MoodCell(i),
-                        ));
+                        let col = Color::srgb(c[0], c[1], c[2]);
+                        // Each tier: a mood-tinted face icon + its live count.
+                        mood.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(3.0),
+                            ..default()
+                        })
+                        .with_children(|tier| {
+                            tier.spawn((
+                                ImageNode { image: faces[i].clone(), color: col, ..default() },
+                                Node { width: Val::Px(17.0), height: Val::Px(17.0), ..default() },
+                            ));
+                            tier.spawn((
+                                Text::new(""),
+                                TextFont { font_size: 14.0, ..default() },
+                                TextColor(col),
+                                MoodCell(i),
+                            ));
+                        });
                     }
                 });
             });
@@ -5858,7 +5876,7 @@ fn update_topbar(
         moods[tier] += 1;
     }
     for (mut text, MoodCell(i)) in &mut mood_cells {
-        text.0 = format!("{} {}", MOOD_TIERS[*i].0, moods[*i]);
+        text.0 = format!("{}", moods[*i]);
     }
 
     let speed = if control.paused {
