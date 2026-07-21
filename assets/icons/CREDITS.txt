@@ -1,5 +1,4 @@
-Toolbar icons are derived from OpenMoji (https://openmoji.org), CC-BY-SA 4.0,
-recoloured to white line-art and tinted at render time. Glyphs: pickaxe U+26CF,
-ladder U+1FA9C, down-arrow U+2B07, axe U+1FA93, herb U+1F33F, brick U+1F9F1,
-pencil U+270F, triangular-flag U+1F6A9, hammer-and-pick U+2692, clipboard
-U+1F4CB, package U+1F4E6.
+Toolbar icons are OpenMoji (https://openmoji.org), CC-BY-SA 4.0, full-colour
+variant used as-is. Glyphs: pickaxe U+26CF, ladder U+1FA9C, down-arrow U+2B07,
+axe U+1FA93, herb U+1F33F, brick U+1F9F1, pencil U+270F, triangular-flag
+U+1F6A9, hammer-and-pick U+2692, clipboard U+1F4CB, package U+1F4E6.

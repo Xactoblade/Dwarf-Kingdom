@@ -2021,7 +2021,7 @@ fn setup(
                         })
                         .with_children(|tier| {
                             tier.spawn((
-                                ImageNode { image: faces[i].clone(), color: col, ..default() },
+                                ImageNode::new(faces[i].clone()),
                                 Node { width: Val::Px(17.0), height: Val::Px(17.0), ..default() },
                             ));
                             tier.spawn((
@@ -2187,11 +2187,7 @@ fn setup(
                         .with_children(|b| {
                             if let Some(icon) = tool_icon(t.label) {
                                 b.spawn((
-                                    ImageNode {
-                                        image: asset_server.load(format!("icons/{icon}.png")),
-                                        color: UI_TEXT,
-                                        ..default()
-                                    },
+                                    ImageNode::new(asset_server.load(format!("icons/{icon}.png"))),
                                     Node { width: Val::Px(15.0), height: Val::Px(15.0), ..default() },
                                 ));
                             }
@@ -2240,11 +2236,7 @@ fn setup(
                     .with_children(|b| {
                         if let Some(icon) = category_icon(name) {
                             b.spawn((
-                                ImageNode {
-                                    image: asset_server.load(format!("icons/{icon}.png")),
-                                    color: UI_TEXT,
-                                    ..default()
-                                },
+                                ImageNode::new(asset_server.load(format!("icons/{icon}.png"))),
                                 Node { width: Val::Px(18.0), height: Val::Px(18.0), ..default() },
                             ));
                         }
