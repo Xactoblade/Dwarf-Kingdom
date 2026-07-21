@@ -375,6 +375,35 @@ pub fn generate(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, heig
     generate_terrain(reg, rng, width, height, depth, seed, SurfaceStyle::Default, Relief::Rolling)
 }
 
+/// Smooth 2-D value noise in `[0, 1)` at frequency `f` (region size ~= 1/f),
+/// lattice-hashed from `seed`+`salt` and smoothstep-interpolated. Purely a
+/// function of position and seed — it draws NO rng, so it varies the map's look
+/// without perturbing the deterministic simulation stream. Used to lay down
+/// soil and stone in organic, blobby regions with curved boundaries instead of
+/// the hard rectangular grid that `(x/7 + y/9)` produced.
+fn value_noise(x: usize, y: usize, seed: u64, salt: u64, f: f32) -> f32 {
+    let hash = |ix: i64, iy: i64| -> f32 {
+        let mut h = seed ^ salt.wrapping_mul(0x9E3779B97F4A7C15);
+        h = h.wrapping_add(ix as u64).wrapping_mul(0xBF58476D1CE4E5B9);
+        h ^= h >> 27;
+        h = h.wrapping_add(iy as u64).wrapping_mul(0x94D049BB133111EB);
+        h ^= h >> 31;
+        (h & 0xFFFF) as f32 / 65536.0
+    };
+    let (fx, fy) = (x as f32 * f, y as f32 * f);
+    let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
+    let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+    let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+    let n0 = hash(x0, y0) + (hash(x0 + 1, y0) - hash(x0, y0)) * sx;
+    let n1 = hash(x0, y0 + 1) + (hash(x0 + 1, y0 + 1) - hash(x0, y0 + 1)) * sx;
+    n0 + (n1 - n0) * sy
+}
+
+/// Pick an index into `n` items from a noise value in `[0, 1)`.
+fn noise_pick(v: f32, n: usize) -> usize {
+    ((v * n as f32) as usize).min(n.saturating_sub(1))
+}
+
 /// Generate with a chosen surface soil style and gentle rolling relief.
 pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usize, height: usize, depth: usize, seed: u64, surface: SurfaceStyle) -> Map {
     generate_terrain(reg, rng, width, height, depth, seed, surface, Relief::Rolling)
@@ -868,8 +897,13 @@ pub fn generate_terrain(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usi
     for y in 0..height {
         for x in 0..width {
             let surface = height_at(x, y);
-            let soil_mat = fixed_soil.unwrap_or_else(|| soils[(x / 7 + y / 9) % soils.len()]);
-            let sed_mat = sedimentary[(x / 11 + y / 6) % sedimentary.len()];
+            // Organic patches of soil and stone: the material follows a smooth
+            // noise field, so types meet along curved, natural boundaries rather
+            // than the old rectangular grid cells.
+            let soil_mat = fixed_soil
+                .unwrap_or_else(|| soils[noise_pick(value_noise(x, y, seed, 0x50117, 0.10), soils.len())]);
+            let sed_mat =
+                sedimentary[noise_pick(value_noise(x, y, seed, 0x5ED, 0.075), sedimentary.len())];
             // Mountains bare their heights to rock; other reliefs keep full soil.
             let soil_depth = relief.soil_depth(surface, base);
             let mut top_mat = soil_mat;
