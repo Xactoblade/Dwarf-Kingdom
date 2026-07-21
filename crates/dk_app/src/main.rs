@@ -1496,7 +1496,18 @@ fn main() {
     let base = data_dir();
     let roots = mod_roots(&base);
     let raws = Raws::load_with_mods(&base, &roots).expect("failed to load raws");
-    dk_agents::validate_economy(&raws).expect("economy price list is incomplete");
+    // Post-load content validators — a named, fail-fast check per concern. Each
+    // reports which mod broke the rules, so a bad mod aborts startup with a clear
+    // message rather than a half-loaded (or mid-game-crashing) world.
+    const VALIDATORS: &[fn(&Raws) -> anyhow::Result<()>] = &[
+        dk_raws::validate_required_categories,
+        dk_agents::validate_economy,
+    ];
+    for v in VALIDATORS {
+        if let Err(e) = v(&raws) {
+            panic!("content validation failed: {e:#}");
+        }
+    }
     // Printed, not info!'d: this runs before Bevy's log subscriber exists, so a
     // tracing macro here would vanish. A startup banner is the right register anyway.
     for m in &raws.mods {

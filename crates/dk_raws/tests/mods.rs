@@ -24,10 +24,24 @@ impl TmpMod {
     }
     /// Write a `mod.ron` and one materials file holding `materials_ron` (a RON list).
     fn with_materials(self, id: &str, materials_ron: &str) -> Self {
+        self.write(id, &[], materials_ron)
+    }
+
+    /// Like `with_materials`, but the manifest declares `overrides`.
+    fn with_override(self, id: &str, overrides: &[&str], materials_ron: &str) -> Self {
+        self.write(id, overrides, materials_ron)
+    }
+
+    fn write(self, id: &str, overrides: &[&str], materials_ron: &str) -> Self {
         std::fs::create_dir_all(self.0.join("materials")).unwrap();
+        let ov = overrides
+            .iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         std::fs::write(
             self.0.join("mod.ron"),
-            format!("ModManifest(id:\"{id}\", name:\"{id} Pack\", version:\"1.0.0\")"),
+            format!("ModManifest(id:\"{id}\", name:\"{id} Pack\", version:\"1.0.0\", overrides:[{ov}])"),
         )
         .unwrap();
         std::fs::write(self.0.join("materials").join("m.ron"), materials_ron).unwrap();
@@ -60,19 +74,64 @@ fn a_mod_folder_adds_its_materials_on_top_of_the_base() {
 }
 
 #[test]
-fn a_mod_redefining_a_base_id_is_a_hard_error() {
+fn an_undeclared_duplicate_id_is_a_hard_error_naming_both_sources() {
     let base = base_dir();
-    // No silent override this slice: colliding with a base id must fail loudly.
+    // A mod redefining a base id WITHOUT declaring the override is an accidental
+    // clash and must fail loudly, naming the mod and what it clashed with.
     let m = TmpMod::new("collide").with_materials(
         "collider",
         "[ MaterialDef(id:\"granite\", name:\"Impostor\", category: Igneous, color:(1,1,1), value:9) ]",
     );
     let err = match Raws::load_with_mods(&base, &[m.path()]) {
-        Ok(_) => panic!("a duplicate id must error, not load"),
+        Ok(_) => panic!("an undeclared duplicate id must error, not load"),
         Err(e) => e,
     };
     let msg = format!("{err:#}");
-    assert!(msg.contains("granite") || msg.contains("duplicate"), "error names the clash: {msg}");
+    assert!(msg.contains("granite"), "error names the id: {msg}");
+    assert!(msg.contains("collider"), "error names the offending mod: {msg}");
+    assert!(msg.contains("core"), "error names what it clashed with: {msg}");
+}
+
+#[test]
+fn a_declared_override_replaces_a_base_material_in_place() {
+    let base = base_dir();
+    let base_raws = Raws::load(&base).unwrap();
+    let granite_idx = base_raws.materials.index_of("granite").unwrap();
+    let base_value = base_raws.materials.get(granite_idx).value;
+
+    // Same category (so the world doesn't reshape), a declared override, new value.
+    let m = TmpMod::new("recolor").with_override(
+        "recolor",
+        &["granite"],
+        "[ MaterialDef(id:\"granite\", name:\"Granite\", category: Igneous, color:(10,20,30), value:99) ]",
+    );
+    let raws = Raws::load_with_mods(&base, &[m.path()]).expect("a declared override loads");
+
+    assert_eq!(
+        raws.materials.index_of("granite"),
+        Some(granite_idx),
+        "an override replaces in place — the index (and saved references) don't move"
+    );
+    assert_eq!(raws.materials.get(granite_idx).value, 99, "the override's fields win");
+    assert_ne!(base_value, 99, "and they really differ from the base");
+    // Same-id, same-category override does NOT reshape the world.
+    assert_eq!(
+        raws.content_hash(),
+        base_raws.content_hash(),
+        "recolouring a stone (same id+category) keeps the same world"
+    );
+}
+
+#[test]
+fn required_category_validator_catches_an_emptied_category() {
+    // Base has soil/sedimentary/igneous, so it passes.
+    let base = Raws::load(&base_dir()).unwrap();
+    assert!(dk_raws::validate_required_categories(&base).is_ok());
+
+    // A content set with no Soil material fails, naming the empty category.
+    let only_igneous = raws_with(vec![mat("basalt", MaterialCategory::Igneous)]);
+    let err = dk_raws::validate_required_categories(&only_igneous).unwrap_err();
+    assert!(format!("{err:#}").contains("Soil"), "names the empty category");
 }
 
 #[test]

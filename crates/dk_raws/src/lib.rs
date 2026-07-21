@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +265,11 @@ pub struct ModManifest {
     /// not yet used to reorder — load order is alphabetical by folder this slice.
     #[serde(default)]
     pub load_after: Vec<String>,
+    /// Material/plant ids this mod deliberately replaces. A duplicate id that is
+    /// NOT declared here is a hard error (an accidental clash between mods), so an
+    /// override is always intentional — never a silent last-wins clobber.
+    #[serde(default)]
+    pub overrides: Vec<String>,
 }
 
 /// Everything loaded from `data/` (and any mods). Passed into the simulation.
@@ -285,11 +290,13 @@ impl Raws {
     }
 
     /// Load the base `data/` directory, then layer mod folders on top in the
-    /// given order. Materials and plants are ADDITIVE across roots: a mod's defs
-    /// are appended to the base set. A duplicate id (a mod redefining an existing
-    /// material/plant) is a hard error this slice — overriding is not yet
-    /// supported, and a silent clobber is exactly the hazard we won't ship.
-    /// Tileset and economy are base-only for now.
+    /// given order. Materials and plants merge across roots by id: a mod ADDS new
+    /// ids, and may REPLACE an existing id only if its manifest declares that id
+    /// in `overrides`. An undeclared duplicate is a hard error naming both the mod
+    /// and the source it clashed with — never a silent last-wins clobber. An
+    /// override replaces in place, so the material's registry index (and every
+    /// saved fort's reference to it) is unchanged. Tileset and economy are
+    /// base-only for now.
     pub fn load_with_mods(base: &Path, mod_roots: &[std::path::PathBuf]) -> Result<Self> {
         let tileset_path = base.join("tileset.ron");
         let tileset = if tileset_path.is_file() {
@@ -308,11 +315,14 @@ impl Raws {
         let economy: EconomyConfig = ron::from_str(&economy_text)
             .with_context(|| format!("parsing {}", economy_path.display()))?;
 
-        // Base content first — the always-present, always-first root.
-        let mut material_defs: Vec<MaterialDef> = load_ron_dir(&base.join("materials"))?;
-        let mut plant_defs: Vec<PlantDef> = load_ron_dir(&base.join("plants"))?;
+        // Collect each root's defs with its provenance. Base is "core", always
+        // first and declaring no overrides (it can't override anyone).
+        let no_overrides = HashSet::new();
+        let mut mat_sources: Vec<(String, HashSet<String>, Vec<MaterialDef>)> =
+            vec![("core".into(), no_overrides.clone(), load_ron_dir(&base.join("materials"))?)];
+        let mut plant_sources: Vec<(String, HashSet<String>, Vec<PlantDef>)> =
+            vec![("core".into(), no_overrides, load_ron_dir(&base.join("plants"))?)];
 
-        // Then each mod, in load order, appending what it adds.
         let mut mods = Vec::new();
         for root in mod_roots {
             let manifest_path = root.join("mod.ron");
@@ -320,39 +330,47 @@ impl Raws {
                 .with_context(|| format!("reading mod manifest {}", manifest_path.display()))?;
             let manifest: ModManifest = ron::from_str(&text)
                 .with_context(|| format!("parsing mod manifest {}", manifest_path.display()))?;
+            let overrides: HashSet<String> = manifest.overrides.iter().cloned().collect();
             let mat_dir = root.join("materials");
-            if mat_dir.is_dir() {
-                material_defs.extend(load_ron_dir::<MaterialDef>(&mat_dir)?);
-            }
+            let mats = if mat_dir.is_dir() { load_ron_dir::<MaterialDef>(&mat_dir)? } else { Vec::new() };
             let plant_dir = root.join("plants");
-            if plant_dir.is_dir() {
-                plant_defs.extend(load_ron_dir::<PlantDef>(&plant_dir)?);
-            }
+            let plants = if plant_dir.is_dir() { load_ron_dir::<PlantDef>(&plant_dir)? } else { Vec::new() };
+            mat_sources.push((manifest.id.clone(), overrides.clone(), mats));
+            plant_sources.push((manifest.id.clone(), overrides, plants));
             mods.push(manifest);
         }
 
+        let material_defs = merge_by_id(mat_sources, |m: &MaterialDef| m.id.as_str(), "material")?;
+        let plant_defs = merge_by_id(plant_sources, |p: &PlantDef| p.id.as_str(), "plant")?;
+
         Ok(Raws {
-            // from_defs enforces unique ids across the whole merged set, so a mod
-            // colliding with a base id (or another mod) fails loudly here.
             materials: MaterialRegistry::from_defs(material_defs)
-                .context("merging materials from base + mods")?,
+                .context("building the material registry")?,
             plants: PlantRegistry::from_defs(plant_defs)
-                .context("merging plants from base + mods")?,
+                .context("building the plant registry")?,
             tileset,
             economy,
             mods,
         })
     }
 
-    /// A stable fingerprint of the RNG-relevant content: material (id, category)
-    /// in registry order, plant ids, and the active mod (id, version) list. Two
-    /// raws sets with the same hash generate the same world from the same seed;
-    /// a different hash means the seed would diverge, so the app rebuilds the
-    /// world rather than loading a mismatched map.
+    /// A stable fingerprint of the WORLDGEN-relevant content: material
+    /// (id, category) in registry order, then plant ids. Two raws sets with the
+    /// same hash generate the same world from the same seed; a different hash
+    /// means the seed would diverge, so the app rebuilds the world rather than
+    /// loading a mismatched map.
     ///
-    /// It must hash CATEGORY, not just ids: worldgen draws from
-    /// `indices_in_category(...)`, so re-tagging a stone's category shifts the
-    /// stream even though its id is unchanged.
+    /// It hashes what worldgen's RNG actually consumes:
+    /// - CATEGORY, not just ids — worldgen draws from `indices_in_category(...)`,
+    ///   so re-tagging a stone shifts the stream even with the id unchanged;
+    /// - registry ORDER — the draw is `ores[gen_range(0..ores.len())]`, so which
+    ///   material sits at which index matters, and adding a material or loading
+    ///   mods in a different order changes it.
+    ///
+    /// It deliberately does NOT hash the mod list, display colours, or trade
+    /// values: a mod that only recolours or reprices an existing stone leaves
+    /// worldgen identical, so its world must NOT be needlessly rebuilt. Which
+    /// mods a save needs is recorded separately (fort-save mod stamping).
     pub fn content_hash(&self) -> u64 {
         // FNV-1a — small, dependency-free, and byte-stable across platforms
         // (unlike the std default hasher), so a save shared between machines
@@ -377,15 +395,62 @@ impl Raws {
             eat(id.as_bytes());
             eat(&[0]);
         }
-        eat(b"mods\0");
-        for m in &self.mods {
-            eat(m.id.as_bytes());
-            eat(b"@");
-            eat(m.version.as_bytes());
-            eat(&[0]);
-        }
         h
     }
+}
+
+/// Merge id'd content defs from several sources (base first, then mods in load
+/// order) into one list. A later source may replace an id an earlier source
+/// defined ONLY if it declared that id in its `overrides` set; an undeclared
+/// duplicate is an error naming both sources. An override replaces the def in
+/// place, so existing indices (and saved references to them) don't move.
+fn merge_by_id<T>(
+    sources: Vec<(String, HashSet<String>, Vec<T>)>,
+    id_of: impl Fn(&T) -> &str,
+    kind: &str,
+) -> Result<Vec<T>> {
+    let mut out: Vec<T> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut origin: HashMap<String, String> = HashMap::new();
+    for (label, overrides, defs) in sources {
+        for def in defs {
+            let id = id_of(&def).to_string();
+            if let Some(&i) = index.get(&id) {
+                anyhow::ensure!(
+                    overrides.contains(&id),
+                    "mod \"{label}\" redefines {kind} \"{id}\" (already defined by \"{}\") \
+                     without declaring it in `overrides`",
+                    origin[&id]
+                );
+                out[i] = def;
+                origin.insert(id, label.clone());
+            } else {
+                index.insert(id.clone(), out.len());
+                origin.insert(id.clone(), label.clone());
+                out.push(def);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Worldgen draws a material from each of these geological categories, so each
+/// must have at least one member. A mod can't remove a base material, but an
+/// override that re-categorizes the last member of a category would empty it and
+/// crash mapgen — this catches that at load, naming the empty category.
+pub fn validate_required_categories(raws: &Raws) -> Result<()> {
+    for cat in [
+        MaterialCategory::Soil,
+        MaterialCategory::Sedimentary,
+        MaterialCategory::Igneous,
+    ] {
+        anyhow::ensure!(
+            !raws.materials.indices_in_category(cat).is_empty(),
+            "no {cat:?} materials remain — worldgen needs at least one \
+             (a mod may have re-categorized the last one)"
+        );
+    }
+    Ok(())
 }
 
 /// Read every `.ron` file in a directory; each holds a `Vec<T>`.
