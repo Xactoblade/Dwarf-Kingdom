@@ -4880,6 +4880,9 @@ fn tile_visual(
     // it does underfoot, just dimmed. depth_factor 0 means genuinely deep air.
     let mut depth_factor = 0.0_f32;
     let mut found_z = view_z;
+    // Water is the one surface the eye follows down a shaft, so it fades more
+    // gently than rock — a sunken river reads as bright water, not a dark smear.
+    let mut is_water = false;
     let season = sim.clock.season();
     for (levels_down, factor) in DIM.iter().enumerate() {
         let z = view_z - levels_down as i32;
@@ -4906,7 +4909,7 @@ fn tile_visual(
         // dark blue, dimmed by how far down it lies.
         if tile.water > 0 {
             let d = (tile.water as f32 / 7.0).min(1.0);
-            let mut wcol = mix([0.36, 0.62, 0.68], [0.07, 0.22, 0.62], d);
+            let mut wcol = mix([0.44, 0.70, 0.80], [0.18, 0.46, 0.78], d);
             // Shallows: water touching land is paler and greener at the shore.
             let mut land = 0;
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -4925,6 +4928,7 @@ fn tile_visual(
             }
             rgb = wcol;
             glyph = "water";
+            is_water = true;
             break;
         }
         glyph = match tile.shape {
@@ -5319,7 +5323,10 @@ fn tile_visual(
     // depth, like Dwarf Fortress, not a black void. (depth_factor 0 = nothing
     // found within reach; the terrain's own base colour is left as the dark.)
     if depth_factor > 0.0 && depth_factor < 1.0 {
-        rgb = [rgb[0] * depth_factor, rgb[1] * depth_factor, rgb[2] * depth_factor];
+        // Water fades on a gentler curve (sqrt lifts it) so it stays legibly blue
+        // even a few levels down; rock and soil take the full depth fade.
+        let f = if is_water { depth_factor.sqrt() } else { depth_factor };
+        rgb = [rgb[0] * f, rgb[1] * f, rgb[2] * f];
     }
     (Color::srgb(rgb[0], rgb[1], rgb[2]), glyph)
 }
@@ -5355,7 +5362,8 @@ fn tile_ground(
         }
         let f = *factor;
         if sim.map.water_at(here) > 0 {
-            return (Color::srgb(0.12 * f, 0.34 * f, 0.60 * f), "water");
+            let wf = f.sqrt(); // match tile_visual's gentler water fade
+            return (Color::srgb(0.20 * wf, 0.48 * wf, 0.76 * wf), "water");
         }
         if t.is_solid() {
             let [r, g, b] = raws.materials.get(t.material).color;
