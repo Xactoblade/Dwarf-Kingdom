@@ -507,14 +507,20 @@ fn the_world_has_gods_and_lines_of_rulers() {
 fn every_people_builds_after_its_own_fashion() {
     use dk_history::{Race, SiteKind};
     let w = World::generate(31337, 48, 48, 200);
-    // Every site has a kind and a population, and the kind fits the founders.
+    // Every civ-built site has a kind and a population, and the kind fits the
+    // founders. Non-civ sites are exempt (see below).
     for s in &w.sites {
-        assert!(s.population > 0, "{} has people in it", s.name);
-        // A necromancer's tower is raised by a lone figure, not built after the
-        // fashion of the founder's people, so it can appear under any civ.
-        if s.kind == SiteKind::Tower {
+        // A necromancer's tower is raised by a lone figure, and the wild
+        // adventure lairs (tombs, caves, vaults, labyrinths) belong to no people
+        // at all, so none are built after the fashion of a founder's race — nor
+        // need they hold any living population.
+        if matches!(
+            s.kind,
+            SiteKind::Tower | SiteKind::Tomb | SiteKind::Cave | SiteKind::Vault | SiteKind::Labyrinth
+        ) {
             continue;
         }
+        assert!(s.population > 0, "{} has people in it", s.name);
         let race = w.civs[s.civ].race;
         match race {
             Race::Elven => assert_eq!(s.kind, SiteKind::ForestRetreat),

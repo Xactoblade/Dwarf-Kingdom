@@ -1516,7 +1516,73 @@ impl World {
         world.simulate(&mut rng, years);
         // Name the world last, so a name draw can't disturb its history.
         world.name = names::world_name(&mut rng);
+        // Non-civ lairs, seeded off a salted stream AFTER everything above — so
+        // they append to the tail without touching a single draw of the main
+        // worldgen `rng`. An existing seed regenerates its old world unchanged.
+        world.place_adventure_sites();
         world
+    }
+
+    /// Salt for the adventure-site placement stream — deliberately unrelated to
+    /// the main worldgen seed derivation so the two streams never overlap.
+    const ADVENTURE_SITE_SALT: u64 = 0x0ADD_5175_1EAF_C0DE;
+
+    /// Scatter non-civ "adventure" sites — tombs, caves, vaults, labyrinths —
+    /// through the wild, on their OWN salted rng (see the call site in
+    /// `generate`). New sites take the highest ids (append-only), so nothing that
+    /// holds a site index is renumbered. Their founding events are appended at
+    /// the tail, dated to the present so the chronicle stays in order.
+    fn place_adventure_sites(&mut self) {
+        if self.civs.is_empty() {
+            return;
+        }
+        let mut rng = dk_core::rng_from_seed(self.seed ^ Self::ADVENTURE_SITE_SALT);
+        let year = self.years_simulated;
+        for kind in [SiteKind::Tomb, SiteKind::Cave, SiteKind::Vault, SiteKind::Labyrinth] {
+            let count = rng.gen_range(1..=2);
+            for _ in 0..count {
+                // A wild, embarkable spot with no site already standing on it.
+                let mut spot = None;
+                for _ in 0..40 {
+                    let x = rng.gen_range(0..self.overworld.width);
+                    let y = rng.gen_range(0..self.overworld.height);
+                    if self.overworld.get(x, y).biome.embarkable()
+                        && !self.sites.iter().any(|s| s.region == (x, y))
+                    {
+                        spot = Some((x, y));
+                        break;
+                    }
+                }
+                let Some(spot) = spot else { continue };
+                // A civ lends only its tongue to the name; the lair is no one's hold.
+                let civ = rng.gen_range(0..self.civs.len());
+                let name = names::site_name(&mut rng, self.civs[civ].race);
+                let population = match kind {
+                    SiteKind::Tomb | SiteKind::Vault => rng.gen_range(5..40),
+                    _ => 0, // a cave or labyrinth stands empty of the living
+                };
+                let founded_year = rng.gen_range(0..year.max(1));
+                let where_ = self.region_name_at(spot);
+                let id = self.sites.len();
+                self.sites.push(Site {
+                    id,
+                    name: name.clone(),
+                    civ,
+                    kind,
+                    region: spot,
+                    founded_year,
+                    population,
+                    ruined: false,
+                });
+                self.event_typed(
+                    year,
+                    format!("{}, a {}, stands in {}.", name, kind.noun(), where_),
+                    EventKind::Founding,
+                    Vec::new(),
+                    Some(id),
+                );
+            }
+        }
     }
 
     /// Record an untyped event — free text tied to no particular figure or site
@@ -1803,10 +1869,13 @@ impl World {
         if rng.gen_ratio(1, 3) {
             let bid = living[rng.gen_range(0..living.len())];
             let lair = self.beasts[bid].lair;
+            // A beast rampages against a living SETTLEMENT — never an uninhabited
+            // lair. (No-op during worldgen: every site here holds population; the
+            // pop-0 adventure sites are placed only afterward.)
             if let Some(site_id) = self
                 .sites
                 .iter()
-                .filter(|s| !s.ruined)
+                .filter(|s| !s.ruined && s.population > 0)
                 .min_by_key(|s| s.region.0.abs_diff(lair.0) + s.region.1.abs_diff(lair.1))
                 .map(|s| s.id)
             {
@@ -1961,10 +2030,13 @@ impl World {
                 continue;
             }
             let origin = self.sites[tid].region;
+            // The dead march on the living — a peopled settlement, not a tower or
+            // an empty lair. (`population > 0` is a no-op in worldgen and also
+            // excludes the pop-0 adventure sites once they're placed.)
             if let Some(site_id) = self
                 .sites
                 .iter()
-                .filter(|s| !s.ruined && s.kind != SiteKind::Tower)
+                .filter(|s| !s.ruined && s.kind != SiteKind::Tower && s.population > 0)
                 .min_by_key(|s| s.region.0.abs_diff(origin.0) + s.region.1.abs_diff(origin.1))
                 .map(|s| s.id)
             {
@@ -2325,7 +2397,7 @@ impl World {
     /// A raid: casualties on both sides, kills credited to named figures,
     /// grudges sworn over the fallen.
     fn battle(&mut self, rng: &mut ChaCha8Rng, attacker: usize, defender: usize, year: u32) {
-        let Some(&site_id) = self.sites.iter().find(|s| s.civ == defender && !s.ruined).map(|s| &s.id)
+        let Some(&site_id) = self.sites.iter().find(|s| s.civ == defender && !s.ruined && s.population > 0).map(|s| &s.id)
         else {
             return;
         };
@@ -2832,6 +2904,42 @@ mod tests {
     }
 
     #[test]
+    fn adventure_sites_are_placed_and_are_never_settlements() {
+        let w = World::generate(42, 48, 48, 120);
+        // At least one of each new kind now stands in the world.
+        for kind in [SiteKind::Tomb, SiteKind::Cave, SiteKind::Vault, SiteKind::Labyrinth] {
+            assert!(
+                w.sites.iter().any(|s| s.kind == kind),
+                "the salted pass placed at least one {}",
+                kind.noun()
+            );
+        }
+        // They take the highest ids (append-only) — every civ-built site precedes
+        // every adventure site, so nothing holding a site index is renumbered.
+        let last_civ = w
+            .sites
+            .iter()
+            .rposition(|s| !matches!(s.kind, SiteKind::Tomb | SiteKind::Cave | SiteKind::Vault | SiteKind::Labyrinth));
+        let first_adv = w
+            .sites
+            .iter()
+            .position(|s| matches!(s.kind, SiteKind::Tomb | SiteKind::Cave | SiteKind::Vault | SiteKind::Labyrinth));
+        if let (Some(lc), Some(fa)) = (last_civ, first_adv) {
+            assert!(fa > lc, "adventure sites are appended after all civ sites");
+        }
+        // Caves and labyrinths stand empty — so the raid filters (gated on
+        // population > 0) never send a beast or the dead against them.
+        for s in w.sites.iter().filter(|s| matches!(s.kind, SiteKind::Cave | SiteKind::Labyrinth)) {
+            assert_eq!(s.population, 0, "a {} is uninhabited", s.kind.noun());
+        }
+        // Same seed, same lairs.
+        let w2 = World::generate(42, 48, 48, 120);
+        let names: Vec<&String> = w.sites.iter().map(|s| &s.name).collect();
+        let names2: Vec<&String> = w2.sites.iter().map(|s| &s.name).collect();
+        assert_eq!(names, names2, "adventure placement is deterministic in the seed");
+    }
+
+    #[test]
     fn new_site_kinds_have_distinct_nouns() {
         use SiteKind::*;
         let kinds = [City, Fortress, Hamlet, ForestRetreat, DarkFortress, Tower, Tomb, Cave, Vault, Labyrinth];
@@ -3068,13 +3176,30 @@ mod tests {
 #[cfg(test)]
 mod determinism_guard {
     use super::*;
+    // A non-civ lair — appended by the salted adventure-site pass, NOT part of
+    // the main worldgen stream this guard protects.
+    fn is_adventure(k: SiteKind) -> bool {
+        matches!(k, SiteKind::Tomb | SiteKind::Cave | SiteKind::Vault | SiteKind::Labyrinth)
+    }
     fn fp(seed: u64) -> u64 {
         let w = World::generate(seed, 48, 48, 120);
         let mut h: u64 = 0xcbf29ce484222325;
         let mut feed = |s: &str| { for b in s.bytes() { h ^= b as u64; h = h.wrapping_mul(0x100000001b3); } };
         for f in &w.figures { feed(&f.name); feed(&format!("{}", f.born_year)); }
-        for s in &w.sites { feed(&s.name); feed(&format!("{}", s.founded_year)); }
-        for e in &w.events { feed(&format!("{}", e.year)); feed(&e.text); }
+        // Fingerprint only the CIV-built history — the adventure sites and their
+        // founding events are the salted tail and must NOT be counted here, so
+        // the golden proves the main stream is byte-identical across their
+        // addition. (Before D2 there were no such sites, so the golden is unchanged.)
+        for s in &w.sites {
+            if is_adventure(s.kind) { continue; }
+            feed(&s.name);
+            feed(&format!("{}", s.founded_year));
+        }
+        for e in &w.events {
+            if e.site.is_some_and(|sid| is_adventure(w.sites[sid].kind)) { continue; }
+            feed(&format!("{}", e.year));
+            feed(&e.text);
+        }
         h
     }
     #[test]
