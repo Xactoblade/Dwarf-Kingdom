@@ -587,6 +587,10 @@ struct ZBarRoot;
 /// The moving thumb on the elevation gauge — its `top` tracks the view level.
 #[derive(Component)]
 struct ZBarThumb;
+/// The sky band atop the gauge (the levels above ground); its height marks where
+/// the surface sits, so the rock below reads as underground — a DF-style cue.
+#[derive(Component)]
+struct ZBarSky;
 /// The elevation caption ("Elevation N") under the gauge.
 #[derive(Component)]
 struct ZBarLabel;
@@ -2332,30 +2336,54 @@ fn setup(
             ZBarRoot,
         ))
         .with_children(|bar| {
-            // The track: the full run of levels, dark, with the moving thumb.
+            // An orange cap at the very top, echoing DF's up-arrow.
+            bar.spawn((
+                Node { width: Val::Px(14.0), height: Val::Px(6.0), ..default() },
+                BackgroundColor(UI_ACCENT),
+                BorderRadius::all(Val::Px(2.0)),
+            ));
+            // The track: sky-blue for the levels above ground, stone-brown below,
+            // so the surface line is a clear visual cue — with the moving thumb.
             bar.spawn((
                 Node {
-                    width: Val::Px(12.0),
+                    width: Val::Px(16.0),
                     flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    overflow: Overflow::clip(),
                     ..default()
                 },
-                BackgroundColor(UI_PANEL_DARK),
+                BackgroundColor(Color::srgb(0.36, 0.27, 0.20)), // stone, shows below the sky
                 BorderRadius::all(Val::Px(2.0)),
             ))
-            .with_child((
-                Node {
-                    position_type: PositionType::Absolute,
-                    top: Val::Percent(0.0),
-                    left: Val::Px(-2.0),
-                    right: Val::Px(-2.0),
-                    height: Val::Px(9.0),
-                    border: UiRect::all(Val::Px(1.0)),
-                    ..default()
-                },
+            .with_children(|track| {
+                // Sky band (height set each frame to the surface line).
+                track.spawn((
+                    Node { width: Val::Percent(100.0), height: Val::Percent(50.0), ..default() },
+                    BackgroundColor(Color::srgb(0.50, 0.75, 0.92)),
+                    ZBarSky,
+                ));
+                // The current-level thumb, overlaid on the two-tone track.
+                track.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Percent(0.0),
+                        left: Val::Px(-2.0),
+                        right: Val::Px(-2.0),
+                        height: Val::Px(9.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(UI_ACCENT),
+                    BorderColor(UI_FRAME),
+                    BorderRadius::all(Val::Px(2.0)),
+                    ZBarThumb,
+                ));
+            });
+            // An orange cap at the bottom, echoing DF's down-arrow.
+            bar.spawn((
+                Node { width: Val::Px(14.0), height: Val::Px(6.0), ..default() },
                 BackgroundColor(UI_ACCENT),
-                BorderColor(UI_FRAME),
                 BorderRadius::all(Val::Px(2.0)),
-                ZBarThumb,
             ));
             // The elevation number, beneath the track.
             bar.spawn((
@@ -3325,9 +3353,11 @@ fn update_minimap(
 /// level (top = surface, bottom = the deepest z) and print the level number.
 fn update_z_bar(
     screen: Res<ScreenRes>,
+    sim: Res<SimRes>,
     view_z: Res<ViewZ>,
     mut root: Query<&mut Visibility, With<ZBarRoot>>,
-    mut thumb: Query<&mut Node, With<ZBarThumb>>,
+    mut thumb: Query<&mut Node, (With<ZBarThumb>, Without<ZBarSky>)>,
+    mut sky: Query<&mut Node, (With<ZBarSky>, Without<ZBarThumb>)>,
     mut label: Query<&mut Text, With<ZBarLabel>>,
 ) {
     let playing = screen.0 == Screen::Playing;
@@ -3343,6 +3373,17 @@ fn update_z_bar(
     let frac = 1.0 - (view_z.0.clamp(0, top) as f32 / top as f32);
     if let Ok(mut node) = thumb.single_mut() {
         node.top = Val::Percent(frac * 94.0);
+    }
+    // The sky band reaches down to the surface line: the levels above ground are
+    // sky, the rest is rock. (Uses the fort-centre column as the reference.)
+    if let Ok(mut node) = sky.single_mut() {
+        let surface = sim
+            .0
+            .as_ref()
+            .and_then(|s| s.map.walk_surface_z(MAP_W / 2, MAP_H / 2))
+            .unwrap_or(MAP_D / 2) as i32;
+        let sky_pct = (top - surface).clamp(0, top) as f32 / top as f32 * 100.0;
+        node.height = Val::Percent(sky_pct);
     }
     if let Ok(mut t) = label.single_mut() {
         let s = format!("z\n{}", view_z.0);
