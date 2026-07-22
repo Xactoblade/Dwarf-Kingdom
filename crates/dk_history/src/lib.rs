@@ -1310,6 +1310,14 @@ pub struct Figure {
     /// This figure's children among the named.
     #[serde(default)]
     pub children: Vec<usize>,
+    /// The second parent — the first parent's spouse — for a figure born into
+    /// the chronicle, so lineage reads "child of X and Y".
+    #[serde(default)]
+    pub parent2: Option<usize>,
+    /// The figure who took this one's seat, set when a ruler dies and is
+    /// succeeded — the recorded line of succession.
+    #[serde(default)]
+    pub heir: Option<usize>,
     /// (year, text) — personal reasons for hatred, referenced by sieges.
     pub grudges: Vec<(u32, String)>,
 }
@@ -1664,6 +1672,8 @@ impl World {
             spouse: None,
             parent: None,
             children: Vec::new(),
+            parent2: None,
+            heir: None,
             grudges: Vec::new(),
         });
         // A figure holds dear a god whose spheres fit their calling.
@@ -2021,6 +2031,7 @@ impl World {
                 let child = self.spawn_figure(rng, civ, Role::Warrior, year);
                 self.figures[child].born_year = year as i64; // a newborn, not a grown arrival
                 self.figures[child].parent = Some(p);
+                self.figures[child].parent2 = Some(spouse); // the co-parent, already in hand
                 self.figures[p].children.push(child);
                 self.figures[spouse].children.push(child);
                 let (np, ns, nc) = (
@@ -2245,6 +2256,7 @@ impl World {
                     });
                     if let Some(child) = blood_heir {
                         self.figures[child].role = Role::Leader;
+                        self.figures[f].heir = Some(child); // the recorded succession
                         let cname = self.figures[child].name.clone();
                         self.event_typed(
                             year,
@@ -2258,6 +2270,7 @@ impl World {
                         );
                     } else {
                         let heir = self.spawn_figure(rng, civ_idx, Role::Leader, year);
+                        self.figures[f].heir = Some(heir); // the recorded succession
                         let hname = self.figures[heir].name.clone();
                         self.event_typed(
                             year,
@@ -2642,31 +2655,51 @@ impl World {
     /// the mark tells the truth about who follows. Empty for a lone figure.
     fn lineage_of(&self, id: usize) -> Vec<String> {
         let f = &self.figures[id];
-        if f.parent.is_none() && f.spouse.is_none() && f.children.is_empty() {
+        if f.parent.is_none()
+            && f.parent2.is_none()
+            && f.spouse.is_none()
+            && f.children.is_empty()
+        {
             return Vec::new();
         }
         let mut out = vec!["Kin".to_string()];
-        if let Some(p) = f.parent {
-            out.push(format!("  parent   : {}", self.figures[p].name));
+        // Parentage: both if the figure was born into the chronicle, else the one.
+        match (f.parent, f.parent2) {
+            (Some(a), Some(b)) => {
+                out.push(format!("  parents  : {} and {}", self.figures[a].name, self.figures[b].name))
+            }
+            (Some(a), None) | (None, Some(a)) => {
+                out.push(format!("  parent   : {}", self.figures[a].name))
+            }
+            (None, None) => {}
         }
         if let Some(s) = f.spouse {
             out.push(format!("  spouse   : {}", self.figures[s].name));
         }
-        if !f.children.is_empty() {
-            // Only a ruler passes a seat (and a necromancer never dies to vacate
-            // one), so only they show an heir among their children.
-            let heir = if f.role == Role::Leader && !f.necromancer {
+        // The heir: the recorded successor if this ruler has died and been
+        // followed (the stored field); otherwise, for a living ruler, the
+        // presumptive heir — the first living, grown child, as succession chooses.
+        let heir = f.heir.or_else(|| {
+            if f.role == Role::Leader && !f.necromancer && f.died_year.is_none() {
                 f.children.iter().copied().find(|&c| {
                     self.figures[c].died_year.is_none()
                         && self.years_simulated as i64 - self.figures[c].born_year >= 16
                 })
             } else {
                 None
-            };
+            }
+        });
+        if !f.children.is_empty() {
             out.push("  children :".to_string());
             for &c in &f.children {
                 let mark = if Some(c) == heir { " (heir)" } else { "" };
                 out.push(format!("    | {}{}", self.figures[c].name, mark));
+            }
+        }
+        // A successor raised from outside the bloodline (no child to inherit).
+        if let Some(h) = heir {
+            if !f.children.contains(&h) {
+                out.push(format!("  heir     : {}", self.figures[h].name));
             }
         }
         out
@@ -2777,6 +2810,31 @@ mod tests {
             .iter()
             .any(|f| w.lineage_of(f.id).iter().any(|l| l.contains("(heir)")));
         assert!(any_heir, "a ruler with a living grown child marks an heir");
+    }
+
+    #[test]
+    fn co_parent_and_heir_are_persisted() {
+        let w = World::generate(42, 48, 48, 150);
+        // A figure born into the chronicle carries BOTH parents, each wed to the
+        // other.
+        let born = w
+            .figures
+            .iter()
+            .find(|f| f.parent.is_some() && f.parent2.is_some())
+            .expect("a long history bears children into named families");
+        let (p, p2) = (born.parent.unwrap(), born.parent2.unwrap());
+        assert_eq!(w.figures[p].spouse, Some(p2), "the two parents are wed");
+        assert_eq!(w.figures[p2].spouse, Some(p), "and it is mutual");
+
+        // A ruler who died and was succeeded has a recorded heir who took the seat.
+        let succeeded = w
+            .figures
+            .iter()
+            .find(|f| f.heir.is_some())
+            .expect("rulers die and are followed over 150 years");
+        let h = succeeded.heir.unwrap();
+        assert_eq!(w.figures[h].role, Role::Leader, "the heir holds the seat");
+        assert!(succeeded.died_year.is_some(), "an heir is recorded only at death");
     }
 
     #[test]
