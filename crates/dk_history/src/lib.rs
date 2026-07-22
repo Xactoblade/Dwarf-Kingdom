@@ -2491,20 +2491,53 @@ impl World {
         if f.necromancer {
             out.push("has unearthed the secret of life and death".to_string());
         }
-        // Kin: parentage, marriage, and issue.
-        if let Some(p) = f.parent {
-            out.push(format!("child of {}", self.figures[p].name));
-        }
-        if let Some(s) = f.spouse {
-            out.push(format!("wed to {}", self.figures[s].name));
-        }
-        if !f.children.is_empty() {
-            let kids: Vec<&str> = f.children.iter().map(|&c| self.figures[c].name.as_str()).collect();
-            out.push(format!("parent of {}", kids.join(", ")));
-        }
         // Personal grudges, in their own words.
         for (y, g) in &f.grudges {
             out.push(format!("year {}: {}", y, g));
+        }
+        // Kin: a titled block of parentage, marriage, and issue, heir marked.
+        let kin = self.lineage_of(id);
+        if !kin.is_empty() {
+            out.push(String::new());
+            out.extend(kin);
+        }
+        out
+    }
+
+    /// The "Kin" block for a figure's dossier: parent, spouse, and children —
+    /// and, for a ruler, which child would inherit the seat. Read-only; walks
+    /// the stored `parent`/`spouse`/`children` links and resolves ids to names.
+    /// The heir is the first living, grown (>=16) child, exactly as succession
+    /// chooses one at `advance_year` (dk_history: the `blood_heir` search), so
+    /// the mark tells the truth about who follows. Empty for a lone figure.
+    fn lineage_of(&self, id: usize) -> Vec<String> {
+        let f = &self.figures[id];
+        if f.parent.is_none() && f.spouse.is_none() && f.children.is_empty() {
+            return Vec::new();
+        }
+        let mut out = vec!["Kin".to_string()];
+        if let Some(p) = f.parent {
+            out.push(format!("  parent   : {}", self.figures[p].name));
+        }
+        if let Some(s) = f.spouse {
+            out.push(format!("  spouse   : {}", self.figures[s].name));
+        }
+        if !f.children.is_empty() {
+            // Only a ruler passes a seat (and a necromancer never dies to vacate
+            // one), so only they show an heir among their children.
+            let heir = if f.role == Role::Leader && !f.necromancer {
+                f.children.iter().copied().find(|&c| {
+                    self.figures[c].died_year.is_none()
+                        && self.years_simulated as i64 - self.figures[c].born_year >= 16
+                })
+            } else {
+                None
+            };
+            out.push("  children :".to_string());
+            for &c in &f.children {
+                let mark = if Some(c) == heir { " (heir)" } else { "" };
+                out.push(format!("    | {}{}", self.figures[c].name, mark));
+            }
         }
         out
     }
@@ -2589,6 +2622,31 @@ mod tests {
         );
         // ASCII-only — the game font has no fancy glyphs.
         assert!(joined.is_ascii(), "dossier is ASCII: {joined}");
+    }
+
+    #[test]
+    fn lineage_of_renders_kin_and_marks_the_heir() {
+        let w = World::generate(42, 48, 48, 120);
+        // A figure with issue — a century of history breeds families.
+        let parent = w
+            .figures
+            .iter()
+            .find(|f| !f.children.is_empty())
+            .expect("a long history breeds families");
+        let kin = w.lineage_of(parent.id);
+        let joined = kin.join("\n");
+        assert_eq!(kin.first().map(String::as_str), Some("Kin"), "kin block is titled: {joined}");
+        assert!(joined.contains("children :"), "kin block lists children: {joined}");
+        let child_name = &w.figures[parent.children[0]].name;
+        assert!(joined.contains(child_name.as_str()), "kin names a child: {joined}");
+        assert!(joined.is_ascii(), "kin block is ASCII: {joined}");
+
+        // Somewhere in 120 years, a ruler has a living grown child to inherit.
+        let any_heir = w
+            .figures
+            .iter()
+            .any(|f| w.lineage_of(f.id).iter().any(|l| l.contains("(heir)")));
+        assert!(any_heir, "a ruler with a living grown child marks an heir");
     }
 
     #[test]
