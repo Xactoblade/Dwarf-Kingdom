@@ -2,3 +2,17 @@ Toolbar icons are OpenMoji (https://openmoji.org), CC-BY-SA 4.0, full-colour
 variant used as-is. Glyphs: pickaxe U+26CF, ladder U+1FA9C, down-arrow U+2B07,
 axe U+1FA93, herb U+1F33F, brick U+1F9F1, pencil U+270F, triangular-flag
 U+1F6A9, hammer-and-pick U+2692, clipboard U+1F4CB, package U+1F4E6.
+
+Remaining toolbar tools (full-colour, used as-is), by Unicode codepoint:
+ Zones: inbox U+1F4E5, sheaf U+1F33E, cow U+1F404, beer U+1F37A,
+  place-of-worship U+1F6D0, fishing-pole U+1F3A3, hospital U+1F3E5, boxing
+  U+1F94A, house U+1F3E0, books U+1F4DA, bed U+1F6CF, plate U+1F37D.
+ Piles: package U+1F4E6, meat U+1F356, rock U+1FAA8, log U+1FAB5, coin
+  U+1FA99, gem U+1F48E, dagger U+1F5E1, chair U+1FA91, bone U+1F9B4.
+ Workshops: alembic U+2697, cooking U+1F373, amphora U+1F3FA, thread U+1F9F5,
+  ring U+1F48D, fire U+1F525, hammer U+1F528, moai U+1F5FF, saw U+1FA9A, shirt
+  U+1F455, boot U+1F97E, window U+1FA9F, bucket U+1FAA3, mousetrap U+1FAA4,
+  headstone U+1FAA6, door U+1F6AA.
+ Orders: helmet U+1FA96, knife U+1F52A, dog U+1F415, shield U+1F6E1, pushpin
+  U+1F4CD, walking U+1F6B6, target U+1F3AF, swords U+2694, bow U+1F3F9, bust
+  U+1F464, scissors U+2702, cross U+274C.

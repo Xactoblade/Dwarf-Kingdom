@@ -389,10 +389,11 @@ fn category_icon(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Icon file stem for a tool button, if it has one (a subset for now — unmapped
-/// tools just show their label). Icons are OpenMoji (CC-BY-SA), tinted at render.
+/// Icon file stem for a tool button. Icons are OpenMoji (CC-BY-SA), full-colour.
+/// Unmapped labels just show their text; every toolbar tool is covered here.
 fn tool_icon(label: &str) -> Option<&'static str> {
     Some(match label {
+        // Dig
         "Mine" => "mine",
         "Stairs" => "stairs",
         "Channel" => "channel",
@@ -400,6 +401,59 @@ fn tool_icon(label: &str) -> Option<&'static str> {
         "Gather" => "gather",
         "Wall" => "wall",
         "Engrave" => "engrave",
+        // Zones
+        "Stockpile" => "stockpile",
+        "Farm" => "farm",
+        "Pasture" => "pasture",
+        "Tavern" => "tavern",
+        "Temple" => "temple",
+        "Fishery" => "fishery",
+        "Hospital" => "hospital",
+        "Barracks" => "barracks",
+        "Burrow" => "burrow",
+        "Library" => "library",
+        "Bedroom" => "bedroom",
+        "Dining" => "dining",
+        // Piles
+        "Any" => "pile_any",
+        "Food" => "pile_food",
+        "Stone" => "pile_stone",
+        "Wood" => "pile_wood",
+        "Bars" => "pile_bars",
+        "Goods" => "pile_goods",
+        "Arms" => "pile_arms",
+        "Furniture" => "pile_furniture",
+        "Refuse" => "pile_refuse",
+        // Workshops
+        "Still" => "still",
+        "Kitchen" => "kitchen",
+        "Crafts" => "crafts",
+        "Loom" => "loom",
+        "Jeweler" => "jeweler",
+        "Smelter" => "smelter",
+        "Forge" => "forge",
+        "Mason" => "mason",
+        "Carpenter" => "carpenter",
+        "Clothier" => "clothier",
+        "Tanner" => "tanner",
+        "Glass" => "glass",
+        "Well" => "well",
+        "Trap" => "trap",
+        "Tomb" => "tomb",
+        "Gate" => "gate",
+        // Orders
+        "Enlist" => "enlist",
+        "Cull" => "cull",
+        "War Dog" => "war_dog",
+        "Defend" => "defend",
+        "Station" => "station",
+        "Patrol" => "patrol",
+        "Train" => "train",
+        "Melee" => "melee",
+        "Marks" => "marks",
+        "Assign" => "assign",
+        "Split Sq" => "split",
+        "Cancel" => "cancel",
         _ => return None,
     })
 }
@@ -2996,11 +3050,14 @@ fn handle_category(
 
 /// Show only the tools of the open category (collapse the rest).
 fn toolbar_layout(open: Res<OpenCategory>, mut tools: Query<(&ToolButton, &mut Node)>) {
-    if !open.is_changed() {
+    // A screenshot run can pin a category open for icon verification.
+    let shot_cat = std::env::var("DK_SHOT_CAT").ok().and_then(|s| s.parse::<u8>().ok());
+    if !open.is_changed() && shot_cat.is_none() {
         return;
     }
+    let want = shot_cat.or(open.0);
     for (tb, mut node) in &mut tools {
-        node.display = if open.0 == Some(tb.cat) { Display::Flex } else { Display::None };
+        node.display = if want == Some(tb.cat) { Display::Flex } else { Display::None };
     }
 }
 
