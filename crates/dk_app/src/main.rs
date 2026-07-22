@@ -259,6 +259,8 @@ enum UiKind {
     DiningHall,
     Chop,
     Gather,
+    /// Drag a span of floor to raise a drawbridge, toggled by a linked lever.
+    Bridge,
     Cancel,
 }
 
@@ -283,6 +285,7 @@ impl UiKind {
             UiKind::DiningHall => "DINING HALL",
             UiKind::Chop => "CHOP",
             UiKind::Gather => "GATHER",
+            UiKind::Bridge => "BRIDGE",
             UiKind::Cancel => "CANCEL",
         }
     }
@@ -732,6 +735,7 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Build(BuildingKind::Trap), label: "Trap", key: "^T", tip: "A weapon trap that shreds raiders", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Tomb), label: "Tomb", key: "b", tip: "Bury the dead so their ghosts rest", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Floodgate), label: "Gate", key: "g", tip: "A floodgate, opened and shut by a linked lever", cat: 2 },
+    ToolButton { tool: Tool::Rect(UiKind::Bridge), label: "Bridge", key: "", tip: "Drag a span of floor for a drawbridge; link a lever (l) to raise/lower it", cat: 2 },
     // --- Orders (cat 3)
     ToolButton { tool: Tool::Enlist, label: "Enlist", key: "i", tip: "Make the dwarf here a soldier (click again to dismiss)", cat: 3 },
     ToolButton { tool: Tool::Cull, label: "Cull", key: "u", tip: "Mark the animal here to be slaughtered for meat", cat: 3 },
@@ -2928,6 +2932,20 @@ fn clamp_camera_to_map(tf: &mut Transform, win_w: f32, win_h: f32) {
     };
 }
 
+/// Every tile position in the rectangle between two corners, at the first
+/// corner's z-level. For multi-tile tools (a drawbridge span).
+fn rect_positions(a: Pos, b: Pos) -> Vec<Pos> {
+    let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
+    let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+    let mut v = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1)).max(0) as usize);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            v.push(Pos::new(x, y, a.z));
+        }
+    }
+    v
+}
+
 /// Apply a rectangle tool (designation or zone) to the sim — the shared body
 /// behind both the keyboard shortcuts and the toolbar's mouse clicks.
 fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
@@ -2989,6 +3007,15 @@ fn apply_ui_rect(sim: &mut Sim, kind: UiKind, a: Pos, b: Pos) {
         UiKind::Library => sim.add_library(a, b),
         UiKind::Bedroom => sim.add_bedroom(a, b),
         UiKind::DiningHall => sim.add_dining_hall(a, b),
+        UiKind::Bridge => {
+            if sim.add_bridge(rect_positions(a, b)).is_none() {
+                sim.log_event(
+                    "A drawbridge needs a span of plain, empty floor - no walls, water, \
+                     buildings, or another bridge in the way. Link a lever (l) to raise it."
+                        .to_string(),
+                );
+            }
+        }
         UiKind::Cancel => {
             sim.cancel_rect(a, b);
         }
@@ -4505,6 +4532,9 @@ fn handle_input(
                     UiKind::Gather => {
                         sim.0.designate_rect(DesignationKind::Gather, anchor, here);
                     }
+                    UiKind::Bridge => {
+                        sim.0.add_bridge(rect_positions(anchor, here));
+                    }
                     UiKind::Cancel => {
                         sim.0.cancel_rect(anchor, here);
                     }
@@ -5516,6 +5546,16 @@ fn tile_visual(
     // A planned wall is outlined in slate blue until it's raised.
     if sim.constructions.contains_key(&here) {
         rgb = mix(rgb, [0.4, 0.55, 0.7], 0.5);
+    }
+    // A drawbridge reads as a timber deck — brown when lowered (walkable), and
+    // a heavier barred brown when raised (a Gate tile). Bridges are few, so the
+    // span scan is cheap.
+    if !sim.bridges.is_empty() && sim.bridges.values().any(|br| br.span.contains(&here)) {
+        let raised = matches!(sim.map.tile_at(here).map(|t| t.shape), Some(TileShape::Gate));
+        rgb = mix(rgb, [0.42, 0.28, 0.14], if raised { 0.7 } else { 0.5 });
+        if !raised {
+            glyph = "floor";
+        }
     }
     // A pile is tinted by what it is for, so a fort's storage reads at a
     // glance: the larder green, the stoneyard grey, the armoury red. An

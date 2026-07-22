@@ -575,6 +575,18 @@ pub struct Building {
     pub occupied: bool,
 }
 
+/// A drawbridge: a span of floor tiles that RAISE to an impassable barrier (like
+/// a closed floodgate) and LOWER back to walkable floor, toggled by a linked
+/// lever. Multi-tile — the one thing beyond a floodgate. Lives in the `bridges`
+/// overlay keyed by its anchor (the tile a lever links to).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bridge {
+    /// The tiles the bridge covers.
+    pub span: Vec<Pos>,
+    /// Raised = the span is a barrier (Gate tiles); lowered = walkable Floor.
+    pub raised: bool,
+}
+
 // ------------------------------------------------------------------- farms
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1987,6 +1999,11 @@ pub struct Sim {
     rng: ChaCha8Rng,
     /// Per-item back-off after a failed haul pathfind (item index -> tick).
     haul_retry: BTreeMap<usize, u64>,
+    /// Drawbridges, keyed by anchor tile (the tile a lever links to). Empty by
+    /// default, so a fort with no bridge (and every headless test) stays
+    /// byte-identical.
+    #[serde(default)]
+    pub bridges: BTreeMap<Pos, Bridge>,
     /// Set whenever terrain changes; the renderer reads and clears it.
     #[serde(skip)]
     pub map_changed: bool,
@@ -2095,6 +2112,7 @@ impl Sim {
             invasions: true,
             rng,
             haul_retry: BTreeMap::new(),
+            bridges: BTreeMap::new(),
             map_changed: true,
             regions,
         }
@@ -2778,15 +2796,16 @@ impl Sim {
         }
     }
 
-    /// Place a lever linked to the nearest floodgate. Returns the linked
-    /// gate position if any.
+    /// Place a lever linked to the nearest linkable device — a floodgate or a
+    /// drawbridge. Returns the linked device's position if any.
     pub fn add_lever(&mut self, pos: Pos) -> Option<Pos> {
-        let target = self
+        let gates = self
             .buildings
             .iter()
             .filter(|b| b.kind == BuildingKind::Floodgate)
-            .min_by_key(|b| b.pos.manhattan(pos))?
-            .pos;
+            .map(|b| b.pos);
+        let bridges = self.bridges.keys().copied();
+        let target = gates.chain(bridges).min_by_key(|p| p.manhattan(pos))?;
         if self.add_building(BuildingKind::Lever { target }, pos) {
             Some(target)
         } else {
@@ -2794,7 +2813,7 @@ impl Sim {
         }
     }
 
-    /// Pull the lever at `pos`: toggles its linked floodgate open/closed.
+    /// Pull the lever at `pos`: fires whatever device it is linked to.
     pub fn pull_lever(&mut self, pos: Pos) -> bool {
         let Some(target) = self.buildings.iter().find_map(|b| match b.kind {
             BuildingKind::Lever { target } if b.pos == pos => Some(target),
@@ -2802,7 +2821,71 @@ impl Sim {
         }) else {
             return false;
         };
-        self.toggle_floodgate(target)
+        self.activate_link(target)
+    }
+
+    /// Fire whatever linked device sits at `target` — a floodgate or a drawbridge.
+    /// The single dispatch every trigger (a lever now, a pressure plate later)
+    /// calls, so a device never needs to know what triggered it.
+    fn activate_link(&mut self, target: Pos) -> bool {
+        if self.buildings.iter().any(|b| b.pos == target && b.kind == BuildingKind::Floodgate) {
+            return self.toggle_floodgate(target);
+        }
+        if self.bridges.contains_key(&target) {
+            return self.toggle_bridge(target);
+        }
+        false
+    }
+
+    /// Place a lowered drawbridge over `span` — every tile must be a free, plain
+    /// floor (not a ramp/stairs, whose shape a raise/lower would clobber). Returns
+    /// the anchor tile (the one a lever links to) on success.
+    pub fn add_bridge(&mut self, span: Vec<Pos>) -> Option<Pos> {
+        if span.is_empty() {
+            return None;
+        }
+        for &p in &span {
+            let plain_floor = self.map.tile_at(p).is_some_and(|t| t.shape == TileShape::Floor);
+            if !plain_floor
+                || self.map.water_at(p) > 0
+                || self.buildings.iter().any(|b| b.pos == p)
+                || self.farms.contains_key(&p)
+                || self.bridges.values().any(|b| b.span.contains(&p))
+            {
+                return None;
+            }
+        }
+        let anchor = *span.iter().min().expect("span is non-empty"); // deterministic
+        self.bridges.insert(anchor, Bridge { span, raised: false });
+        self.map_changed = true;
+        Some(anchor)
+    }
+
+    /// Raise a lowered drawbridge (its span becomes an impassable barrier) or
+    /// lower a raised one (back to walkable floor) — a multi-tile floodgate.
+    pub fn toggle_bridge(&mut self, anchor: Pos) -> bool {
+        let Some(bridge) = self.bridges.get(&anchor) else { return false };
+        let raising = !bridge.raised;
+        let span = bridge.span.clone();
+        for p in span {
+            let Some(tile) = self.map.tile_at(p) else { continue };
+            let new_shape = if raising { TileShape::Gate } else { TileShape::Floor };
+            // A raised span holds no water — the barrier squeezes it out.
+            let kept = if raising { 0 } else { tile.water };
+            self.map
+                .set_at(p, Tile { material: tile.material, shape: new_shape, water: kept, magma: 0 });
+            if raising {
+                self.displace_water(p, tile.water);
+            }
+            self.water.wake(p);
+            self.magma.wake(p);
+        }
+        self.bridges.get_mut(&anchor).expect("bridge exists").raised = raising;
+        self.regions.dirty = true; // walkability of the whole span changed
+        self.map_changed = true;
+        let state = if raising { "raised" } else { "lowered" };
+        self.log_event(format!("The drawbridge at ({}, {}) is {state}.", anchor.x, anchor.y));
+        true
     }
 
     pub fn toggle_floodgate(&mut self, pos: Pos) -> bool {
@@ -10684,7 +10767,8 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v75: creatures gained blood_tracked/last_pos for bloody footprints.
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
-const SAVE_VERSION: u32 = 84;
+// v85: forts gained a `bridges` map (drawbridges raised/lowered by levers).
+const SAVE_VERSION: u32 = 85;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
