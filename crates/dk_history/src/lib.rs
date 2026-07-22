@@ -1155,6 +1155,17 @@ pub enum SiteKind {
     /// A necromancer's tower — not built by a people, but raised by one who
     /// unearthed the secret of life and death.
     Tower,
+    // Non-civ "adventure" sites — lairs and ruins, not settlements. APPENDED at
+    // the END (serde is name-keyed and nothing indexes SiteKind by ordinal, so
+    // this shifts no RNG stream).
+    /// A hero or noble's catacomb, its dead and their grave-goods.
+    Tomb,
+    /// A wild lair in the deep rock — a beast's or bandit's hole.
+    Cave,
+    /// A sealed hoard of the ancients, its treasure and its guardians.
+    Vault,
+    /// A maze raised to trap and lose whatever wanders in.
+    Labyrinth,
 }
 
 impl SiteKind {
@@ -1166,6 +1177,10 @@ impl SiteKind {
             SiteKind::ForestRetreat => "forest retreat",
             SiteKind::DarkFortress => "dark fortress",
             SiteKind::Tower => "tower",
+            SiteKind::Tomb => "tomb",
+            SiteKind::Cave => "cave",
+            SiteKind::Vault => "vault",
+            SiteKind::Labyrinth => "labyrinth",
         }
     }
 
@@ -1617,6 +1632,10 @@ impl World {
             SiteKind::ForestRetreat => rng.gen_range(150..500),
             SiteKind::Hamlet => rng.gen_range(40..250),
             SiteKind::Tower => rng.gen_range(20..120),
+            // A tomb or vault holds a few guardians; a cave or labyrinth stands
+            // uninhabited. (Population 0 also keeps them off the raid rolls.)
+            SiteKind::Tomb | SiteKind::Vault => rng.gen_range(5..40),
+            SiteKind::Cave | SiteKind::Labyrinth => 0,
         };
         if announce {
             self.event_typed(
@@ -2810,6 +2829,22 @@ mod tests {
             .iter()
             .any(|f| w.lineage_of(f.id).iter().any(|l| l.contains("(heir)")));
         assert!(any_heir, "a ruler with a living grown child marks an heir");
+    }
+
+    #[test]
+    fn new_site_kinds_have_distinct_nouns() {
+        use SiteKind::*;
+        let kinds = [City, Fortress, Hamlet, ForestRetreat, DarkFortress, Tower, Tomb, Cave, Vault, Labyrinth];
+        let nouns: Vec<&str> = kinds.iter().map(|k| k.noun()).collect();
+        for n in &nouns {
+            assert!(!n.is_empty() && n.is_ascii(), "noun {n:?} is a real ASCII word");
+        }
+        let mut u = nouns.clone();
+        u.sort_unstable();
+        u.dedup();
+        assert_eq!(u.len(), nouns.len(), "every site kind reads distinctly");
+        assert_eq!(Tomb.noun(), "tomb");
+        assert_eq!(Labyrinth.noun(), "labyrinth");
     }
 
     #[test]

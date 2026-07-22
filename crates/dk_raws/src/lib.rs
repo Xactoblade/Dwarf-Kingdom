@@ -816,3 +816,32 @@ impl MaterialRegistry {
         self.materials.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tileset_defines_the_new_site_markers() {
+        // The shipped tileset must map every new site marker to a real, distinct
+        // sprite cell — else the renderer's `index()` silently falls back to 0
+        // (the wall glyph) and the new sites all show as walls.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/tileset.ron");
+        let text = std::fs::read_to_string(path).expect("read data/tileset.ron");
+        let def: TilesetDef = ron::from_str(&text).expect("parse tileset.ron");
+        let cells = (def.columns * def.rows) as usize;
+        let markers = ["m_tomb", "m_cave", "m_vault", "m_labyrinth"];
+        let mut idxs = Vec::new();
+        for g in markers {
+            let idx = def.glyphs.get(g).copied().unwrap_or(0);
+            assert!(idx != 0, "{g} maps to a real cell, not the fallback (0)");
+            assert!(idx < cells, "{g} cell {idx} lies within the {cells}-cell sheet");
+            assert!(def.tinted.iter().any(|t| t == g), "{g} is listed as tinted");
+            idxs.push(idx);
+        }
+        let mut u = idxs.clone();
+        u.sort_unstable();
+        u.dedup();
+        assert_eq!(u.len(), idxs.len(), "the four markers use distinct cells");
+    }
+}

@@ -37,6 +37,8 @@ TilesetDef(
         // one distinct silhouette per settlement type.
         "m_city": 66, "m_fortress": 67, "m_hamlet": 68, "m_retreat": 69,
         "m_darkfort": 70, "m_ruins": 71, "m_tower": 72,
+        // Non-civ "adventure" sites: a tomb, a cave lair, a vault, a labyrinth.
+        "m_tomb": 73, "m_cave": 74, "m_vault": 75, "m_labyrinth": 76,
     },
     tinted: ["wall", "floor", "stairs", "ramp", "gate", "farm", "block",
              "boulder", "seed", "crop", "tree", "tree_conifer",
@@ -47,5 +49,5 @@ TilesetDef(
              "i_leather", "i_wool", "i_glass", "i_craft",
              "peak", "hills", "dune", "forest",
              "m_city", "m_fortress", "m_hamlet", "m_retreat", "m_darkfort",
-             "m_ruins", "m_tower"],
+             "m_ruins", "m_tower", "m_tomb", "m_cave", "m_vault", "m_labyrinth"],
 )

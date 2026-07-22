@@ -5791,6 +5791,10 @@ fn redraw_tiles(
                         ForestRetreat => ("m_retreat", [0.55, 0.82, 0.42]),
                         DarkFortress => ("m_darkfort", [0.85, 0.28, 0.22]),
                         Tower => ("m_tower", [0.62, 0.45, 0.85]),
+                        Tomb => ("m_tomb", [0.72, 0.74, 0.78]),
+                        Cave => ("m_cave", [0.56, 0.50, 0.42]),
+                        Vault => ("m_vault", [0.90, 0.80, 0.42]),
+                        Labyrinth => ("m_labyrinth", [0.50, 0.72, 0.60]),
                     }
                 };
                 glyph = g;
