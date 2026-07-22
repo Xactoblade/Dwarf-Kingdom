@@ -409,6 +409,65 @@ pub fn generate_styled(reg: &MaterialRegistry, rng: &mut ChaCha8Rng, width: usiz
     generate_terrain(reg, rng, width, height, depth, seed, surface, Relief::Rolling)
 }
 
+/// The stones and ores an embark's rock holds, for the site-selection readout.
+pub struct GeoSummary {
+    /// The sedimentary layers the fort's upper digs expose — the part that
+    /// varies region to region (igneous and metamorphic underlie every embark
+    /// the same, so they're not worth naming per-site).
+    pub stones: Vec<String>,
+    /// The flux stones present (for steelmaking), from any layer — the fact a
+    /// player actually weighs at embark.
+    pub flux: Vec<String>,
+    /// The ores that lie in the deep veins.
+    pub ores: Vec<String>,
+}
+
+/// A quick geological read of an embark region for the site-selection panel:
+/// the stones the fort will dig through (flux marked), and the ores in its
+/// veins. Derived from the SAME `seed` and material picks `generate_terrain`
+/// uses (so it tells the truth about the ground that will generate), but PURE —
+/// it draws value-noise only, never the RNG — so it can never perturb the real
+/// embark stream, no matter when the panel calls it. `seed` is the embark seed
+/// (`world.seed ^ ((rx << 32) | ry)`), `width`/`height` the local map extent.
+pub fn preview_geology(reg: &MaterialRegistry, seed: u64, width: usize, height: usize) -> GeoSummary {
+    let sedimentary = reg.indices_in_category(MaterialCategory::Sedimentary);
+    let igneous = reg.indices_in_category(MaterialCategory::Igneous);
+    let metamorphic = reg.indices_in_category(MaterialCategory::Metamorphic);
+    let ore_ids = reg.indices_in_category(MaterialCategory::Ore);
+
+    // Sedimentary is a per-tile value-noise pick (identical to generate_terrain's
+    // choice), so sweep a coarse grid to gather the sedimentary types the embark
+    // actually exposes — the region-varied part of the readout.
+    let mut sed_present: Vec<u16> = Vec::new();
+    if !sedimentary.is_empty() {
+        let step = (width / 12).max(1);
+        let mut y = 0;
+        while y < height {
+            let mut x = 0;
+            while x < width {
+                let m = sedimentary[noise_pick(value_noise(x, y, seed, 0x5ED, 0.075), sedimentary.len())];
+                if !sed_present.contains(&m) {
+                    sed_present.push(m);
+                }
+                x += step;
+            }
+            y += step;
+        }
+    }
+    // Igneous and metamorphic cycle through their whole category down every deep
+    // column, so all of each underlie the embark — checked for flux, not listed.
+    let stones = sed_present.iter().map(|&m| reg.get(m).name.clone()).collect();
+    let flux = sed_present
+        .iter()
+        .chain(igneous.iter())
+        .chain(metamorphic.iter())
+        .filter(|&&m| reg.get(m).is_flux)
+        .map(|&m| reg.get(m).name.clone())
+        .collect();
+    let ores = ore_ids.iter().map(|&m| reg.get(m).name.clone()).collect();
+    GeoSummary { stones, flux, ores }
+}
+
 /// Cut a winding river across an already-generated map: a flat-bottomed
 /// channel filled with water, sunk just below the surrounding ground so its
 /// banks contain it. A pure map mutation deterministic in `seed` — it draws no
@@ -1126,6 +1185,66 @@ mod tests {
             MaterialDef { id: "ign".into(), name: "ign".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn preview_geology_reads_the_rock_and_never_perturbs_gen() {
+        use rand::SeedableRng;
+        let reg = MaterialRegistry::from_defs(vec![
+            MaterialDef { id: "loam".into(), name: "loam".into(), category: MaterialCategory::Soil, color: [1; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "limestone".into(), name: "limestone".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1, combat: Default::default(), is_flux: true },
+            MaterialDef { id: "shale".into(), name: "shale".into(), category: MaterialCategory::Sedimentary, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "granite".into(), name: "granite".into(), category: MaterialCategory::Igneous, color: [0; 3], value: 1, combat: Default::default(), is_flux: false },
+            MaterialDef { id: "hematite".into(), name: "hematite".into(), category: MaterialCategory::Ore, color: [0; 3], value: 5, combat: Default::default(), is_flux: false },
+        ])
+        .unwrap();
+        let (seed, w, h, d) = (4242u64, 48usize, 48usize, 32usize);
+
+        // Deterministic; names the region's sedimentary layers, flags flux, ore.
+        let g1 = preview_geology(&reg, seed, w, h);
+        let g2 = preview_geology(&reg, seed, w, h);
+        assert_eq!(g1.stones, g2.stones, "preview is deterministic");
+        assert!(
+            g1.stones.iter().any(|s| s == "limestone" || s == "shale"),
+            "names the sedimentary layers it exposes: {:?}",
+            g1.stones
+        );
+        assert!(g1.flux.contains(&"limestone".to_string()), "the flux stone is flagged");
+        assert!(g1.ores.contains(&"hematite".to_string()), "the ore is reported");
+
+        // The generated map, and the same map with a preview call in between.
+        let gen = |reg: &MaterialRegistry| {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            generate_terrain(reg, &mut rng, w, h, d, seed, SurfaceStyle::Default, Relief::Rolling)
+        };
+        let map_a = gen(&reg);
+        let _ = preview_geology(&reg, seed, w, h); // pure — must not touch the rng
+        let map_b = gen(&reg);
+        let identical = (0..d).all(|z| {
+            (0..h).all(|y| {
+                (0..w).all(|x| {
+                    let (a, b) = (map_a.get(x, y, z), map_b.get(x, y, z));
+                    a.material == b.material && a.shape == b.shape && a.water == b.water && a.magma == b.magma
+                })
+            })
+        });
+        assert!(identical, "preview never perturbs generation");
+
+        // Truthful: every stone the preview names really lies in the rock.
+        let mut placed: std::collections::BTreeSet<String> = Default::default();
+        for z in 0..d {
+            for y in 0..h {
+                for x in 0..w {
+                    let t = map_a.get(x, y, z);
+                    if t.is_solid() {
+                        placed.insert(reg.get(t.material).name.clone());
+                    }
+                }
+            }
+        }
+        for s in &g1.stones {
+            assert!(placed.contains(s), "previewed stone {s} is actually in the rock");
+        }
     }
 
     #[test]

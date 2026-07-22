@@ -6472,6 +6472,20 @@ fn update_hud(
             // Surface soil plus the hazards a fort meets digging down (aquifer,
             // volcano) — on its own line so the rock reads as clearly as the land.
             let geology = region.geology_summary();
+            // The rock itself: the stones the fort will dig (flux marked) and the
+            // ores in its veins — read from the same seed the embark generates
+            // from, but pure, so glancing at it never disturbs the map to come.
+            let geo = dk_world::preview_geology(
+                &reg.0.materials,
+                world.0.seed ^ ((rx as u64) << 32 | ry as u64),
+                MAP_W,
+                MAP_H,
+            );
+            let flux_note =
+                if geo.flux.is_empty() { String::new() } else { format!(" | flux: {}", geo.flux.join(", ")) };
+            let ore_note =
+                if geo.ores.is_empty() { String::new() } else { format!(" | ore: {}", geo.ores.join(", ")) };
+            let rock = format!("rock: {}{}{}", geo.stones.join(", "), flux_note, ore_note);
             let neighbours = world
                 .0
                 .nearest_friendly_civ(rx, ry)
@@ -6486,6 +6500,7 @@ fn update_hud(
                      surroundings: {} | temperature {}C | elevation {} | rainfall {} | drainage {}\n\
                      {} | {}\n\
                      geology: {}\n\
+                     {}\n\
                      {}\n\
                      {}\n\
                      {}\n\
@@ -6513,6 +6528,7 @@ fn update_hud(
                     water,
                     trees,
                     geology,
+                    rock,
                     neighbours,
                     enemy,
                     ok,
