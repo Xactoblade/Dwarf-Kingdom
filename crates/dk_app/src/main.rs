@@ -1138,6 +1138,11 @@ struct LegendEntry {
     label: String,
     key: String,
     facts: Vec<String>,
+    /// The figure this entry is, by `world.figures` index — so its detail page
+    /// gathers deeds by id (typed events) rather than brittle name-substring.
+    fig: Option<usize>,
+    /// The site this entry is, by `world.sites` index, likewise.
+    site: Option<usize>,
 }
 
 /// The entries of a browser tab (0..=4; Chronicle has none — it is the roll).
@@ -1157,7 +1162,7 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                     // The dossier header lives in dk_history so it's engine-agnostic
                     // and testable; the browser appends the events that name them.
                     let facts = world.figure_lines(f.id);
-                    LegendEntry { label, key: f.name.clone(), facts }
+                    LegendEntry { label, key: f.name.clone(), facts, fig: Some(f.id), site: None }
                 })
                 .collect()
         }
@@ -1175,7 +1180,7 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                         if s.ruined { "now in ruins".into() } else { format!("population {}", s.population) },
                         format!("founded in year {}", s.founded_year),
                     ];
-                    LegendEntry { label, key: s.name.clone(), facts }
+                    LegendEntry { label, key: s.name.clone(), facts, fig: None, site: Some(s.id) }
                 })
                 .collect()
         }
@@ -1195,7 +1200,7 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                     (Some(s), Some(y)) => facts.push(format!("slain by {} in year {}", s, y)),
                     _ => facts.push("still stalks the world".into()),
                 }
-                LegendEntry { label, key: b.name.clone(), facts }
+                LegendEntry { label, key: b.name.clone(), facts, fig: None, site: None }
             })
             .collect(),
         3 => {
@@ -1211,7 +1216,7 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                         format!("{}, deity of {}", d.name, spheres),
                         format!("{} known worshippers", n),
                     ];
-                    LegendEntry { label, key: d.name.clone(), facts }
+                    LegendEntry { label, key: d.name.clone(), facts, fig: None, site: None }
                 })
                 .collect()
         }
@@ -1225,21 +1230,34 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                     format!("{}, {}", a.name, a.kind),
                     format!("forged by {} in year {}", a.creator, a.created_year),
                 ];
-                LegendEntry { label, key: a.name.clone(), facts }
+                LegendEntry { label, key: a.name.clone(), facts, fig: None, site: None }
             })
             .collect(),
         _ => Vec::new(),
     }
 }
 
-/// An entry's detail page: its facts, then every chronicle line that names it.
+/// An entry's detail page: its facts, then every chronicle line that is truly
+/// about it. A figure or site gathers its deeds by id from the TYPED events
+/// (`subjects`/`site`), so a name that merely appears as a substring of some
+/// other deed is never misattributed. Untyped events (a civ arising, a beast's
+/// awakening) carry no ids, so they fall back to the old name-match — and the
+/// beast/god/artifact tabs, which have no id, use the name match throughout.
 fn legend_detail(world: &World, entry: &LegendEntry) -> Vec<String> {
     let mut out = entry.facts.clone();
     out.push(String::new());
     out.push("- Chronicled deeds -".to_string());
     let mut any = false;
     for e in &world.events {
-        if e.text.contains(&entry.key) {
+        let typed = !e.subjects.is_empty() || e.site.is_some();
+        let hit = if let Some(fig) = entry.fig {
+            if typed { e.subjects.contains(&fig) } else { e.text.contains(&entry.key) }
+        } else if let Some(site) = entry.site {
+            if typed { e.site == Some(site) } else { e.text.contains(&entry.key) }
+        } else {
+            e.text.contains(&entry.key)
+        };
+        if hit {
             out.push(format!("Year {:>3}: {}", e.year, e.text));
             any = true;
         }

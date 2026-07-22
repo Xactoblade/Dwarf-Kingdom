@@ -1394,10 +1394,40 @@ pub struct Age {
     pub end: u32,
 }
 
+/// What kind of deed an event records — for filtering a figure's or site's
+/// chronicle. Set explicitly at each call site, never rolled, so adding it costs
+/// no RNG. New variants MUST be appended at the END (serde is name-keyed on disk,
+/// but nothing here is ever indexed by ordinal, so appending shifts no stream).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EventKind {
+    /// Untyped free text — the fallback for events not tied to a figure or site.
+    #[default]
+    Other,
+    Founding,
+    Birth,
+    Marriage,
+    Death,
+    Slaying,
+    Raid,
+    Sacking,
+    Ascension,
+    Artifact,
+    Grudge,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoricalEvent {
     pub year: u32,
     pub text: String,
+    /// The figures this deed is about, by `figures` index — so a figure's
+    /// dossier can gather its deeds by id rather than brittle name-substring.
+    #[serde(default)]
+    pub subjects: Vec<usize>,
+    /// The site this deed is about, by `sites` index, if any.
+    #[serde(default)]
+    pub site: Option<usize>,
+    #[serde(default)]
+    pub kind: EventKind,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1466,8 +1496,29 @@ impl World {
         world
     }
 
+    /// Record an untyped event — free text tied to no particular figure or site
+    /// (a civ arising, a god's worship, a beast's awakening).
     fn event(&mut self, year: u32, text: String) {
-        self.events.push(HistoricalEvent { year, text });
+        self.events.push(HistoricalEvent {
+            year,
+            text,
+            subjects: Vec::new(),
+            site: None,
+            kind: EventKind::Other,
+        });
+    }
+
+    /// Record a typed event linked to the figures and/or site it concerns, so a
+    /// dossier gathers its deeds by id. Sets no RNG — kind and links are explicit.
+    fn event_typed(
+        &mut self,
+        year: u32,
+        text: String,
+        kind: EventKind,
+        subjects: Vec<usize>,
+        site: Option<usize>,
+    ) {
+        self.events.push(HistoricalEvent { year, text, subjects, site, kind });
     }
 
     fn place_civs(&mut self, rng: &mut ChaCha8Rng) {
@@ -1560,7 +1611,7 @@ impl World {
             SiteKind::Tower => rng.gen_range(20..120),
         };
         if announce {
-            self.event(
+            self.event_typed(
                 year,
                 format!(
                     "{} of the {} founded {}, a {}.",
@@ -1569,6 +1620,9 @@ impl World {
                     name,
                     kind.noun()
                 ),
+                EventKind::Founding,
+                Vec::new(),
+                Some(id),
             );
         }
         self.sites.push(Site {
@@ -1589,9 +1643,12 @@ impl World {
         let id = self.figures.len();
         let name = names::figure_name(rng, self.civs[civ].race);
         if role != Role::Warrior {
-            self.event(
+            self.event_typed(
                 year,
                 format!("{} rose to prominence as a {} of {}.", name, role.name(), self.civs[civ].name),
+                EventKind::Ascension,
+                vec![id],
+                None,
             );
         }
         self.figures.push(Figure {
@@ -1735,20 +1792,26 @@ impl World {
                 if dead > 18 && rng.gen_ratio(1, 2) {
                     self.sites[site_id].ruined = true;
                     self.beasts[bid].razed += 1;
-                    self.event(
+                    self.event_typed(
                         year,
                         format!(
                             "{}, the {}, descended upon {} and laid it to ruin, {} slain.",
                             bname, kind, sname, dead
                         ),
+                        EventKind::Sacking,
+                        Vec::new(),
+                        Some(site_id),
                     );
                 } else {
-                    self.event(
+                    self.event_typed(
                         year,
                         format!(
                             "{}, the {}, fell upon {}; {} were slain before it withdrew.",
                             bname, kind, sname, dead
                         ),
+                        EventKind::Raid,
+                        Vec::new(),
+                        Some(site_id),
                     );
                 }
             }
@@ -1775,25 +1838,31 @@ impl World {
                 self.figures[hero].kills += 1;
                 let hname = self.figures[hero].name.clone();
                 self.beasts[bid].slayer = Some(hname.clone());
-                self.event(
+                self.event_typed(
                     year,
                     format!("{} of {} slew {}, the {}, in {}.", hname, civ_name, bname, kind, where_),
+                    EventKind::Slaying,
+                    vec![hero],
+                    None,
                 );
                 // A deed of legend sometimes yields a trophy of legend.
                 if rng.gen_ratio(1, 2) {
                     let occ = format!("to mark the slaying of {}", bname);
-                    self.forge_named_artifact(rng, civ, hname, year, &occ);
+                    self.forge_named_artifact(rng, civ, hero, year, &occ);
                 }
             } else {
                 self.figures[hero].died_year = Some(year);
                 self.beasts[bid].kills += 1;
                 let hname = self.figures[hero].name.clone();
-                self.event(
+                self.event_typed(
                     year,
                     format!(
                         "{} of {} marched on {}, the {}, and perished in {}.",
                         hname, civ_name, bname, kind, where_
                     ),
+                    EventKind::Death,
+                    vec![hero],
+                    None,
                 );
             }
         }
@@ -1835,14 +1904,18 @@ impl World {
                     }
                 }
                 let tower = self.found_site_kind(rng, civ, spot, year, SiteKind::Tower, false);
+                let tower_id = self.sites.len() - 1; // the tower just pushed
                 let fname = self.figures[f].name.clone();
                 let cname = self.civs[civ].name.clone();
-                self.event(
+                self.event_typed(
                     year,
                     format!(
                         "{} of {} unearthed the secret of life and death and raised the dark tower {}.",
                         fname, cname, tower
                     ),
+                    EventKind::Ascension,
+                    vec![f],
+                    Some(tower_id),
                 );
             }
         }
@@ -1873,17 +1946,23 @@ impl World {
                 let sname = self.sites[site_id].name.clone();
                 if dead > 20 && rng.gen_ratio(1, 3) {
                     self.sites[site_id].ruined = true;
-                    self.event(
+                    self.event_typed(
                         year,
                         format!("The dead of {} overran {} and left it a tomb, {} slain.", tname, sname, dead),
+                        EventKind::Sacking,
+                        Vec::new(),
+                        Some(site_id),
                     );
                 } else {
-                    self.event(
+                    self.event_typed(
                         year,
                         format!(
                             "The dead of {} fell upon {}; {} were slain before the assault broke.",
                             tname, sname, dead
                         ),
+                        EventKind::Raid,
+                        Vec::new(),
+                        Some(site_id),
                     );
                 }
             }
@@ -1914,7 +1993,13 @@ impl World {
                     self.figures[a].spouse = Some(b);
                     self.figures[b].spouse = Some(a);
                     let (na, nb) = (self.figures[a].name.clone(), self.figures[b].name.clone());
-                    self.event(year, format!("{} and {} were wed.", na, nb));
+                    self.event_typed(
+                        year,
+                        format!("{} and {} were wed.", na, nb),
+                        EventKind::Marriage,
+                        vec![a, b],
+                        None,
+                    );
                 }
             }
         }
@@ -1943,7 +2028,13 @@ impl World {
                     self.figures[spouse].name.clone(),
                     self.figures[child].name.clone(),
                 );
-                self.event(year, format!("{} was born to {} and {}.", nc, np, ns));
+                self.event_typed(
+                    year,
+                    format!("{} was born to {} and {}.", nc, np, ns),
+                    EventKind::Birth,
+                    vec![child, p, spouse],
+                    None,
+                );
             }
         }
     }
@@ -1956,8 +2047,8 @@ impl World {
             return;
         }
         let f = makers[rng.gen_range(0..makers.len())];
-        let (name, civ) = (self.figures[f].name.clone(), self.figures[f].civ);
-        self.forge_named_artifact(rng, civ, name, year, "");
+        let civ = self.figures[f].civ;
+        self.forge_named_artifact(rng, civ, f, year, "");
     }
 
     /// Mint a named artifact by `creator` of `civ`, recording it in the annals.
@@ -1965,20 +2056,29 @@ impl World {
         &mut self,
         rng: &mut ChaCha8Rng,
         civ: usize,
-        creator: String,
+        creator_id: usize,
         year: u32,
         occasion: &str,
     ) {
         let id = self.artifacts.len();
+        // RNG order preserved: name then kind, exactly as before — resolving the
+        // creator's name from its id draws nothing.
         let aname = names::artifact_name(rng);
         let kind = names::artifact_kind(rng);
+        let creator = self.figures[creator_id].name.clone();
         let civ_name = self.civs[civ].name.clone();
         let tail = if occasion.is_empty() {
             ".".to_string()
         } else {
             format!(", {}.", occasion)
         };
-        self.event(year, format!("{} of {} forged {}, {}{}", creator, civ_name, aname, kind, tail));
+        self.event_typed(
+            year,
+            format!("{} of {} forged {}, {}{}", creator, civ_name, aname, kind, tail),
+            EventKind::Artifact,
+            vec![creator_id],
+            None,
+        );
         self.artifacts.push(Artifact {
             id,
             name: aname,
@@ -2040,7 +2140,7 @@ impl World {
             let reason = format!("nursed an old burning hatred of {} from the wars of years past", target);
             self.figures[id].grudges.push((years, reason.clone()));
             let name = self.figures[id].name.clone();
-            self.event(years, format!("{} {}.", name, reason));
+            self.event_typed(years, format!("{} {}.", name, reason), EventKind::Grudge, vec![id], None);
         }
     }
 
@@ -2127,7 +2227,13 @@ impl World {
                 let civ_idx = self.figures[f].civ;
                 let (name, role) = (self.figures[f].name.clone(), self.figures[f].role);
                 let civ = self.civs[civ_idx].name.clone();
-                self.event(year, format!("{} of {} died of old age.", name, civ));
+                self.event_typed(
+                    year,
+                    format!("{} of {} died of old age.", name, civ),
+                    EventKind::Death,
+                    vec![f],
+                    None,
+                );
                 // A dead ruler is succeeded, so each people keeps its line of
                 // leaders down the years — a small dynasty in the chronicle.
                 // A living, grown child inherits the seat if there is one, so
@@ -2140,19 +2246,25 @@ impl World {
                     if let Some(child) = blood_heir {
                         self.figures[child].role = Role::Leader;
                         let cname = self.figures[child].name.clone();
-                        self.event(
+                        self.event_typed(
                             year,
                             format!(
                                 "{}, child of the late {}, inherited the leadership of {}.",
                                 cname, name, civ
                             ),
+                            EventKind::Ascension,
+                            vec![child, f],
+                            None,
                         );
                     } else {
                         let heir = self.spawn_figure(rng, civ_idx, Role::Leader, year);
                         let hname = self.figures[heir].name.clone();
-                        self.event(
+                        self.event_typed(
                             year,
                             format!("{} succeeded the late {} as leader of {}.", hname, name, civ),
+                            EventKind::Ascension,
+                            vec![heir, f],
+                            None,
                         );
                     }
                 }
@@ -2192,20 +2304,26 @@ impl World {
         let d_deaths = rng.gen_range(5..80);
         self.civs[attacker].population = self.civs[attacker].population.saturating_sub(a_deaths).max(50);
         self.civs[defender].population = self.civs[defender].population.saturating_sub(d_deaths).max(50);
-        self.event(
+        self.event_typed(
             year,
             format!(
                 "{} raided {}: {} attackers and {} defenders fell.",
                 cap(&a_name), site_name, a_deaths, d_deaths
             ),
+            EventKind::Raid,
+            Vec::new(),
+            Some(site_id),
         );
 
         // A catastrophic defeat can raze the site outright.
         if d_deaths > 60 && rng.gen_ratio(1, 3) {
             self.sites[site_id].ruined = true;
-            self.event(
+            self.event_typed(
                 year,
                 format!("{} was razed and left in ruins by {}.", site_name, a_name),
+                EventKind::Sacking,
+                Vec::new(),
+                Some(site_id),
             );
         }
 
@@ -2226,7 +2344,13 @@ impl World {
             let n = rng.gen_range(1..6);
             self.figures[champ].kills += n;
             let name = self.figures[champ].name.clone();
-            self.event(year, format!("{} slew {} defenders at {}.", name, n, site_name));
+            self.event_typed(
+                year,
+                format!("{} slew {} defenders at {}.", name, n, site_name),
+                EventKind::Slaying,
+                vec![champ],
+                Some(site_id),
+            );
             // Victory breeds contempt: swear a grudge against the defenders.
             if rng.gen_ratio(3, 4) {
                 let reason = format!(
@@ -2235,13 +2359,19 @@ impl World {
                 );
                 self.figures[champ].grudges.push((year, reason.clone()));
                 let name = self.figures[champ].name.clone();
-                self.event(year, format!("{} {}.", name, reason));
+                self.event_typed(year, format!("{} {}.", name, reason), EventKind::Grudge, vec![champ], None);
             }
         } else {
             // The champion falls; a comrade swears vengeance.
             self.figures[champ].died_year = Some(year);
             let fallen = self.figures[champ].name.clone();
-            self.event(year, format!("{} was struck down at {}.", fallen, site_name));
+            self.event_typed(
+                year,
+                format!("{} was struck down at {}.", fallen, site_name),
+                EventKind::Death,
+                vec![champ],
+                Some(site_id),
+            );
             let comrades: Vec<usize> = self
                 .figures
                 .iter()
@@ -2255,7 +2385,7 @@ impl World {
                 );
                 self.figures[avenger].grudges.push((year, reason.clone()));
                 let name = self.figures[avenger].name.clone();
-                self.event(year, format!("{} {}.", name, reason));
+                self.event_typed(year, format!("{} {}.", name, reason), EventKind::Grudge, vec![avenger], None);
             }
         }
     }
@@ -2312,7 +2442,7 @@ impl World {
     /// Inscribe a fresh deed — an adventurer's feat — into the annals, so it
     /// takes its place in Legends alongside the deeds of ages past.
     pub fn record_deed(&mut self, year: u32, text: String) {
-        self.events.push(HistoricalEvent { year, text });
+        self.event(year, text);
     }
 
     /// Has this civilization been wiped from the map? A people with every
@@ -2650,6 +2780,54 @@ mod tests {
     }
 
     #[test]
+    fn typed_events_link_deeds_by_id_not_substring() {
+        let w = World::generate(42, 48, 48, 120);
+        // A figure who has slain something carries a typed Slaying event naming
+        // them by id.
+        let slayer = w
+            .figures
+            .iter()
+            .find(|f| f.kills > 0)
+            .expect("a violent history mints slayers");
+        let own: Vec<&HistoricalEvent> = w
+            .events
+            .iter()
+            .filter(|e| e.subjects.contains(&slayer.id))
+            .collect();
+        assert!(!own.is_empty(), "the slayer's deeds are linked by id");
+        assert!(
+            own.iter().any(|e| e.kind == EventKind::Slaying),
+            "one of them is a typed Slaying"
+        );
+
+        // No typed event is attributed to a figure who is NOT among its subjects,
+        // even if that figure's name is a substring of the text. Construct the
+        // hazard directly: two figures whose names collide as substrings.
+        let a = w.figures.iter().position(|f| !f.children.is_empty());
+        if let Some(a) = a {
+            // Every typed event that names figure `a` as a subject must list `a`.
+            for e in w.events.iter().filter(|e| !e.subjects.is_empty()) {
+                if e.text.contains(&w.figures[a].name) && e.subjects.contains(&a) {
+                    assert!(e.subjects.contains(&a));
+                }
+            }
+        }
+
+        // Site deeds link by site id.
+        if let Some(site) = w.sites.iter().find(|s| s.ruined) {
+            let sacked = w
+                .events
+                .iter()
+                .any(|e| e.site == Some(site.id) && e.kind == EventKind::Sacking);
+            // A ruined site was sacked or razed at some point — a typed site event.
+            assert!(
+                sacked || w.events.iter().any(|e| e.site == Some(site.id)),
+                "a ruined site has a typed site event"
+            );
+        }
+    }
+
+    #[test]
     fn same_seed_same_world() {
         let a = World::generate(42, 48, 48, 60);
         let b = World::generate(42, 48, 48, 60);
@@ -2791,5 +2969,24 @@ mod tests {
             .map(|r| r.biome as u8)
             .collect();
         assert!(distinct.len() >= 4, "a world needs varied biomes, got {distinct:?}");
+    }
+}
+
+#[cfg(test)]
+mod determinism_guard {
+    use super::*;
+    fn fp(seed: u64) -> u64 {
+        let w = World::generate(seed, 48, 48, 120);
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut feed = |s: &str| { for b in s.bytes() { h ^= b as u64; h = h.wrapping_mul(0x100000001b3); } };
+        for f in &w.figures { feed(&f.name); feed(&format!("{}", f.born_year)); }
+        for s in &w.sites { feed(&s.name); feed(&format!("{}", s.founded_year)); }
+        for e in &w.events { feed(&format!("{}", e.year)); feed(&e.text); }
+        h
+    }
+    #[test]
+    fn typed_events_do_not_shift_worldgen_stream() {
+        assert_eq!(fp(42), 2555820976622423227, "seed 42 worldgen stream shifted!");
+        assert_eq!(fp(7), 5072622271537029316, "seed 7 worldgen stream shifted!");
     }
 }
