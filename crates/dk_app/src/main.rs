@@ -1154,38 +1154,9 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
                     let kills = if f.kills > 0 { format!(" | {} kills", f.kills) } else { String::new() };
                     let dead = if f.died_year.is_some() { " (dead)" } else { "" };
                     let label = format!("{} - {} of {}{}{}", f.name, role, civ, kills, dead);
-                    let mut facts = vec![
-                        format!("{}, {} of {}", f.name, role, civ),
-                        format!(
-                            "born {} | {}",
-                            f.born_year,
-                            f.died_year.map(|y| format!("died year {y}")).unwrap_or_else(|| "still living".into())
-                        ),
-                    ];
-                    if f.kills > 0 {
-                        facts.push(format!("{} slain in battle", f.kills));
-                    }
-                    if let Some(g) = f.worships {
-                        facts.push(format!("worships {}", world.deities[g].name));
-                    }
-                    if f.necromancer {
-                        facts.push("has unearthed the secret of life and death".into());
-                    }
-                    // Family: parentage, marriage, and children.
-                    if let Some(p) = f.parent {
-                        facts.push(format!("child of {}", world.figures[p].name));
-                    }
-                    if let Some(s) = f.spouse {
-                        facts.push(format!("wed to {}", world.figures[s].name));
-                    }
-                    if !f.children.is_empty() {
-                        let kids: Vec<&str> =
-                            f.children.iter().map(|&c| world.figures[c].name.as_str()).collect();
-                        facts.push(format!("parent of {}", kids.join(", ")));
-                    }
-                    if !f.grudges.is_empty() {
-                        facts.push(format!("nurses {} grudge(s)", f.grudges.len()));
-                    }
+                    // The dossier header lives in dk_history so it's engine-agnostic
+                    // and testable; the browser appends the events that name them.
+                    let facts = world.figure_lines(f.id);
                     LegendEntry { label, key: f.name.clone(), facts }
                 })
                 .collect()
@@ -1809,9 +1780,11 @@ fn main() {
         .insert_resource(LegendsState {
             scroll: 0,
             from: Screen::Embark,
-            category: 0,
+            // A screenshot run can pin a Legends tab (DK_SHOT_LEGEND_CAT=0..5) and
+            // drill into an entry (DK_SHOT_LEGEND_DETAIL=<row>) to verify a dossier.
+            category: std::env::var("DK_SHOT_LEGEND_CAT").ok().and_then(|s| s.parse().ok()).unwrap_or(0),
             cursor: 0,
-            detail: None,
+            detail: std::env::var("DK_SHOT_LEGEND_DETAIL").ok().and_then(|s| s.parse().ok()),
         })
         .insert_resource(TradeState::default())
         .insert_resource(HasSave(save_path().exists()))

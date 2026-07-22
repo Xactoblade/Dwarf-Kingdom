@@ -1093,6 +1093,16 @@ impl Race {
         }
     }
 
+    /// The singular adjective — "a dwarven warlord", "an elven scholar".
+    pub fn adjective(self) -> &'static str {
+        match self {
+            Race::Dwarven => "dwarven",
+            Race::Human => "human",
+            Race::Elven => "elven",
+            Race::Goblin => "goblin",
+        }
+    }
+
     pub fn hostile(self) -> bool {
         matches!(self, Race::Goblin)
     }
@@ -2456,6 +2466,49 @@ impl World {
             .collect()
     }
 
+    /// The dossier header for one figure, for the Legends detail page: who they
+    /// are, their span of years, their deeds in sum, their faith, and their kin.
+    /// Engine-agnostic and ASCII-only (the game font carries no fancy glyphs);
+    /// the chronicle events that name them are appended by the browser. `id`
+    /// indexes `self.figures`.
+    pub fn figure_lines(&self, id: usize) -> Vec<String> {
+        let f = &self.figures[id];
+        let civ = &self.civs[f.civ];
+        // A necromancer's undeath overrides their former calling.
+        let role = if f.necromancer { "necromancer" } else { f.role.name() };
+        let mut out = vec![format!("{}, a {} {} of {}", f.name, civ.race.adjective(), role, civ.name)];
+        // Lifespan. born_year is i64 (founding-era figures predate year 0).
+        out.push(match f.died_year {
+            Some(d) => format!("b. {} - d. {}", f.born_year, d),
+            None => format!("b. {} - still living", f.born_year),
+        });
+        if f.kills > 0 {
+            out.push(format!("{} foes slain in battle", f.kills));
+        }
+        if let Some(g) = f.worships {
+            out.push(format!("worships {}", self.deities[g].name));
+        }
+        if f.necromancer {
+            out.push("has unearthed the secret of life and death".to_string());
+        }
+        // Kin: parentage, marriage, and issue.
+        if let Some(p) = f.parent {
+            out.push(format!("child of {}", self.figures[p].name));
+        }
+        if let Some(s) = f.spouse {
+            out.push(format!("wed to {}", self.figures[s].name));
+        }
+        if !f.children.is_empty() {
+            let kids: Vec<&str> = f.children.iter().map(|&c| self.figures[c].name.as_str()).collect();
+            out.push(format!("parent of {}", kids.join(", ")));
+        }
+        // Personal grudges, in their own words.
+        for (y, g) in &f.grudges {
+            out.push(format!("year {}: {}", y, g));
+        }
+        out
+    }
+
     /// One line per artifact, for the Legends browser.
     pub fn artifact_lines(&self) -> Vec<String> {
         self.artifacts
@@ -2514,6 +2567,28 @@ mod tests {
         // The line stays ASCII — the game font has no fancy glyphs.
         assert!(wet.geology_summary().is_ascii());
         assert!(dry_fiery.geology_summary().is_ascii());
+    }
+
+    #[test]
+    fn figure_lines_reads_as_a_dossier() {
+        let w = World::generate(42, 48, 48, 80);
+        let leader = w
+            .figures
+            .iter()
+            .find(|f| f.role == Role::Leader)
+            .expect("a world of civilizations has leaders");
+        let lines = w.figure_lines(leader.id);
+        let joined = lines.join("\n");
+        // Names the figure's people (their race) and their calling.
+        let race = w.civs[leader.civ].race.adjective();
+        assert!(joined.contains(race), "dossier names the race ({race}): {joined}");
+        // Carries a lifespan span.
+        assert!(
+            lines.iter().any(|l| l.starts_with("b. ")),
+            "dossier has a b.-d. lifespan line: {joined}"
+        );
+        // ASCII-only — the game font has no fancy glyphs.
+        assert!(joined.is_ascii(), "dossier is ASCII: {joined}");
     }
 
     #[test]
