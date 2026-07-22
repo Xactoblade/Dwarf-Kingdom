@@ -6316,13 +6316,6 @@ fn update_hud(
                 (false, true) => "lake",
                 (false, false) => "no surface water",
             };
-            // Warn of the aquifer the fort will meet digging down here — same
-            // condition the embark uses to seed one.
-            let aquifer = if region.drainage <= 40 && region.rainfall >= 45 {
-                " | AQUIFER"
-            } else {
-                ""
-            };
             let trees = if region.biome.is_forest() {
                 "heavily wooded"
             } else if region.biome.is_grassy() || region.biome.is_wetland() {
@@ -6330,7 +6323,9 @@ fn update_hud(
             } else {
                 "sparse trees"
             };
-            let volcano = if region.volcanism >= 100 { " | VOLCANO" } else { "" };
+            // Surface soil plus the hazards a fort meets digging down (aquifer,
+            // volcano) — on its own line so the rock reads as clearly as the land.
+            let geology = region.geology_summary();
             let neighbours = world
                 .0
                 .nearest_friendly_civ(rx, ry)
@@ -6343,7 +6338,8 @@ fn update_hud(
                      {} | {} gods | {} great beasts | {} artifacts\n\
                      {} ({}) | {}{}{}\n\
                      surroundings: {} | temperature {}C | elevation {} | rainfall {} | drainage {}\n\
-                     {} | {}{}{}\n\
+                     {} | {}\n\
+                     geology: {}\n\
                      {}\n\
                      {}\n\
                      {}\n\
@@ -6370,8 +6366,7 @@ fn update_hud(
                     region.drainage,
                     water,
                     trees,
-                    volcano,
-                    aquifer,
+                    geology,
                     neighbours,
                     enemy,
                     ok,

@@ -104,6 +104,23 @@ impl Biome {
         matches!(self, Biome::Grassland | Biome::Savanna | Biome::Shrubland)
     }
 
+    /// The surface soil a fort digs through first here — the readable face of
+    /// dk_world's `SurfaceStyle` (Sandy/Clayey/Loamy/Default), kept in step with
+    /// the app's `surface_style` so the embark readout matches the ground that
+    /// generates. The non-styled biomes (mountains, tundra, glacier) carry only
+    /// thin, rocky cover.
+    pub fn soil(self) -> &'static str {
+        if self.is_desert() {
+            "sandy soil"
+        } else if self.is_wetland() {
+            "clay soil"
+        } else if self.is_grassy() || self.is_forest() {
+            "loam soil"
+        } else {
+            "rocky ground"
+        }
+    }
+
     /// Display color, sRGB 0-255.
     pub fn color(self) -> [u8; 3] {
         match self {
@@ -256,6 +273,24 @@ impl Region {
     /// Elevation as a 0..1 fraction, for shading and relief.
     pub fn elevation_frac(&self) -> f32 {
         self.elevation as f32 / Overworld::MAX_ELEVATION as f32
+    }
+
+    /// A one-line geological read for the embark panel: the surface soil, then
+    /// the hazards a fort meets digging down — the aquifer that floods a shaft
+    /// and the volcano that feeds a magma forge. Read-only over stored fields
+    /// (no terrain generation); ASCII, pipe-delimited (the game font has no
+    /// fancy glyphs). The aquifer gate is the same one the embark uses to seed
+    /// one (`drainage <= 40 && rainfall >= 45`); only a volcanism of 100 makes a
+    /// volcano. Absent hazards are simply omitted, as the rest of the panel does.
+    pub fn geology_summary(&self) -> String {
+        let mut s = String::from(self.biome.soil());
+        if self.drainage <= 40 && self.rainfall >= 45 {
+            s.push_str(" | aquifer");
+        }
+        if self.volcanism >= 100 {
+            s.push_str(" | volcano");
+        }
+        s
     }
 }
 
@@ -2437,6 +2472,49 @@ impl World {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn geology_summary_reads_soil_and_hazards() {
+        // A helper so each case states only the geology-relevant fields.
+        fn region(drainage: u8, rainfall: u8, volcanism: u8, biome: Biome) -> Region {
+            Region {
+                elevation: 150,
+                rainfall,
+                drainage,
+                temperature: 20,
+                volcanism,
+                savagery: 0,
+                alignment: Alignment::Neutral,
+                subregion: 0,
+                biome,
+                river: false,
+                river_in: None,
+                river_out: None,
+                lake: false,
+            }
+        }
+
+        // Soil follows the biome, matching the ground worldgen actually lays down.
+        assert_eq!(Biome::Grassland.soil(), "loam soil");
+        assert_eq!(Biome::SandDesert.soil(), "sandy soil");
+        assert_eq!(Biome::Swamp.soil(), "clay soil");
+        assert_eq!(Biome::Mountains.soil(), "rocky ground");
+
+        // Wet, poorly-drained ground warns of an aquifer (the embark's own gate).
+        let wet = region(30, 60, 0, Biome::Grassland);
+        assert!(wet.geology_summary().contains("loam soil"));
+        assert!(wet.geology_summary().contains("aquifer"));
+        assert!(!wet.geology_summary().contains("volcano"));
+
+        // Well-drained ground has none; a volcanism of 100 raises a volcano.
+        let dry_fiery = region(80, 20, 100, Biome::Mountains);
+        assert!(!dry_fiery.geology_summary().contains("aquifer"));
+        assert!(dry_fiery.geology_summary().contains("volcano"));
+
+        // The line stays ASCII — the game font has no fancy glyphs.
+        assert!(wet.geology_summary().is_ascii());
+        assert!(dry_fiery.geology_summary().is_ascii());
+    }
 
     #[test]
     fn same_seed_same_world() {
