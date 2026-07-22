@@ -143,7 +143,11 @@ struct LegendsState {
     from: Screen,
     category: usize,
     cursor: usize,
-    detail: Option<usize>,
+    /// The drill-down stack: empty is the category index; each entry is one
+    /// level deeper, following a cross-link. Esc pops, Enter on a link pushes.
+    nav: Vec<LegendRef>,
+    /// Which cross-link on the current detail page is highlighted.
+    link_cursor: usize,
 }
 
 /// Trade screen state: which column, cursor row, and the selected deal.
@@ -1132,6 +1136,15 @@ fn cap_first(s: &str) -> String {
 /// everything; the rest are indexes you can drill into.
 const LEGEND_CATS: [&str; 6] = ["Figures", "Sites", "Beasts", "Gods", "Artifacts", "Chronicle"];
 
+/// A place in the Legends browser: a category tab and a row within its sorted
+/// index. The drill-down nav stack is a list of these, so following a cross-link
+/// (to a kinsman, or a site a figure's deeds touched) just pushes another.
+#[derive(Clone, Copy, PartialEq)]
+struct LegendRef {
+    cat: usize,
+    row: usize,
+}
+
 /// One browsable entry: a one-line `label` for the index, a `key` used to find
 /// the events that mention it, and `facts` for the head of its detail page.
 struct LegendEntry {
@@ -1237,14 +1250,99 @@ fn legend_entries(world: &World, cat: usize) -> Vec<LegendEntry> {
     }
 }
 
-/// An entry's detail page: its facts, then every chronicle line that is truly
-/// about it. A figure or site gathers its deeds by id from the TYPED events
-/// (`subjects`/`site`), so a name that merely appears as a substring of some
-/// other deed is never misattributed. Untyped events (a civ arising, a beast's
-/// awakening) carry no ids, so they fall back to the old name-match — and the
-/// beast/god/artifact tabs, which have no id, use the name match throughout.
-fn legend_detail(world: &World, entry: &LegendEntry) -> Vec<String> {
+/// The row of a figure or site in its category's sorted index — for resolving a
+/// cross-link's jump target back to a browsable position.
+fn row_of_entity(entries: &[LegendEntry], fig: Option<usize>, site: Option<usize>) -> Option<usize> {
+    entries
+        .iter()
+        .position(|e| (fig.is_some() && e.fig == fig) || (site.is_some() && e.site == site))
+}
+
+/// The cross-links leading out of the entity shown at `r`: a figure's kin
+/// (parents, spouse, children, heir) and the sites its deeds touched; a site's
+/// notable figures (whoever's deeds name it). Each is a jump target. Empty for
+/// beasts, gods, and artifacts — those pages have nothing to follow. Built from
+/// the family links and the B2 typed events, so it never guesses from text.
+fn legend_links(world: &World, r: LegendRef) -> Vec<(String, LegendRef)> {
+    let mut out: Vec<(String, LegendRef)> = Vec::new();
+    let here = legend_entries(world, r.cat);
+    let Some(entry) = here.get(r.row) else { return out };
+    if let Some(fid) = entry.fig {
+        let f = &world.figures[fid];
+        let mut targets: Vec<(&str, usize)> = Vec::new();
+        if let Some(p) = f.parent {
+            targets.push(("parent", p));
+        }
+        if let Some(p) = f.parent2 {
+            targets.push(("parent", p));
+        }
+        if let Some(s) = f.spouse {
+            targets.push(("spouse", s));
+        }
+        for &c in &f.children {
+            targets.push(("child", c));
+        }
+        if let Some(h) = f.heir {
+            targets.push(("heir", h));
+        }
+        let figs = legend_entries(world, 0);
+        for (label, tid) in targets {
+            if let Some(row) = row_of_entity(&figs, Some(tid), None) {
+                out.push((format!("{}: {}", label, world.figures[tid].name), LegendRef { cat: 0, row }));
+            }
+        }
+        // The sites this figure's deeds touched (from the typed events).
+        let sites = legend_entries(world, 1);
+        let mut seen: Vec<usize> = Vec::new();
+        for e in world.events.iter().filter(|e| e.subjects.contains(&fid)) {
+            if let Some(sid) = e.site {
+                if !seen.contains(&sid) {
+                    seen.push(sid);
+                    if let Some(row) = row_of_entity(&sites, None, Some(sid)) {
+                        out.push((format!("site: {}", world.sites[sid].name), LegendRef { cat: 1, row }));
+                    }
+                }
+            }
+        }
+    } else if let Some(sid) = entry.site {
+        // A site leads to the figures whose recorded deeds name it.
+        let figs = legend_entries(world, 0);
+        let mut seen: Vec<usize> = Vec::new();
+        for e in world.events.iter().filter(|e| e.site == Some(sid)) {
+            for &subj in &e.subjects {
+                if !seen.contains(&subj) {
+                    seen.push(subj);
+                    if let Some(row) = row_of_entity(&figs, Some(subj), None) {
+                        out.push((format!("figure: {}", world.figures[subj].name), LegendRef { cat: 0, row }));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A drill-down page: the entity's facts, its cross-links (cursor-marked, for
+/// following), then every chronicle line truly about it. A figure or site
+/// gathers its deeds by id from the TYPED events (`subjects`/`site`), so a name
+/// that merely appears as a substring of another deed is never misattributed;
+/// untyped events fall back to the name-match, as do the beast/god/artifact tabs.
+fn detail_page(
+    world: &World,
+    r: LegendRef,
+    links: &[(String, LegendRef)],
+    link_cursor: usize,
+) -> Vec<String> {
+    let entries = legend_entries(world, r.cat);
+    let Some(entry) = entries.get(r.row) else { return Vec::new() };
     let mut out = entry.facts.clone();
+    if !links.is_empty() {
+        out.push(String::new());
+        out.push("- Related (up/down select, Enter to follow) -".to_string());
+        for (i, (label, _)) in links.iter().enumerate() {
+            out.push(if i == link_cursor { format!("> {}", label) } else { format!("  {}", label) });
+        }
+    }
     out.push(String::new());
     out.push("- Chronicled deeds -".to_string());
     let mut any = false;
@@ -1273,6 +1371,24 @@ fn legend_detail(world: &World, entry: &LegendEntry) -> Vec<String> {
 fn legends_view(sim: Option<&Sim>, world: &World, st: &LegendsState) -> (String, Vec<String>) {
     let wname: &str = if world.name.is_empty() { "the world" } else { &world.name };
     let cat = st.category.min(LEGEND_CATS.len() - 1);
+    // A drilled-in detail page — the top of the nav stack — takes precedence,
+    // even over the Chronicle tab, since a followed cross-link may land in
+    // another category than the one whose tab is open.
+    if let Some(&r) = st.nav.last() {
+        let entries = legend_entries(world, r.cat);
+        if let Some(entry) = entries.get(r.row) {
+            let links = legend_links(world, r);
+            let hint = if links.is_empty() {
+                "up/down scroll"
+            } else {
+                "up/down links | Enter follow | PgDn scroll"
+            };
+            let depth = if st.nav.len() > 1 { format!(" [depth {}]", st.nav.len()) } else { String::new() };
+            let title =
+                format!("{} :: {}{}   [Esc back | {} | y close]", wname, entry.label, depth, hint);
+            return (title, detail_page(world, r, &links, st.link_cursor));
+        }
+    }
     // The Chronicle tab: the whole roll, no drill-down.
     if cat == LEGEND_CATS.len() - 1 {
         let body = legends_all(sim, world);
@@ -1284,13 +1400,6 @@ fn legends_view(sim: Option<&Sim>, world: &World, st: &LegendsState) -> (String,
         return (title, body);
     }
     let entries = legend_entries(world, cat);
-    // A drilled-in detail page.
-    if let Some(i) = st.detail {
-        if let Some(entry) = entries.get(i) {
-            let title = format!("{} :: {}   [Esc back | up/down scroll | y close]", wname, entry.label);
-            return (title, legend_detail(world, entry));
-        }
-    }
     // The category index, cursor-marked.
     let body: Vec<String> = entries
         .iter()
@@ -1795,14 +1904,16 @@ fn main() {
         .insert_resource(Registry(raws))
         .insert_resource(WorldRes(world))
         .insert_resource(ScreenRes(screen))
-        .insert_resource(LegendsState {
-            scroll: 0,
-            from: Screen::Embark,
+        .insert_resource({
             // A screenshot run can pin a Legends tab (DK_SHOT_LEGEND_CAT=0..5) and
             // drill into an entry (DK_SHOT_LEGEND_DETAIL=<row>) to verify a dossier.
-            category: std::env::var("DK_SHOT_LEGEND_CAT").ok().and_then(|s| s.parse().ok()).unwrap_or(0),
-            cursor: 0,
-            detail: std::env::var("DK_SHOT_LEGEND_DETAIL").ok().and_then(|s| s.parse().ok()),
+            let cat = std::env::var("DK_SHOT_LEGEND_CAT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let nav = std::env::var("DK_SHOT_LEGEND_DETAIL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map(|row| vec![LegendRef { cat, row }])
+                .unwrap_or_default();
+            LegendsState { scroll: 0, from: Screen::Embark, category: cat, cursor: 0, nav, link_cursor: 0 }
         })
         .insert_resource(TradeState::default())
         .insert_resource(HasSave(save_path().exists()))
@@ -3904,13 +4015,19 @@ fn handle_input(
         dirty.0 = true;
         return;
     }
-    // ---- Legends browser: tabs, an index cursor, and drill-down pages.
+    // ---- Legends browser: tabs, an index cursor, and cross-linked drill-down.
     if screen.0 == Screen::Legends {
         let n_cats = LEGEND_CATS.len();
-        let is_chronicle = legends.category == n_cats - 1;
-        let in_detail = legends.detail.is_some();
+        let in_detail = !legends.nav.is_empty();
+        let is_chronicle = !in_detail && legends.category == n_cats - 1;
         let list_mode = !is_chronicle && !in_detail;
         let entry_count = if list_mode { legend_entries(&world.0, legends.category).len() } else { 0 };
+        // The current detail page's cross-links (for cursoring and following).
+        let links = if in_detail {
+            legend_links(&world.0, *legends.nav.last().unwrap())
+        } else {
+            Vec::new()
+        };
         // Total lines in whatever view is showing, for scroll clamping.
         let total = legends_view(sim.0.as_ref(), &world.0, &legends).1.len();
         let max_scroll = total.saturating_sub(LEGENDS_PAGE);
@@ -3947,13 +4064,49 @@ fn handle_input(
             } else if legends.cursor >= legends.scroll + LEGENDS_PAGE {
                 legends.scroll = legends.cursor + 1 - LEGENDS_PAGE;
             }
-            // Open the highlighted entry's page.
+            // Open the highlighted entry's page: push it onto the nav stack.
             if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
-                legends.detail = Some(legends.cursor);
+                let r = LegendRef { cat: legends.category, row: legends.cursor };
+                legends.nav.push(r);
+                legends.link_cursor = 0;
                 legends.scroll = 0;
             }
+        } else if in_detail {
+            // A detail page. Up/down move the link cursor if there are links to
+            // follow, else scroll; PageUp/Down always scroll the page.
+            if !links.is_empty() {
+                if held(KeyCode::ArrowDown, &keys, &repeat) {
+                    legends.link_cursor = (legends.link_cursor + 1).min(links.len() - 1);
+                }
+                if held(KeyCode::ArrowUp, &keys, &repeat) {
+                    legends.link_cursor = legends.link_cursor.saturating_sub(1);
+                }
+            } else {
+                if held(KeyCode::ArrowDown, &keys, &repeat) {
+                    legends.scroll = (legends.scroll + 1).min(max_scroll);
+                }
+                if held(KeyCode::ArrowUp, &keys, &repeat) {
+                    legends.scroll = legends.scroll.saturating_sub(1);
+                }
+            }
+            if keys.just_pressed(KeyCode::PageDown) {
+                legends.scroll = (legends.scroll + LEGENDS_PAGE).min(max_scroll);
+            }
+            if keys.just_pressed(KeyCode::PageUp) {
+                legends.scroll = legends.scroll.saturating_sub(LEGENDS_PAGE);
+            }
+            // Enter follows the highlighted cross-link, pushing it deeper.
+            if (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter))
+                && !links.is_empty()
+            {
+                if let Some(&(_, target)) = links.get(legends.link_cursor) {
+                    legends.nav.push(target);
+                    legends.link_cursor = 0;
+                    legends.scroll = 0;
+                }
+            }
         } else {
-            // Chronicle or a detail page: plain scrolling.
+            // Chronicle: plain scrolling.
             if held(KeyCode::ArrowDown, &keys, &repeat) {
                 legends.scroll = (legends.scroll + 1).min(max_scroll);
             }
@@ -3968,9 +4121,11 @@ fn handle_input(
             }
         }
 
-        // Esc backs out of a page, then closes; y always closes.
+        // Esc pops one level of the drill-down; when the stack empties (or we're
+        // not drilled in) it closes. y always closes.
         if keys.just_pressed(KeyCode::Escape) && in_detail {
-            legends.detail = None;
+            legends.nav.pop();
+            legends.link_cursor = 0;
             legends.scroll = 0;
             dirty.0 = true;
         } else if keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::Escape) {
