@@ -37,13 +37,21 @@ use dk_world::TileShape;
 use std::path::{Path, PathBuf};
 
 const TILE: f32 = 16.0;
-const MAP_W: usize = 96;
-const MAP_H: usize = 96;
-const MAP_D: usize = 32;
+// Local map: 144x144 tiles is a DF 3x3 embark (48-tile area tiles), up from the
+// old 96x96 (a small 2x2). Depth 64 gives the layered world (surface, aquifer,
+// caverns, magma sea, adamantine, underworld) DF-typical room; depth is nearly
+// free to render since only the view slice is drawn, but width/height cost scales
+// with the tile-sprite count (144x144 = ~21k columns x2 layers).
+const MAP_W: usize = 144;
+const MAP_H: usize = 144;
+const MAP_D: usize = 64;
 const WORLD_SEED: u64 = 20260710;
 const DWARF_COUNT: usize = 7;
-/// Overworld regions (rendered 2x on the 96x96 tile grid).
+/// Overworld regions. The embark screen paints the OWxOW overworld across the
+/// MAP_WxMAP_H tile grid at OW_SCALE tiles per region (144/48 = 3x today).
 const OW: usize = 48;
+/// Tiles per overworld region on the embark screen. MAP_W must be a multiple of OW.
+const OW_SCALE: usize = MAP_W / OW;
 const HISTORY_YEARS: u32 = 200;
 /// Lines per page in the Legends viewer.
 const LEGENDS_PAGE: usize = 30;
@@ -3535,7 +3543,7 @@ fn apply_embark_action(
         return;
     }
     let Some(act) = pending.0.take() else { return };
-    let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+    let region = ((cursor.x as usize / OW_SCALE).min(OW - 1), (cursor.y as usize / OW_SCALE).min(OW - 1));
     let embarkable = world.0.overworld.get(region.0, region.1).biome.embarkable();
     match act {
         EmbarkAction::JustPlay => {
@@ -3618,8 +3626,8 @@ fn title_input(
         // open the world map to choose where to settle.
         forge_new_world(&mut world.0);
         let region = pick_embark_region(&world.0);
-        cursor.x = (region.0 as i32 * 2).min(MAP_W as i32 - 1);
-        cursor.y = (region.1 as i32 * 2).min(MAP_H as i32 - 1);
+        cursor.x = (region.0 as i32 * OW_SCALE as i32).min(MAP_W as i32 - 1);
+        cursor.y = (region.1 as i32 * OW_SCALE as i32).min(MAP_H as i32 - 1);
         screen.0 = Screen::Embark;
         dirty.0 = true;
         // Consume the Enter so the embark screen's own Enter handler (which
@@ -4037,7 +4045,7 @@ fn handle_input(
             dirty.0 = true;
         };
         if keys.just_pressed(KeyCode::Enter) {
-            let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+            let region = ((cursor.x as usize / OW_SCALE).min(OW - 1), (cursor.y as usize / OW_SCALE).min(OW - 1));
             if world.0.overworld.get(region.0, region.1).biome.embarkable() {
                 // A fortress retired to this region is reclaimed as it was;
                 // otherwise a new colony is founded here.
@@ -4062,7 +4070,7 @@ fn handle_input(
         }
         // 'a': walk this world as a lone adventurer instead.
         if keys.just_pressed(KeyCode::KeyA) {
-            let region = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+            let region = ((cursor.x as usize / OW_SCALE).min(OW - 1), (cursor.y as usize / OW_SCALE).min(OW - 1));
             if world.0.overworld.get(region.0, region.1).biome.embarkable() {
                 let mut new_sim = embark(&world.0, &reg.0, region);
                 if new_sim.begin_adventure(&reg.0).is_some() {
@@ -5538,9 +5546,9 @@ fn redraw_tiles(
         for (_, mut sprite) in &mut grounds {
             sprite.color = Color::srgba(0.0, 0.0, 0.0, 0.0);
         }
-        // The 48x48 overworld fills the 96x96 grid at 2x scale.
+        // The overworld fills the tile grid at OW_SCALE tiles per region.
         for (t, mut sprite) in &mut tiles {
-            let (rx, ry) = (t.x / 2, t.y / 2);
+            let (rx, ry) = (t.x / OW_SCALE, t.y / OW_SCALE);
             let region = world.0.overworld.get(rx.min(OW - 1), ry.min(OW - 1));
             let [r, g, b] = region.biome.color();
             let mut rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
@@ -6258,7 +6266,7 @@ fn update_hud(
             return;
         }
         Screen::Embark => {
-            let (rx, ry) = ((cursor.x as usize / 2).min(OW - 1), (cursor.y as usize / 2).min(OW - 1));
+            let (rx, ry) = ((cursor.x as usize / OW_SCALE).min(OW - 1), (cursor.y as usize / OW_SCALE).min(OW - 1));
             let region = world.0.overworld.get(rx, ry);
             let site = world
                 .0
