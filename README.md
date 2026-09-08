@@ -132,3 +132,13 @@ cargo run -p dk_app
 | `-` / `=` | Zoom out / in |
 | F5 / F9 | Save / load world |
 | Q | Quit |
+
+## License
+
+The source is [MIT](LICENSE) — use it, fork it, ship it.
+
+The bundled art is not all under the same terms: the toolbar icons and
+happiness faces in `assets/icons/` and `assets/faces/` are [OpenMoji](https://openmoji.org),
+**CC-BY-SA 4.0**, which asks for attribution and share-alike, so keep the
+`CREDITS.txt` beside them if you redistribute. The generated `assets/tileset.png`
+is CC0.
