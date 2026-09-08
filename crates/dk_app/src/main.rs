@@ -78,6 +78,8 @@ DIG & BUILD (cursor = arrow keys or click)\n\
   Shift+P ... dig a well (thirsty dwarves draw water when drink runs out)\n\
   Shift+G ... glass furnace   Shift+T ... weapon trap   b ... tomb\n\
   g ... floodgate   l ... lever   t ... pull lever\n\
+  Toolbar only: Bridge (drag a span) and Plate (a step-on trigger) — both\n\
+  wire themselves to the nearest floodgate or drawbridge.\n\
 \n\
 ZONES & LABOR\n\
   f ... farm     p ... stockpile    n ... pasture    o ... tavern    ' ... temple\n\
@@ -303,6 +305,9 @@ enum Tool {
     Rect(UiKind),
     /// Place a workshop/building at the clicked tile.
     Build(BuildingKind),
+    /// Lay a pressure plate, wired to the nearest floodgate or drawbridge.
+    /// (Not a plain Build tool: the plate carries its link target.)
+    Plate,
     /// Plan a constructed wall on the clicked tile.
     Wall,
     /// Smooth-and-engrave the clicked wall.
@@ -736,6 +741,7 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Build(BuildingKind::Tomb), label: "Tomb", key: "b", tip: "Bury the dead so their ghosts rest", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Floodgate), label: "Gate", key: "g", tip: "A floodgate, opened and shut by a linked lever", cat: 2 },
     ToolButton { tool: Tool::Rect(UiKind::Bridge), label: "Bridge", key: "", tip: "Drag a span of floor for a drawbridge; link a lever (l) to raise/lower it", cat: 2 },
+    ToolButton { tool: Tool::Plate, label: "Plate", key: "", tip: "A pressure plate: anything that walks onto it fires the nearest gate or bridge", cat: 2 },
     // --- Orders (cat 3)
     ToolButton { tool: Tool::Enlist, label: "Enlist", key: "i", tip: "Make the dwarf here a soldier (click again to dismiss)", cat: 3 },
     ToolButton { tool: Tool::Cull, label: "Cull", key: "u", tip: "Mark the animal here to be slaughtered for meat", cat: 3 },
@@ -3258,6 +3264,15 @@ fn apply_active_tool(
         Tool::Build(kind) => {
             sim.add_building(kind, here);
         }
+        Tool::Plate => {
+            if sim.add_pressure_plate(here).is_none() {
+                sim.log_event(
+                    "A pressure plate needs open floor and a floodgate (g) or drawbridge \
+                     to wire itself to."
+                        .to_string(),
+                );
+            }
+        }
         Tool::Wall => {
             sim.designate_construction(here);
         }
@@ -5479,6 +5494,7 @@ fn tile_visual(
             BuildingKind::Kitchen => [0.8, 0.25, 0.2],
             BuildingKind::Floodgate => [0.55, 0.55, 0.6],
             BuildingKind::Lever { .. } => [0.9, 0.85, 0.3],
+            BuildingKind::PressurePlate { .. } => [0.85, 0.7, 0.25],
             BuildingKind::Tomb => [0.6, 0.55, 0.75],
             BuildingKind::Craftsdwarf => [0.7, 0.6, 0.35],
             BuildingKind::Loom => [0.55, 0.7, 0.72],
@@ -5499,6 +5515,7 @@ fn tile_visual(
             BuildingKind::Kitchen => "kitchen",
             BuildingKind::Floodgate => "gate",
             BuildingKind::Lever { .. } => "lever",
+            BuildingKind::PressurePlate { .. } => "block",
             BuildingKind::Tomb => "tomb",
             BuildingKind::Craftsdwarf => "ws_bench",
             BuildingKind::Loom => "ws_loom",

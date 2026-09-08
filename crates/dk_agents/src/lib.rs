@@ -541,6 +541,9 @@ pub enum BuildingKind {
     Floodgate,
     /// Pulling it toggles the floodgate at `target`.
     Lever { target: Pos },
+    /// Fires the device at `target` when anything steps onto it — the first
+    /// trigger that needs no dwarf's hand.
+    PressurePlate { target: Pos },
 }
 
 impl BuildingKind {
@@ -563,6 +566,7 @@ impl BuildingKind {
             BuildingKind::Tomb => "Tomb",
             BuildingKind::Floodgate => "Floodgate",
             BuildingKind::Lever { .. } => "Lever",
+            BuildingKind::PressurePlate { .. } => "Pressure Plate",
         }
     }
 }
@@ -2796,17 +2800,40 @@ impl Sim {
         }
     }
 
-    /// Place a lever linked to the nearest linkable device — a floodgate or a
-    /// drawbridge. Returns the linked device's position if any.
-    pub fn add_lever(&mut self, pos: Pos) -> Option<Pos> {
+    /// The nearest device a trigger can be wired to — a floodgate or a
+    /// drawbridge anchor. Ties break on the iteration order (buildings in
+    /// placement order, then bridge anchors in key order), so it is
+    /// deterministic.
+    fn nearest_link_target(&self, pos: Pos) -> Option<Pos> {
         let gates = self
             .buildings
             .iter()
             .filter(|b| b.kind == BuildingKind::Floodgate)
             .map(|b| b.pos);
         let bridges = self.bridges.keys().copied();
-        let target = gates.chain(bridges).min_by_key(|p| p.manhattan(pos))?;
+        gates.chain(bridges).min_by_key(|p| p.manhattan(pos))
+    }
+
+    /// Place a lever linked to the nearest linkable device — a floodgate or a
+    /// drawbridge. Returns the linked device's position if any.
+    pub fn add_lever(&mut self, pos: Pos) -> Option<Pos> {
+        let target = self.nearest_link_target(pos)?;
         if self.add_building(BuildingKind::Lever { target }, pos) {
+            Some(target)
+        } else {
+            None
+        }
+    }
+
+    /// Lay a pressure plate linked to the nearest linkable device. Unlike a
+    /// lever it needs no dwarf: anything that walks onto it fires the link.
+    /// Never on a drawbridge span — a raised bridge would swallow the plate.
+    pub fn add_pressure_plate(&mut self, pos: Pos) -> Option<Pos> {
+        if self.bridges.values().any(|b| b.span.contains(&pos)) {
+            return None;
+        }
+        let target = self.nearest_link_target(pos)?;
+        if self.add_building(BuildingKind::PressurePlate { target }, pos) {
             Some(target)
         } else {
             None
@@ -4845,6 +4872,9 @@ impl Sim {
         if self.clock.tick % (TICKS_PER_DAY / 4) == 0 && self.clock.tick > 0 {
             self.decay_gore();
         }
+        // Plates read the same "moved this tick" signal the footprints do, so
+        // they must fire before tick_footprints stamps last_pos.
+        self.tick_pressure_plates();
         self.tick_footprints();
         // Region rebuilds are throttled; A* remains the authority in between.
         if self.regions.dirty && self.clock.tick % REGION_REBUILD_INTERVAL == 0 {
@@ -5460,6 +5490,42 @@ impl Sim {
                 self.stats.beasts_slain += 1;
             } else if was_hostile {
                 self.stats.raiders_slain += 1;
+            }
+        }
+    }
+
+    /// The device a pressure plate on this tile is wired to, if any.
+    fn plate_at(&self, p: Pos) -> Option<Pos> {
+        self.buildings.iter().find_map(|b| match b.kind {
+            BuildingKind::PressurePlate { target } if b.pos == p => Some(target),
+            _ => None,
+        })
+    }
+
+    /// Anything that stepped onto a pressure plate this tick fires its linked
+    /// device. Edge-triggered: it reads `pos != last_pos` (the same "moved since
+    /// the last frame" signal the footprints use, so it must run BEFORE
+    /// `tick_footprints` stamps `last_pos`), which means standing on a plate
+    /// does nothing — only walking onto one does. A plate fires once per tick
+    /// however many feet land on it, so a crowd can't toggle a bridge twice.
+    /// Deterministic (no RNG); free when the fort has laid no plates.
+    pub fn tick_pressure_plates(&mut self) {
+        if !self.buildings.iter().any(|b| matches!(b.kind, BuildingKind::PressurePlate { .. })) {
+            return;
+        }
+        let mut fired: BTreeSet<Pos> = BTreeSet::new();
+        for d in &self.dwarves {
+            if d.alive && d.pos != d.last_pos && self.plate_at(d.pos).is_some() {
+                fired.insert(d.pos);
+            }
+        }
+        for plate in fired {
+            let Some(target) = self.plate_at(plate) else { continue };
+            if self.activate_link(target) {
+                self.log_event(format!(
+                    "A pressure plate at ({}, {}) clicks underfoot.",
+                    plate.x, plate.y
+                ));
             }
         }
     }
@@ -10768,7 +10834,9 @@ const SAVE_MAGIC: u32 = 0x444B_5331; // "DKS1"
 // v76: new ItemKind::BodyPart (severed limbs) shifts the item-kind enum.
 // v77: ItemKind::BoneCraft + CraftKind::BoneCraft (bones as trade goods).
 // v85: forts gained a `bridges` map (drawbridges raised/lowered by levers).
-const SAVE_VERSION: u32 = 85;
+// v86: BuildingKind::PressurePlate (a step-on trigger) extends the building
+// enum, shifting nothing before it but widening the discriminant space.
+const SAVE_VERSION: u32 = 86;
 
 #[derive(Serialize)]
 struct SaveOut<'a> {
