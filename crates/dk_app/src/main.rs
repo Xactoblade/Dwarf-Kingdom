@@ -62,7 +62,7 @@ const HELP_TEXT: &str = "\
 Dwarf Kingdom :: Controls   (F1 or Esc to close)\n\
 \n\
 CAMERA & VIEW\n\
-  W A S D / drag ... pan      mouse wheel ... zoom      [ ] ... change z-level\n\
+  W A S E / drag ... pan      mouse wheel ... zoom      [ ] ... change z-level\n\
   space ... pause      1 2 3 ... game speed\n\
 \n\
 DIG & BUILD (cursor = arrow keys or click)\n\
@@ -78,7 +78,7 @@ DIG & BUILD (cursor = arrow keys or click)\n\
   Shift+P ... dig a well (thirsty dwarves draw water when drink runs out)\n\
   Shift+G ... glass furnace   Shift+T ... weapon trap   b ... tomb\n\
   g ... floodgate   l ... lever   t ... pull lever\n\
-  Toolbar only: Bridge (drag a span) and Plate (a step-on trigger) — both\n\
+  Toolbar only: Bridge (drag a span) and Plate (a step-on trigger) ... both\n\
   wire themselves to the nearest floodgate or drawbridge.\n\
 \n\
 ZONES & LABOR\n\

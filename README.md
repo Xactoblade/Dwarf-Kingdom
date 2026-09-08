@@ -111,27 +111,84 @@ Built in Rust + Bevy. See `BLUEPRINT.md` for the full design and phased roadmap.
 cargo run -p dk_app
 ```
 
+Press **F1** in-game for the full controls overlay — the table below is the
+short version.
+
+**Getting in**
+
 | Key | Action |
 |---|---|
 | Mouse | Left-click: move cursor · wheel: zoom · right-drag: pan |
 | Enter | (Embark screen) found the fortress at the cursor's region |
 | `a` | (Embark screen) begin an adventure at the cursor's region |
-| Arrows / `[` `]` / `.` | (Adventure) move & attack / take stairs / wait |
-| `y` | Open/close the Legends viewer (world history) |
+| F1 | Controls overlay · Esc closes it |
+
+**Camera & view**
+
+| Key | Action |
+|---|---|
 | Arrow keys | Move cursor (tile/dwarf info in HUD) |
-| `[` / `]` | Z-level down / up |
-| `d` / `x` / `h` | Designate mine / stairs / channel (press to anchor, again to apply) |
-| `p` / `f` | Place stockpile / farm plot (same two-press flow) |
-| `v` / `k` | Build still / kitchen at cursor |
-| `g` / `l` / `t` | Build floodgate / lever (links nearest gate) / pull lever |
-| `c` | Cancel designations (two-press rect) |
-| Esc | Exit designation mode |
-| Space | Pause · `.` single-step while paused |
-| 1 / 2 / 3 | Sim speed |
 | W A S E | Pan camera (`d` is taken by designate) |
 | `-` / `=` | Zoom out / in |
+| `[` / `]` | Z-level down / up |
+| Space | Pause · `.` single-step while paused |
+| 1 / 2 / 3 | Sim speed |
+
+**Dig & build** (two-press rectangles: press to anchor, again to apply)
+
+| Key | Action |
+|---|---|
+| `d` / `x` / `h` | Designate mine / stairs / channel |
+| Shift+X / Shift+G | Fell trees / forage wild shrubs (drag over a patch) |
+| Shift+D | Smooth-and-engrave a wall |
+| Shift+B | Build a constructed wall (masons haul the stone) |
+| `v` / `k` / `m` | Still / kitchen / craftsdwarf's workshop |
+| `j` / `;` / Shift+K | Loom / jeweler / mason's workshop |
+| Shift+M / Shift+F | Smelter (ore → bars) / forge (bars → weapons & armor) |
+| Shift+C / Shift+J / Shift+N | Clothier / carpenter / tanner |
+| Shift+G / Shift+P | Glass furnace* / well |
+| Shift+T / `b` | Weapon trap / tomb |
+| `g` / `l` / `t` | Floodgate / lever (links nearest device) / pull lever |
+| *(toolbar)* | **Bridge** — drag a span for a drawbridge |
+| *(toolbar)* | **Plate** — a pressure plate; anything stepping on it fires the linked gate or bridge |
+
+\* Known conflict: `Shift+G` is currently bound to *both* the Gather
+designation and the glass furnace, and one press fires both. Use the toolbar
+buttons to get one without the other until it's rebound.
+
+**Zones, labor & military**
+
+| Key | Action |
+|---|---|
+| `p` / `f` / `n` | Stockpile / farm plot / pasture |
+| `o` / `'` / `z` | Tavern / temple / fishery |
+| Shift+H / Shift+Z / Shift+L | Hospital / burrow (safe room) / library |
+| Shift+I / `i` | Barracks / enlist-dismiss the soldier at the cursor |
+| `u` / Shift+U | Cull an animal / war-train a dog |
+| F2 | Sound or lift the alarm (civilians flee to burrows) |
+| Tab | Pick which squad the toolbar's orders apply to (none = all) |
+| *(toolbar)* | Defend / Station / Patrol / Train orders · Melee / Marks loadouts · Split & Assign squads |
+| `c` | Cancel designations (two-press rect) |
+| Esc | Exit designation mode |
+
+**The fortress & the wider world**
+
+| Key | Action |
+|---|---|
+| `r` | Trade with a caravan |
+| `y` | Open/close the Legends viewer (world history & your fort's poetry) |
 | F5 / F9 | Save / load world |
+| F8 | Retire the fortress (it endures, and can be reclaimed) |
 | Q | Quit |
+
+**Adventure mode**
+
+| Key | Action |
+|---|---|
+| Arrows / `[` `]` / `.` | Move & attack / climb stairs / wait |
+| `p` / `c` | Take a fallen foe's weapon / recruit a companion |
+| `g` | Journey to the next land |
+| Esc | Abandon the quest |
 
 ## License
 
