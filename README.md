@@ -146,15 +146,11 @@ short version.
 | `j` / `;` / Shift+K | Loom / jeweler / mason's workshop |
 | Shift+M / Shift+F | Smelter (ore → bars) / forge (bars → weapons & armor) |
 | Shift+C / Shift+J / Shift+N | Clothier / carpenter / tanner |
-| Shift+G / Shift+P | Glass furnace* / well |
+| Shift+V / Shift+P | Glass furnace (vitrify stone) / well |
 | Shift+T / `b` | Weapon trap / tomb |
 | `g` / `l` / `t` | Floodgate / lever (links nearest device) / pull lever |
 | *(toolbar)* | **Bridge** — drag a span for a drawbridge |
 | *(toolbar)* | **Plate** — a pressure plate; anything stepping on it fires the linked gate or bridge |
-
-\* Known conflict: `Shift+G` is currently bound to *both* the Gather
-designation and the glass furnace, and one press fires both. Use the toolbar
-buttons to get one without the other until it's rebound.
 
 **Zones, labor & military**
 

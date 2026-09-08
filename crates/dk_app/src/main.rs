@@ -68,6 +68,7 @@ CAMERA & VIEW\n\
 DIG & BUILD (cursor = arrow keys or click)\n\
   d ... mine        x ... stairs      h ... channel     Shift+D ... engrave a wall\n\
   Shift+X ... fell trees for logs (drag over a stand of trees)\n\
+  Shift+G ... forage wild shrubs for berries (drag over a berry patch)\n\
   Shift+B ... build a wall (masons haul stone and raise it)\n\
   v ... still   k ... kitchen   m ... craftsdwarf   j ... loom   ; ... jeweler\n\
   Shift+M ... smelter (ore -> metal bars)   Shift+F ... forge (bars -> weapons & armor)\n\
@@ -76,7 +77,7 @@ DIG & BUILD (cursor = arrow keys or click)\n\
   Shift+J ... carpenter's workshop (logs -> barrels & instruments)\n\
   Shift+N ... tanner's shop (butchered hides -> leather)\n\
   Shift+P ... dig a well (thirsty dwarves draw water when drink runs out)\n\
-  Shift+G ... glass furnace   Shift+T ... weapon trap   b ... tomb\n\
+  Shift+V ... glass furnace   Shift+T ... weapon trap   b ... tomb\n\
   g ... floodgate   l ... lever   t ... pull lever\n\
   Toolbar only: Bridge (drag a span) and Plate (a step-on trigger) ... both\n\
   wire themselves to the nearest floodgate or drawbridge.\n\
@@ -735,7 +736,7 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Build(BuildingKind::Carpenter), label: "Carpenter", key: "^J", tip: "Works logs into barrels and instruments", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Clothier), label: "Clothier", key: "^C", tip: "Sews cloth into clothes", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Tanner), label: "Tanner", key: "^N", tip: "Tans hides into leather", cat: 2 },
-    ToolButton { tool: Tool::Build(BuildingKind::GlassFurnace), label: "Glass", key: "^G", tip: "Melts stone into blown glass", cat: 2 },
+    ToolButton { tool: Tool::Build(BuildingKind::GlassFurnace), label: "Glass", key: "^V", tip: "Melts stone into blown glass", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Well), label: "Well", key: "^P", tip: "Draw water when the drink runs out", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Trap), label: "Trap", key: "^T", tip: "A weapon trap that shreds raiders", cat: 2 },
     ToolButton { tool: Tool::Build(BuildingKind::Tomb), label: "Tomb", key: "b", tip: "Bury the dead so their ghosts rest", cat: 2 },
@@ -4733,8 +4734,10 @@ fn handle_input(
         }
         dirty.0 = true;
     }
-    // Shift+G: build a glass furnace (Shift keeps it clear of the floodgate).
-    if shift && keys.just_pressed(KeyCode::KeyG) {
+    // Shift+V: a glass furnace (vitrify stone into blown glass). It sat on
+    // Shift+G until that collided with the Gather designation above -- both
+    // are plain `if` blocks, so one press ran both. Gather kept the key.
+    if shift && keys.just_pressed(KeyCode::KeyV) {
         let here = cursor.pos(view_z.0);
         if sim.0.add_building(BuildingKind::GlassFurnace, here) {
             info!("built a Glass Furnace at {:?}", here);
