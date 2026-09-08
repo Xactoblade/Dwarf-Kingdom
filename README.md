@@ -159,6 +159,7 @@ short version.
 | `p` / `f` / `n` | Stockpile / farm plot / pasture |
 | `o` / `'` / `z` | Tavern / temple / fishery |
 | Shift+H / Shift+Z / Shift+L | Hospital / burrow (safe room) / library |
+| *(toolbar)* | **Bedroom** / **Dining** — claim beds as bedrooms; a hall to eat in together |
 | Shift+I / `i` | Barracks / enlist-dismiss the soldier at the cursor |
 | `u` / Shift+U | Cull an animal / war-train a dog |
 | F2 | Sound or lift the alarm (civilians flee to burrows) |

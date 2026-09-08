@@ -87,6 +87,8 @@ ZONES & LABOR\n\
   z ... fishery      Shift+H ... hospital (the wounded mend here, faster)\n\
   Shift+Z ... burrow (safe room)     F2 ... sound/lift the alarm (civilians hide)\n\
   Shift+L ... library (scholars write treatises, read them in Legends)\n\
+  Bedroom / Dining (toolbar) ... claim beds as bedrooms; give the fort a\n\
+    hall to eat in together -- both rest and cheer a dwarf better\n\
   u ... cull an animal      Shift+U ... war-train a dog\n\
   i ... enlist/dismiss a soldier      Shift+I ... barracks (soldiers drill here)\n\
   Defend / Station / Patrol / Train (toolbar) ... order your squads: hunt all,\n\
@@ -711,8 +713,11 @@ const TOOLS: &[ToolButton] = &[
     ToolButton { tool: Tool::Rect(UiKind::Barracks), label: "Barracks", key: "^I", tip: "Soldiers drill here to become veterans", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Burrow), label: "Burrow", key: "^Z", tip: "A safe room civilians flee to when the alarm sounds", cat: 1 },
     ToolButton { tool: Tool::Rect(UiKind::Library), label: "Library", key: "^L", tip: "Scholars write treatises here", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::Bedroom), label: "Bedroom", key: "^R", tip: "Beds here become bedrooms - their owners wake happier", cat: 1 },
-    ToolButton { tool: Tool::Rect(UiKind::DiningHall), label: "Dining", key: "^E", tip: "Dwarves carry their food here and eat in company", cat: 1 },
+    // Bedroom and Dining are toolbar-only: no keyboard handler was ever wired
+    // for them, and E is a camera pan key besides. Blank rather than advertise
+    // a shortcut that does nothing -- wire a handler before filling these in.
+    ToolButton { tool: Tool::Rect(UiKind::Bedroom), label: "Bedroom", key: "", tip: "Beds here become bedrooms - their owners wake happier", cat: 1 },
+    ToolButton { tool: Tool::Rect(UiKind::DiningHall), label: "Dining", key: "", tip: "Dwarves carry their food here and eat in company", cat: 1 },
     // Piles: a stockpile told what it is for. The generic one above takes
     // anything; these take one class each, so the larder stays a larder.
     ToolButton { tool: Tool::Rect(UiKind::Stockpile), label: "Any", key: "p", tip: "A pile that takes whatever is brought to it", cat: 4 },
